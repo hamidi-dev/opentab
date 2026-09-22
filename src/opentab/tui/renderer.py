@@ -19,6 +19,7 @@ from opentab.accounting.models import (
     YearSummary,
 )
 from opentab.presentation.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
+from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, keymap
 from opentab.tui.components import menus
 from opentab.tui.components.bars import (
@@ -1062,9 +1063,7 @@ class Renderer:
             name = str(scope["project"]).rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
             active_filters.append((0, "Project: ", clean(name or scope["project"], width)))
         if scope.get("harness"):
-            label = {"opencode": "OpenCode", "claude": "Claude Code", "codex": "Codex"}.get(
-                scope["harness"], scope["harness"]
-            )
+            label = SOURCE_LABELS.get(scope["harness"], scope["harness"])
             active_filters.append((1, "", clean(label, width)))
         if scope.get("since") or scope.get("until"):
             active_filters.append((2, "", ws.date_label))

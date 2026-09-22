@@ -163,10 +163,10 @@ raw trace reads require a second `confirm_raw: true` argument. See
 
 The separate `sessions conversation` / `opentab_get_session_conversation` API reads
 bounded user/assistant **text only** from one selected local OpenCode, Claude Code,
-or Codex execution. It requires raw-content opt-in and, for MCP, `confirm_raw: true`
-before lazy service creation. Demo is rejected, including when enabled after service
-construction. Permission and input validation precede conversation reads; checking
-the advertised capability does not fetch raw text.
+Codex, Hermes, pi or omp execution. It requires raw-content opt-in and, for MCP,
+`confirm_raw: true` before lazy service creation. Demo is rejected, including when
+enabled after service construction. Permission and input validation precede
+conversation reads; checking the advertised capability does not fetch raw text.
 
 The default scope is the root only. Child reads require an explicit exact ID from
 `executions`, still addressed through a root present in the session catalog. This is

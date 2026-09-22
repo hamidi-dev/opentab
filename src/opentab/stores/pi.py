@@ -55,6 +55,14 @@ class PiStore:
             self._git_root_cache[cwd] = git_root(cwd)
         return self._git_root_cache[cwd]
 
+    def supports_conversation(self, sid: str) -> bool:
+        return not self.demo
+
+    def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
+        from opentab.conversations.pi import read_source
+
+        return read_source(self, root_id, execution_id)
+
     # Provider/api substrings that mark a subscription (plan-included) route even when
     # auth.json is unavailable -- their recorded cost is a list-price estimate, not spend.
     _SUBSCRIPTION_MARKERS = (

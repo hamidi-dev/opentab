@@ -168,7 +168,7 @@ def test_reader_footer_has_no_preview_or_focus_action_and_scopes_are_explained()
     assert "selected result's session" in descriptions["search-session"]
     assert "keep other filters" in descriptions["search-all"]
     assert "keep session scope and query" in descriptions["search-reset"]
-    assert "OpenCode / Claude / Codex / all" in descriptions["search-harness"]
+    assert "supported conversation harness, or all" in descriptions["search-harness"]
 
 
 def test_search_split_and_stacked_layouts_show_evidence_and_highlights():
@@ -347,6 +347,19 @@ def test_search_filter_picker_reuses_modal_and_exposes_only_enabled_option_rows(
     assert not any(
         r[0] in {"searchtab", "searchfilter", "search-result"} for r in app.renderer.regions
     )
+
+
+def test_search_harness_picker_shows_all_conversation_readers_at_minimum_size():
+    app, ws = _app()
+    app.keymap = bindings.Keymap({("menu", "select"): ["v"]})
+    ws.open_filter("harness")
+    ws.filter_menu_index = 4
+    text = screen_text(_paint(app, 20, 80))
+    for label in ("OpenCode", "Claude Code", "Codex", "Hermes", "Pi", "Omp"):
+        assert label in text
+    assert len([r for r in app.renderer.regions if r[0] == "searchfilter-option"]) == 7
+    app.handle_key(None, ord("v"))
+    assert ws.scope["harness"] == "hermes" and ws.filter_menu == ""
 
 
 def test_search_mouse_tabs_filters_and_reset_use_workspace_actions():

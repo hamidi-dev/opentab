@@ -9,6 +9,7 @@ from collections import deque
 from opentab.api.service import OpenTabService, ServiceError
 from opentab.conversations.index import index_status
 from opentab.conversations.reader import ConversationError
+from opentab.sources import CONVERSATION_LABELS, CONVERSATION_SOURCES
 
 _OPERATIONS = frozenset({"status", "search", "conversation", "index"})
 _COALESCED = frozenset({"search", "conversation"})
@@ -169,10 +170,12 @@ class SearchWorker:
                             "remote_unsupported",
                             "Conversation search requires a local source.",
                         )
-                    if self._source_key not in {"all", "opencode", "claude", "codex"}:
+                    if self._source_key not in CONVERSATION_SOURCES | {"all"}:
                         raise ServiceError(
                             "unsupported_harness",
-                            "Choose local OpenCode, Claude Code, Codex, or all harnesses.",
+                            "Choose a local conversation harness: "
+                            + ", ".join(CONVERSATION_LABELS.values())
+                            + ", or all.",
                         )
                     if operation == "status":
                         result = index_status()

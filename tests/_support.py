@@ -644,6 +644,72 @@ def _pi_session(sid, cwd, ts="2026-05-15T07:32:15.949Z"):
     return {"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": cwd}
 
 
+def _conversation_fixture(directory, harness):
+    """One catalog root plus text-only evidence for the additional conversation readers."""
+    sid = PI_SID
+    child = "019fa4fd-aaaa-7000-a6e9-c9e0c7ce25fc"
+    if harness == "hermes":
+        path = os.path.join(directory, "hermes.db")
+        _hermes_db_full(
+            path,
+            [
+                {"id": sid, "inp": 100, "out": 10, "cwd": directory},
+                {"id": child, "parent_id": sid, "cwd": directory},
+            ],
+        )
+        db = sqlite3.connect(path)
+        try:
+            db.execute(
+                "create table messages (id integer primary key, session_id text, role text, content text, timestamp real)"
+            )
+            db.executemany(
+                "insert into messages values (?, ?, ?, ?, ?)",
+                [
+                    (1, sid, "user", "hermesneedle Grüße", 1750000000),
+                    (2, sid, "assistant", "answerwithoutusage exact reply", 1750000001),
+                    (3, sid, "tool", "excludedtoolsecret", 1750000002),
+                    (4, child, "user", "childneedle delegated instruction", 1750000003),
+                ],
+            )
+            db.commit()
+        finally:
+            db.close()
+        return ["--harness", harness, "--hermes-db", path], sid, child
+    path = os.path.join(directory, harness)
+    answer = _pi_assistant("openai/gpt-5", 100, 10)
+    answer["message"]["content"] = [{"type": "text", "text": "recorded answer"}]
+    extra = {
+        "type": "message",
+        "id": "no-usage",
+        "timestamp": "2026-05-15T08:00:00Z",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "answerwithoutusage exact reply"}],
+        },
+    }
+    rows = [
+        _pi_session(sid, directory),
+        _pi_user(harness + "needle Grüße"),
+        answer,
+        extra,
+        {"type": "message", "message": {"role": "toolResult", "content": "excludedtoolsecret"}},
+    ]
+    if harness == "pi":
+        _pi_write(path, "project", sid, rows)
+        child = None
+    else:
+        _omp_write(path, "project", sid, rows)
+        _omp_write_subagent(
+            path,
+            "project",
+            "2026-07-27T19-11-52-093Z",
+            sid,
+            "Scout",
+            [_omp_session(child, directory), _omp_user("childneedle delegated instruction")],
+        )
+    return ["--harness", harness, f"--{harness}-dir", path], sid, child
+
+
 def _pi_user(text, mid="u1", ts="2026-05-15T07:32:34.188Z"):
     return {
         "type": "message",

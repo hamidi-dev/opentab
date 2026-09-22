@@ -4,10 +4,14 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import re
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote
 
 from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, demo_title, scramble_node, scramble_workflow
@@ -94,6 +98,156 @@ class HermesStore:
         conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def supports_conversation(self, sid: str) -> bool:
+        # Format support is independent of the rotating usage logs and session cache.
+        return not self.demo
+
+    def conversation_manifest(self, root_id: str):
+        """Conservative DB/WAL stamps; reader lock changes in -shm are irrelevant."""
+        from opentab.conversations.reader import source_key, source_manifest
+
+        if self.demo:
+            return None
+        paths = [self.db_path]
+        wal = str(self.db_path) + "-wal"
+        if os.path.exists(wal):
+            paths.append(wal)
+        manifest = source_manifest(paths)
+        if manifest is None:
+            return None
+        # SQLite may create an empty WAL on the first read of a WAL-mode database.
+        # That is not a new committed snapshot and must not invalidate this read.
+        wal_key = source_key(Path(wal))
+        return [row for row in manifest if row[0] != wal_key or row[3] > 0]
+
+    def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
+        from opentab.conversations.reader import (
+            MAX_SOURCE_BYTES,
+            ConversationError,
+            execution_tree,
+            finish_source,
+            source_key,
+        )
+
+        if self.demo:
+            raise ConversationError("conversation_unavailable", "Conversation is disabled in demo.")
+        selected = root_id if execution_id is None else execution_id
+        if any(not isinstance(sid, str) or not sid for sid in (root_id, selected)):
+            raise ConversationError("invalid_execution", "An exact session ID is required.")
+        try:
+            uri = "file:" + quote(os.path.abspath(self.db_path)) + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("begin")
+                sessions = {r[1] for r in conn.execute("pragma table_info(sessions)")}
+                messages = {r[1] for r in conn.execute("pragma table_info(messages)")}
+                if "id" not in sessions or not {"session_id", "role", "content"} <= messages:
+                    raise ConversationError(
+                        "conversation_unavailable", "Conversation schema is unavailable."
+                    )
+                parent = "parent_session_id" if "parent_session_id" in sessions else "NULL"
+                live = "where archived = 0" if "archived" in sessions else ""
+                parents = {}
+                for row in conn.execute(
+                    f"with recursive live as (select id, {parent} as parent_id from sessions {live}), "
+                    "tree(id) as (select id from live where id = ? union "
+                    "select s.id from live s join tree on s.parent_id = tree.id) "
+                    "select s.id, s.parent_id from live s join tree on s.id = tree.id",
+                    [root_id],
+                ):
+                    sid, pid = row
+                    if (
+                        not isinstance(sid, str)
+                        or not sid
+                        or sid in parents
+                        or (pid is not None and not isinstance(pid, str))
+                    ):
+                        raise ConversationError(
+                            "invalid_execution", "Conversation ownership is ambiguous."
+                        )
+                    parents[sid] = pid
+                executions = execution_tree(parents, root_id, selected)
+                key = "id" if "id" in messages else "rowid"
+                if conn.execute(
+                    f"select {key} from messages where session_id = ? group by {key} having count(*) > 1 limit 1",
+                    [selected],
+                ).fetchone():
+                    raise ConversationError(
+                        "conversation_unavailable", "Conversation message identity is ambiguous."
+                    )
+                where = "where session_id = ? and role in ('user', 'assistant')"
+                size = conn.execute(
+                    "select coalesce(sum(length(cast(content as blob))), 0) from messages " + where,
+                    [selected],
+                ).fetchone()[0]
+                if size > MAX_SOURCE_BYTES:
+                    raise ConversationError(
+                        "conversation_too_large", "Conversation exceeds the source text budget."
+                    )
+                timestamp = "timestamp" if "timestamp" in messages else "NULL"
+                order = f"timestamp, {key}" if "timestamp" in messages else key
+                origin = source_key(Path(self.db_path))
+                records = []
+                seen_ids = set()
+                for row in conn.execute(
+                    f"select {key} as message_key, role, content, {timestamp} as timestamp "
+                    f"from messages {where} order by {order}",
+                    [selected],
+                ):
+                    mid = row["message_key"]
+                    if isinstance(mid, bool) or not isinstance(mid, (str, int)) or mid == "":
+                        raise ConversationError(
+                            "conversation_unavailable",
+                            "Conversation message identity is unavailable.",
+                        )
+                    mid = str(mid)
+                    if mid in seen_ids:
+                        raise ConversationError(
+                            "conversation_unavailable",
+                            "Conversation message identity is ambiguous.",
+                        )
+                    seen_ids.add(mid)
+                    text = row["content"]
+                    record_id = "hermes:" + mid
+                    stamp = row["timestamp"]
+                    # Hermes stores Unix seconds. The shared reader/index expects milliseconds.
+                    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+                        stamp = stamp * 1000 if math.isfinite(stamp) else None
+                    elif not isinstance(stamp, str):
+                        stamp = None
+                    records.append(
+                        {
+                            "id": record_id,
+                            "message_id": mid,
+                            "record_id": mid,
+                            "execution_id": selected,
+                            "role": row["role"],
+                            "timestamp": stamp,
+                            "origin": "recorded-message",
+                            "source": {"source_key": origin, "message_id": mid},
+                            "parts": [{"id": record_id + ":text", "text": text}]
+                            if isinstance(text, str)
+                            else [],
+                        }
+                    )
+                limitations = [
+                    "retained_messages_only",
+                    "non_text_parts_excluded",
+                    "User-role content may include harness-injected context; it is not necessarily human-authored.",
+                    "Archived sessions and descendants behind archived parents are excluded.",
+                ]
+                if key == "rowid":
+                    limitations.append(
+                        "Message anchors use SQLite rowids; database rewrites may change them."
+                    )
+                return finish_source(
+                    records, selected, executions, limitations, f"messages: {order}", binding=origin
+                )
+        except (sqlite3.Error, OSError, UnicodeError):
+            raise ConversationError(
+                "conversation_unavailable", "Conversation source is unavailable."
+            ) from None
 
     def _probe_columns(self) -> set[str]:
         try:

@@ -166,7 +166,7 @@ TOOLS = (
     {
         "name": "opentab_get_session_conversation",
         "description": (
-            "Read bounded text records, not search, from one local OpenCode, Claude Code or Codex execution. "
+            "Read bounded text records, not search, from one local OpenCode, Claude Code, Codex, Hermes, pi or omp execution. "
             "The root must be in the session catalog. Default scope is root only; select a child with an exact "
             "execution_id from response.executions. Retained original occurrences, not active-branch reconstruction. "
             "Requires --allow-raw-content and confirm_raw=true. No remote reads. "

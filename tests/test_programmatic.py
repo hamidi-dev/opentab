@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import tempfile
 from unittest.mock import Mock, patch
 
 import opentab as ot
@@ -10,7 +11,7 @@ from opentab.api import json_cli as programmatic
 from opentab.api import service as service_module
 from opentab.conversations.reader import ConversationError
 
-from tests._support import FakeStore, workflow
+from tests._support import FakeStore, _conversation_fixture, workflow
 
 
 class ModelStore(FakeStore):
@@ -226,7 +227,7 @@ def test_programmatic_help_explains_raw_gates_workflow_and_stdio():
         assert required in usage
     words = " ".join(conversation.split())
     for meaning in (
-        "OpenCode, Claude Code or Codex",
+        "OpenCode, Claude Code, Codex, Hermes, Pi, or Omp",
         "root execution only",
         "exact child",
         "default 20",
@@ -265,7 +266,7 @@ def test_programmatic_quick_help_retains_consequential_semantics():
         ("models", "list"): ("--catalog", "not session filters"),
         ("sessions", "turns"): ("without fetching trace text", "requires --allow-raw-content"),
         ("sessions", "conversation"): (
-            "OpenCode, Claude Code, Codex",
+            "OpenCode, Claude Code, Codex, Hermes, Pi, or Omp",
             "Root execution only",
             "exact --execution-id",
             "--allow-raw-content",
@@ -382,6 +383,9 @@ def test_programmatic_option_surface_matches_the_pre_help_baseline():
         "--db",
         "--claude-dir",
         "--codex-dir",
+        "--hermes-db",
+        "--pi-dir",
+        "--omp-dir",
         "--no-state",
         "--no-cache",
         "--project",
@@ -415,6 +419,77 @@ def test_programmatic_option_surface_matches_the_pre_help_baseline():
         common = common if path == "mcp" else common | {"--pretty"}
         assert set(parser._option_string_actions) == options | common | {"--help-all"}, path
         assert parser.allow_abbrev is True
+
+
+def test_conversation_json_cli_indexes_searches_and_reads_each_new_harness():
+    def run(argv):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            assert programmatic.command(ot.parse_args(argv)) == 0
+        payload = json.loads(output.getvalue())
+        assert payload["ok"] is True
+        return payload["data"]
+
+    with tempfile.TemporaryDirectory() as directory:
+        for harness in ("hermes", "pi", "omp"):
+            case = os.path.join(directory, harness)
+            source = os.path.join(case, "source")
+            os.makedirs(source)
+            flags, root_id, child_id = _conversation_fixture(source, harness)
+            env = {
+                f"XDG_{name}_HOME": os.path.join(case, "xdg", name.lower())
+                for name in ("CACHE", "CONFIG", "DATA", "STATE")
+            }
+            with patch.dict(os.environ, env):
+                indexed = run(["conversations", "index", "--allow-raw-content", *flags])
+                assert indexed["complete"] and indexed["updated"] == 1
+
+                searched = run(
+                    [
+                        "conversations",
+                        "search",
+                        f"{harness}needle Grüße",
+                        "--allow-raw-content",
+                        *flags,
+                        "--from-harness",
+                        harness,
+                    ]
+                )
+                (hit,) = searched["hits"]
+                assert hit["harness"] == harness and hit["native_id"] == root_id
+
+                reader = [
+                    "sessions",
+                    "conversation",
+                    hit["session_key"],
+                    "--allow-raw-content",
+                    *flags,
+                    "--anchor",
+                    hit["anchor"],
+                ]
+                if hit["execution_id"] != root_id:
+                    reader += ["--execution-id", hit["execution_id"]]
+                page = run(reader)
+                text = "\n".join(
+                    part["text"] for record in page["records"] for part in record.get("parts", [])
+                )
+                assert f"{harness}needle Grüße" in text
+                assert "answerwithoutusage exact reply" in text
+                assert "excludedtoolsecret" not in text
+
+                if child_id is not None:
+                    child_search = run(
+                        [
+                            "conversations",
+                            "search",
+                            "childneedle delegated",
+                            "--allow-raw-content",
+                            *flags,
+                            "--from-harness",
+                            harness,
+                        ]
+                    )
+                    assert child_search["hits"][0]["execution_id"] == child_id
 
 
 def test_programmatic_help_examples_parse_without_executing_them():

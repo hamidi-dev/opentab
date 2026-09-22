@@ -19,6 +19,7 @@ from tests._support import (
     _codex_meta,
     _codex_tokens,
     _codex_turn,
+    _conversation_fixture,
     _hermes_db_full,
     _ocl_args,
     _ocl_msg,
@@ -200,7 +201,16 @@ def test_conversations_parser_uses_message_dates_and_integer_budgets():
 
 def test_conversations_parser_has_command_specific_help_and_catalog_defaults():
     expected = {
-        "index": {"--harness", "--db", "--claude-dir", "--codex-dir", "--rebuild"},
+        "index": {
+            "--harness",
+            "--db",
+            "--claude-dir",
+            "--codex-dir",
+            "--hermes-db",
+            "--pi-dir",
+            "--omp-dir",
+            "--rebuild",
+        },
         "search": {"--harness", "--since", "--until", "--limit", "--max-chars"},
         "status": {"--pretty"},
         "clear": {"--allow-raw-content", "--pretty"},
@@ -211,7 +221,7 @@ def test_conversations_parser_has_command_specific_help_and_catalog_defaults():
         "--bind",
         "--days",
         "--demo",
-        "--hermes-db",
+        "--openclaw-dir",
         "--no-worktrees",
     }
     for action in ("index", "search", "status", "clear"):
@@ -246,6 +256,12 @@ def test_conversations_parser_preserves_supported_paths_aliases_and_state_contro
             "/synthetic/claude",
             "--codex-dir",
             "/synthetic/codex",
+            "--hermes-db",
+            "/synthetic/hermes.db",
+            "--pi-dir",
+            "/synthetic/pi",
+            "--omp-dir",
+            "/synthetic/omp",
             "--no-state",
             "--no-cache",
         ]
@@ -256,7 +272,36 @@ def test_conversations_parser_preserves_supported_paths_aliases_and_state_contro
         "/synthetic/claude",
         "/synthetic/codex",
     )
+    assert (args.hermes_db, args.pi_dir, args.omp_dir) == (
+        "/synthetic/hermes.db",
+        "/synthetic/pi",
+        "/synthetic/omp",
+    )
     assert args.no_state and args.no_cache
+
+
+def test_conversations_parser_accepts_each_new_reader_for_load_and_filter():
+    with tempfile.TemporaryDirectory() as directory:
+        for harness in ("hermes", "pi", "omp"):
+            os.makedirs(os.path.join(directory, harness))
+            flags, _root_id, _child_id = _conversation_fixture(
+                os.path.join(directory, harness), harness
+            )
+            args = ot.parse_args(
+                [
+                    "conversations",
+                    "search",
+                    "needle",
+                    "--allow-raw-content",
+                    *flags,
+                    "--from-harness",
+                    harness,
+                ]
+            )
+            assert args.source == harness
+            assert args.query_harness == harness
+            path_name = "hermes_db" if harness == "hermes" else f"{harness}_dir"
+            assert os.path.exists(getattr(args, path_name))
 
 
 def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_options():
@@ -269,8 +314,8 @@ def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_o
         ["conversations", "index", "--allow-raw-content", "--include-ignored"],
         ["conversations", "index", "--allow-raw-content", "--since", "2026-09-01"],
         ["conversations", "index", "--allow-raw-content", "--until", "2026-09-01"],
-        ["conversations", "index", "--allow-raw-content", "--harness", "hermes"],
-        ["conversations", "index", "--allow-raw-content", "--from-harness", "hermes"],
+        ["conversations", "index", "--allow-raw-content", "--harness", "zaly"],
+        ["conversations", "index", "--allow-raw-content", "--from-harness", "zaly"],
         ["conversations", "search", "evidence", "--allow-raw-content", "--search", "title"],
     ]
     for action in ("index", "search", "status", "clear"):
@@ -286,7 +331,7 @@ def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_o
                 [*base, "--port", "8321"],
                 [*base, "--bind", "127.0.0.1"],
                 [*base, "--days", "7"],
-                [*base, "--hermes-db", "/synthetic/hermes.db"],
+                [*base, "--openclaw-dir", "/synthetic/openclaw"],
                 [*base, "--no-worktrees"],
             ]
         )
@@ -310,7 +355,7 @@ def test_conversation_demo_and_unsupported_harness_fail_before_any_access():
 
     for argv in (
         ["conversations", "index", "--allow-raw-content", "--demo"],
-        ["conversations", "index", "--allow-raw-content", "--harness", "hermes"],
+        ["conversations", "index", "--allow-raw-content", "--harness", "zaly"],
     ):
         with (
             patch.object(sys, "argv", ["opentab", *argv]),

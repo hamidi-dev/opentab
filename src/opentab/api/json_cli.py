@@ -48,6 +48,7 @@ _ACCOUNTING_DATES = (
 )
 _SESSION_HELP = "session_key from `opentab sessions list`, or a unique native root ID"
 _DOCS = "JSON contract and session keys: docs/programmatic.md\nSource setup: docs/sources.md"
+_CONVERSATION_HELP = "OpenCode, Claude Code, Codex, Hermes, Pi, or Omp"
 
 
 def _parent(subs, name, text, *, example):
@@ -180,7 +181,7 @@ def _add_conversation_catalog(parser) -> None:
         "--harness",
         "--source",
         dest="source",
-        choices=("opencode", "claude", "codex", "all"),
+        choices=(*sources.CONVERSATION_LABELS, "all"),
         default="all",
         help="conversation harness to load (default: all present supported harnesses; "
         "--source is a deprecated alias)",
@@ -200,6 +201,16 @@ def _add_conversation_catalog(parser) -> None:
         default=argparse.SUPPRESS,
         help="Codex sessions directory (for --harness codex/all)",
     )
+    for name, label, kind in (
+        ("hermes", "Hermes", "db"),
+        ("pi", "pi", "dir"),
+        ("omp", "omp", "dir"),
+    ):
+        parser.add_argument(
+            f"--{name}-{kind}",
+            default=argparse.SUPPRESS,
+            help=f"{label} {'database' if kind == 'db' else 'sessions directory'} path (for --harness {name}/all)",
+        )
     parser.add_argument(
         "--no-state",
         action="store_true",
@@ -216,7 +227,7 @@ def _add_conversation_catalog(parser) -> None:
     parser.add_argument(
         "--from-harness",
         dest="query_harness",
-        choices=("opencode", "claude", "codex"),
+        choices=tuple(sources.CONVERSATION_LABELS),
         help="filter the loaded conversation catalog; never load additional sources",
     )
     parser.add_argument("--machine", help="filter loaded machines; never fetch remote text")
@@ -348,7 +359,7 @@ def add_parsers(subs, add_globals) -> None:
         if action == "conversation":
             parser.description = (
                 "Read retained user and assistant text as bounded JSON records from local "
-                "OpenCode, Claude Code or Codex sessions. Default: root execution only, "
+                f"{_CONVERSATION_HELP} sessions. Default: root execution only, "
                 "without descendants; use an exact child execution ID to read a child. "
                 "This text-only view does not reconstruct missing history or the active branch."
             )
@@ -399,7 +410,8 @@ def add_parsers(subs, add_globals) -> None:
     conversations.description += (
         " First index explicitly (writes sensitive plaintext locally), then search the "
         "existing index and read a hit with sessions conversation. Local OpenCode, "
-        "Claude Code and Codex only; saved ignores and retained-source limits apply. "
+        "Claude Code, Codex, Hermes, Pi, and Omp only; saved ignores and retained-source "
+        "limits apply. "
         "Search never refreshes the index automatically."
     )
     conversations.epilog = (
@@ -423,12 +435,14 @@ def add_parsers(subs, add_globals) -> None:
         ("clear", "delete the local conversation index, not original harness records"),
     ):
         notes = {
-            "index": " Writes sensitive plaintext locally for retained OpenCode, Claude Code and Codex "
+            "index": " Writes sensitive plaintext locally for retained OpenCode, Claude Code, Codex, "
+            "Hermes, Pi, and Omp "
             "sessions. Saved ignores apply. Inspect complete, errors and unsupported: a finished "
             "refresh can be partial and never guarantees complete history.",
             "search": " Requires an existing index; never refreshes it automatically. Saved ignores "
             "apply, selected evidence is verified against local sources, and stale or missing "
-            "coverage is reported. Only retained OpenCode, Claude Code and Codex text is supported.",
+            "coverage is reported. Only retained OpenCode, Claude Code, Codex, Hermes, Pi, and Omp "
+            "text is supported.",
             "status": " Read-only: does not create an index, discover sources, or read conversations.",
             "clear": " Clears indexed text only, leaving source records and authored notes intact. "
             "Leaves an empty database file; this is not secure erasure. Does not discover sources.",
@@ -690,13 +704,13 @@ def add_parsers(subs, add_globals) -> None:
         "Dates select whole sessions by root start, including descendants and later activity.",
         "models list": "List models used by matching sessions, or browse prices with --catalog.\n"
         "Output: JSON. Catalog mode supports search and pagination, not session filters.",
-        "sessions conversation": "Read retained user/assistant text as JSON: local OpenCode, Claude Code, Codex.\n"
+        "sessions conversation": f"Read retained user/assistant text as JSON: local {_CONVERSATION_HELP}.\n"
         "Root execution only by default; child hits need their exact --execution-id.\n"
         "Use SESSION_KEY and ANCHOR from search results; cursors continue the same read.",
         "conversations": "Index locally, search, then read a matching conversation.\n"
         "Indexing saves sensitive plaintext. Search never refreshes it automatically.\n"
         "Replace SESSION_KEY/ANCHOR from results; child hits also need --execution-id.",
-        "conversations index": "Build or refresh a local index of OpenCode, Claude Code and Codex text.\n"
+        "conversations index": f"Build or refresh a local index of {_CONVERSATION_HELP} text.\n"
         "Writes sensitive plaintext; saved ignores apply. JSON reports partial failures.",
         "conversations search": "Search an existing local conversation index; output is JSON.\n"
         "No automatic refresh. Dates filter UTC messages; stale evidence is withheld.",
@@ -734,7 +748,7 @@ def add_parsers(subs, add_globals) -> None:
         prefs = path.startswith(("notes ", "bookmarks ", "ignore ", "models pin", "models unpin"))
         overrides = dict(brief)
         if path.startswith("conversations "):
-            overrides["source"] = "opencode, claude, codex, or all (default)."
+            overrides["source"] = ", ".join(sources.CONVERSATION_LABELS) + ", or all (default)."
         if path.startswith("models "):
             overrides.pop("model", None)  # positional model names are not session filters
         arrange_help(

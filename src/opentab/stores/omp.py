@@ -33,6 +33,11 @@ class OmpStore(PiStore):
     # Match omp's bounded root walk.
     _MAX_SPAWN_DEPTH = 8
 
+    def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
+        from opentab.conversations.pi import read_source
+
+        return read_source(self, root_id, execution_id, nested=True)
+
     @staticmethod
     def _parent_path(path: str) -> str:
         # Invert omp's spawn path: resolve(parent_without_suffix, child_name).

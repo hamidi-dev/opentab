@@ -92,6 +92,11 @@ open one timeline row into its recorded narration, readable reasoning and exact 
 calls/results. Those traces are loaded only when opened and never embedded in web reports
 or remote summaries.
 
+OpenCode, Claude Code, Codex, Hermes, pi and omp additionally support fresh text-only
+conversation reads, `Ctrl-F` search/indexing, and `y` clipboard copy. These preserve
+retained user/assistant messages independently of per-turn usage, including zero-usage
+messages, but do not add text-only roots to the usage-derived session catalog.
+
 ### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only
@@ -166,6 +171,11 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   sessions form a cost tree. Hermes stores no per-message usage in SQLite, so the Turns
   tab joins API calls from the agent log to prompts in the database. It is available only
   for sessions still covered by the rotating log.
+- **Conversation text**: read freshly from SQLite in a separate read-only transaction,
+  not from the rotating usage logs. Only user/assistant content is included; reasoning
+  and tool columns are excluded. Exact recursive session parentage includes zero-usage
+  descendants, while archived sessions and descendants behind them are excluded.
+  Messages sort by timestamp then ID; older schemas fall back to disclosed rowid anchors.
 - **Auxiliary spend** (Hermes 0.20.6+): a session's summary row counts only the main
   agent loop. Hermes records its auxiliary calls — session titling, approval, vision,
   compression, web extraction — separately in `session_model_usage`, keyed by task, and
@@ -236,6 +246,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   `auth.json`, read-only.
 - **Trace**: assistant text/thinking, exact `toolCall.arguments`, and later
   `toolResult` content paired by `toolCallId`.
+- **Conversation text**: fresh JSONL headers establish identity before messages are
+  read. UUID filenames must match their native header IDs; missing, ambiguous or cyclic
+  ownership fails closed. Text-only user/assistant multipart messages are retained in
+  file/path then line order, including zero-usage and replayed physical occurrences.
 
 ## [omp](https://omp.sh)
 
@@ -260,6 +274,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   records when set, else the first real user prompt.
 - **Trace**: inherited from pi and extended across every recursively nested subagent
   transcript; session-qualified keys prevent child messages and calls from colliding.
+- **Conversation text**: uses the same fresh, bounded JSONL reader as pi. Native header
+  IDs identify nickname-named children, and directory parentage establishes the exact
+  recursive execution tree without usage-based splicing. Replayed physical occurrences
+  remain distinct and carry source-line anchors.
 
 ## [OpenClaw](https://github.com/openclaw/openclaw)
 

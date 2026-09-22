@@ -29,7 +29,7 @@ package and installed command are both `opentab`.
 |--------|----------------|
 | `cli/main.py`, `__main__.py` | Commands, argument routing and startup |
 | `api/service.py`, `api/json_cli.py`, `api/mcp.py` | Headless accounting service, JSON commands and stdio MCP adapter |
-| `conversations/reader.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors |
+| `conversations/reader.py`, `conversations/pi.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors; fresh pi/omp JSONL discovery and extraction |
 | `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `accounting/models.py` | Workflow, qualified session identity and summary records |
 | `accounting/tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
@@ -83,7 +83,7 @@ The optional session interface extends this without making the UI format-aware:
 | Tool attribution | `tool_breakdown(id)` | `supports_tools(id)` |
 | Estimated context composition | `context_breakdown(id)` | `supports_context(id)` |
 | Recorded turn content | `turn_content(id, content_key=None)` | `supports_turn_content(id)` |
-| Conversation records | `conversation_source(root_id, execution_id=None)` | `supports_conversation(root_id)`; local OpenCode, Claude Code and Codex only |
+| Conversation records | `conversation_source(root_id, execution_id=None)` | `supports_conversation(root_id)`; local OpenCode, Claude Code, Codex, Hermes, pi and omp only |
 | Received subagent prompt | `node_prompt(root_id, node_id)` | Optional method; `None` when unavailable |
 | Execution turns | `node_timeline(root_id, node_id)` | Optional method; `None` unavailable, `[]` valid empty |
 | Execution turn content | `node_turn_content(root_id, node_id, content_key=None)` | Optional method; owned previews or keyed full content |
@@ -139,9 +139,14 @@ while fingerprinting each root's files freshly; uncertain discovery falls back t
 live reads and the lookup is released in `finally`. OpenCode hashes its execution tree and
 message/part row revisions in fresh, root-scoped SQLite metadata reads, falling back
 to a global database/WAL token for older or unconstrained schemas. Codex reuses one
-refresh-local rollout-head/ownership discovery. Missing hooks or uncertain stamps
-fall back to `conversation_source`; they never authorize indexed text. This hook is
-not used by search, whose selected candidates retain live snapshot verification.
+refresh-local rollout-head/ownership discovery. Hermes conservatively stamps its main
+database and nonempty WAL, so any database write invalidates every Hermes root; it
+does not read raw text or trust message timestamps as revisions. Pi and omp do not
+implement this shortcut: every explicit refresh performs their full fresh conversation
+reads, although an unchanged resulting snapshot avoids rewriting indexed passages.
+Missing hooks or uncertain stamps fall back to `conversation_source`; they never
+authorize indexed text. This hook is not used by search, whose selected candidates
+retain live snapshot verification.
 
 See [Backend accounting](backends.md) for normalization, deduplication, subtree
 ownership and each format's limitations.

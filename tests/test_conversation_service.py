@@ -21,6 +21,7 @@ from opentab.persistence import state
 from tests._support import (
     FakeStore,
     _codex_meta,
+    _conversation_fixture,
     _write_jsonl,
     _write_opencode_db_with_turns,
     workflow,
@@ -153,6 +154,126 @@ def _error(code):
 
 def _saved(**values):
     assert state._write_state(values, state.state_path())
+
+
+def test_added_readers_index_search_read_and_prune_with_real_sources_and_scoped_origins():
+    for harness in ("hermes", "pi", "omp"):
+        with tempfile.TemporaryDirectory() as directory, _isolated() as index_path:
+            flags, sid, child = _conversation_fixture(directory, harness)
+            args = ot.parse_args(
+                ["sessions", "conversation", sid, *flags, "--allow-raw-content", "--no-cache"]
+            )
+            # Use the actual source factory, bypassing _isolated's discovery prohibition
+            # only for this explicitly supplied synthetic path.
+            store, _ = ot.sources._build_store(args, harness)
+            service = ot.OpenTabService(store, args, harness, allow_raw_content=True)
+            assert service.get_session(sid)["capabilities"]["conversation"]
+            assert not index_path.exists()
+            assert "excludedtoolsecret" not in str(service.session_conversation(sid))
+            report = service.index_conversations(harness=harness)
+            assert report["complete"] and report["updated"] == 1, report
+            result = service.search_conversations("answerwithoutusage", harness=harness)
+            hit = result["hits"][0]
+            assert hit["execution_id"] == sid
+            assert (
+                service.session_conversation(hit["session_key"], anchor=hit["anchor"])["records"][
+                    0
+                ]["parts"][0]["text"]
+                == "answerwithoutusage exact reply"
+            )
+            assert service.search_conversations("excludedtoolsecret")["hits"] == []
+            if child:
+                hit = service.search_conversations("childneedle")["hits"][0]
+                assert hit["execution_id"] == child
+                assert (
+                    service.session_conversation(
+                        hit["session_key"], execution_id=child, anchor=hit["anchor"]
+                    )["records"][0]["role"]
+                    == "user"
+                )
+            if harness == "hermes":
+                with patch.object(
+                    store,
+                    "conversation_source",
+                    side_effect=AssertionError("unchanged source reread"),
+                ):
+                    assert service.index_conversations()["unchanged"] == 1
+            else:
+                assert service.index_conversations()["unchanged"] == 1
+            assert service._conversation_source_id(store)
+            # A different configured source location must not prune this domain.
+            with tempfile.TemporaryDirectory() as other_dir:
+                other_flags, _, _ = _conversation_fixture(other_dir, harness)
+                other_args = ot.parse_args(
+                    ["conversations", "index", *other_flags, "--allow-raw-content", "--no-cache"]
+                )
+                other_store, _ = ot.sources._build_store(other_args, harness)
+                assert service._conversation_source_id(
+                    other_store
+                ) != service._conversation_source_id(store)
+            # Deleting a source removes this root at the next explicit refresh.
+            if harness == "hermes":
+                with closing(sqlite3.connect(store.db_path)) as db:
+                    db.execute("delete from sessions")
+                    db.commit()
+            else:
+                for path in Path(store.root_dir).rglob("*.jsonl"):
+                    path.unlink()
+            assert service.index_conversations()["removed"] == 1
+            assert service.search_conversations("answerwithoutusage")["hits"] == []
+
+
+def test_added_readers_reject_subtree_changes_during_indexing_and_drop_old_evidence():
+    for harness in ("hermes", "omp"):
+        with tempfile.TemporaryDirectory() as directory, _isolated():
+            flags, sid, child = _conversation_fixture(directory, harness)
+            args = ot.parse_args(
+                ["conversations", "index", *flags, "--allow-raw-content", "--no-cache"]
+            )
+            store, _ = ot.sources._build_store(args, harness)
+            service = ot.OpenTabService(store, args, harness, allow_raw_content=True)
+            assert service.index_conversations()["updated"] == 1
+            original = store.conversation_source
+
+            def mutate(
+                root_id,
+                execution_id=None,
+                *,
+                original=original,
+                child=child,
+                harness=harness,
+                store=store,
+            ):
+                result = original(root_id, execution_id)
+                if execution_id == child:
+                    if harness == "hermes":
+                        with closing(sqlite3.connect(store.db_path)) as db:
+                            db.execute(
+                                "update messages set content = 'changed child' where session_id = ?",
+                                [child],
+                            )
+                            db.commit()
+                    else:
+                        path = next(Path(store.root_dir).rglob("Scout.jsonl"))
+                        with path.open("a") as stream:
+                            stream.write(
+                                json.dumps(
+                                    {
+                                        "type": "message",
+                                        "id": "concurrent",
+                                        "message": {"role": "user", "content": "changed child"},
+                                    }
+                                )
+                                + "\n"
+                            )
+                return result
+
+            with patch.object(store, "conversation_source", side_effect=mutate):
+                report = service.index_conversations(rebuild=True)
+            assert (
+                not report["complete"] and report["errors"][0]["code"] == "source_changed"
+            ), report
+            assert service.search_conversations("childneedle")["hits"] == []
 
 
 def test_raw_and_demo_gates_precede_validation_reads_reload_and_index_creation():

@@ -739,6 +739,9 @@ def test_filter_options_cover_scope_and_harness_with_retained_session_target():
         ("opencode", "OpenCode", True),
         ("claude", "Claude Code", True),
         ("codex", "Codex", True),
+        ("hermes", "Hermes", True),
+        ("pi", "Pi", True),
+        ("omp", "Omp", True),
     ]
 
 
@@ -767,9 +770,9 @@ def test_filter_picker_is_modal_and_uses_menu_navigation_without_indexing():
 
     ws.open_filter("harness")
     ws.handle_key(ord("k"), bindings.DEFAULT)
-    assert ws.filter_menu_index == 3
+    assert ws.filter_menu_index == 6
     ws.handle_key(10, bindings.DEFAULT)
-    assert ws.scope == {"harness": "codex"} and ws.filter_menu == ""
+    assert ws.scope == {"harness": "omp"} and ws.filter_menu == ""
     assert not any(operation == "index" for _id, operation, _params in worker.submitted)
 
 

@@ -258,10 +258,11 @@ prompts is separate from requesting keys.
 ### Reading conversation records
 
 `sessions conversation` is a public **record-reading API, not conversation search**.
-It reads retained user/assistant text from local OpenCode, Claude Code, and Codex
-records, independently of usage-bearing turns. Zero-usage messages inside an
-accessible session are preserved. Tools, reasoning, and attachments are not part
-of this text-only view; use the separately gated turn-content API for raw traces.
+It reads retained user/assistant text from local OpenCode, Claude Code, Codex,
+Hermes, pi, and omp records, independently of usage-bearing turns. Zero-usage
+messages inside an accessible session are preserved. Tools, reasoning, and
+attachments are not part of this text-only view; use the separately gated
+turn-content API for raw traces.
 
 ```sh
 opentab sessions conversation SESSION_KEY --allow-raw-content
@@ -342,14 +343,31 @@ describe forward continuation; `has_earlier` says the window starts after the
 beginning. `history_completeness` remains `unknown`, even at the end of a page
 sequence: missing/deleted history and omitted nontext are not reconstructed.
 
-Reads are fresh and bounded at source as well as output. OpenCode permits up to
-256 MiB of selected text; JSONL permits up to 256 MiB of selected file data and
-8 MiB per physical line. An oversized **excluded tool-result line** can therefore
-make a JSONL source unavailable with `conversation_too_large`. JSONL parse errors
+Reads are fresh and bounded at source as well as output. SQLite readers permit up
+to 256 MiB of selected text; JSONL readers permit up to 256 MiB of selected file
+data and 8 MiB per physical line. An oversized **excluded tool-result line** can
+therefore make a JSONL source unavailable with `conversation_too_large`. JSONL parse errors
 are surfaced as a skipped-record limitation, not repaired or silently considered
 complete. Budgets and strict parsing bound failure cases; they are not an archive
 or a promise to read every damaged/oversized transcript. Unflagged wrapper-like
 text remains verbatim; explicit synthetic flags are excluded where recorded.
+
+Hermes reads `messages` in its own fresh read-only transaction, independently of
+the rotating usage logs. It selects only user/assistant content, orders by timestamp
+then message ID, and converts Hermes' Unix-second timestamps to milliseconds.
+Reasoning and tool columns are excluded. On schemas without message IDs, returned
+anchors use SQLite rowids and disclose that database rewrites can change them. Its
+execution tree includes exact zero-usage descendants, but excludes archived sessions
+and every descendant reachable only through an archived parent.
+
+Pi and omp discover identity from fresh JSONL session headers, requiring metadata
+within the first 64 KiB. A UUID-named file must agree with its header ID. Omp's
+nickname-named children use the native header ID and directory parentage; conversation
+ownership is never spliced from accounting usage. Missing, ambiguous, conflicting or
+cyclic identity fails closed. Text-only user/assistant multipart content is preserved,
+including zero-usage messages. Physical resumed/replayed occurrences are not deduped;
+source line anchors remain distinct, and ordering is filename/path then physical line,
+not a reconstructed active branch.
 
 ### Remote content
 

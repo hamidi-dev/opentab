@@ -1,9 +1,12 @@
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
+from pathlib import Path
 from unittest.mock import patch
 
 import opentab as ot
+from opentab.conversations.reader import ConversationError, window
 
 from tests._support import FakeStore, _empty_opencode_db, _hermes_db_full, workflow
 
@@ -51,6 +54,178 @@ def _hermes_db(path, rows):
     )
     conn.commit()
     conn.close()
+
+
+def _conversation_db(path):
+    _hermes_db(
+        path,
+        [
+            {"id": "root"},
+            {"id": "child", "parent_id": "root"},
+            {"id": "nested", "parent_id": "child"},
+            {"id": "empty", "parent_id": "root"},
+            {"id": "other"},
+            {"id": "archived", "parent_id": "root", "archived": 1},
+            {"id": "hidden-child", "parent_id": "archived"},
+        ],
+    )
+    with closing(sqlite3.connect(path)) as db:
+        db.execute(
+            "create table messages (id integer primary key, session_id text, role text, content text, timestamp real, reasoning_content text, tool_calls text)"
+        )
+        db.executemany(
+            "insert into messages values (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    1,
+                    "root",
+                    "user",
+                    "  Grüße 界\n\n```py\n  x = 1\n```\n",
+                    1750000000.125,
+                    None,
+                    None,
+                ),
+                (
+                    2,
+                    "root",
+                    "assistant",
+                    "Working on it",
+                    1750000001,
+                    "PRIVATE THINKING",
+                    "PRIVATE ARGS",
+                ),
+                (3, "root", "tool", "PRIVATE RESULT", 1750000002, None, None),
+                (4, "root", "system", "PRIVATE SYSTEM", 1750000003, None, None),
+                (5, "root", "assistant", "Done", 1750000004, None, None),
+                (6, "root", "user", "Unanswered", 1750000005, None, None),
+                (7, "child", "user", "Child instruction", 1750000000, None, None),
+                (8, "nested", "assistant", "Nested answer", 1750000000, None, None),
+                (9, "other", "user", "PRIVATE OTHER", 1750000000, None, None),
+            ],
+        )
+        db.commit()
+    return ot.HermesStore(str(path), type("Args", (), {"demo": False})())
+
+
+def test_hermes_conversation_is_full_text_without_usage_logs_and_exact_execution_owned():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "state.db"
+        store = _conversation_db(path)
+        before = path.read_bytes()
+        with patch.object(
+            store, "_parse", side_effect=AssertionError("accounting read")
+        ), patch.object(store, "_log_turns", side_effect=AssertionError("usage logs")):
+            source = store.conversation_source("root")
+            assert [r["message_id"] for r in source["records"]] == ["1", "2", "5", "6"]
+            assert source["records"][0]["parts"][0]["text"] == "  Grüße 界\n\n```py\n  x = 1\n```\n"
+            assert source["records"][0]["timestamp"] == 1750000000125
+            assert "PRIVATE" not in str(source)
+            assert {e["id"] for e in source["executions"]} == {"root", "child", "nested", "empty"}
+            assert (
+                store.conversation_source("root", "child")["records"][0]["parts"][0]["text"]
+                == "Child instruction"
+            )
+            assert (
+                store.conversation_source("root", "nested")["records"][0]["parts"][0]["text"]
+                == "Nested answer"
+            )
+            assert store.conversation_source("root", "empty")["records"] == []
+            for selected in ("other", "archived", "hidden-child", "chil", "missing"):
+                try:
+                    store.conversation_source("root", selected)
+                except ConversationError as exc:
+                    assert exc.code == "invalid_execution"
+                else:
+                    raise AssertionError(selected)
+        assert path.read_bytes() == before
+        store.demo = True
+        with patch(
+            "opentab.stores.hermes.sqlite3.connect",
+            side_effect=AssertionError("demo database read"),
+        ):
+            assert not store.supports_conversation("root")
+            try:
+                store.conversation_source("root")
+            except ConversationError:
+                pass
+            else:
+                raise AssertionError("demo read allowed")
+
+
+def test_hermes_conversation_fresh_wal_reads_stale_cursors_and_text_budget():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "state.db"
+        store = _conversation_db(path)
+        with closing(sqlite3.connect(path)) as writer:
+            writer.execute("pragma journal_mode=wal")
+            manifest = store.conversation_manifest("root")
+            original = store.conversation_source("root")
+            assert store.conversation_manifest("root") == manifest
+            page = window(original, root_key="root", limit=1, max_chars=5)
+            writer.execute("update messages set content = 'fresh answer' where id = 5")
+            writer.commit()
+            assert store.conversation_manifest("root") != manifest
+            fresh = store.conversation_source("root")
+            assert fresh["snapshot"] != original["snapshot"]
+            assert fresh["records"][2]["parts"][0]["text"] == "fresh answer"
+            try:
+                window(fresh, root_key="root", cursor=page["next_cursor"])
+            except ConversationError as exc:
+                assert exc.code == "stale_cursor"
+            else:
+                raise AssertionError("accepted stale cursor")
+        with patch("opentab.conversations.reader.MAX_SOURCE_BYTES", 1):
+            try:
+                store.conversation_source("root")
+            except ConversationError as exc:
+                assert exc.code == "conversation_too_large"
+            else:
+                raise AssertionError("ignored text budget")
+        path.unlink()
+        try:
+            store.conversation_source("root")
+        except ConversationError as exc:
+            assert exc.code == "conversation_unavailable"
+        else:
+            raise AssertionError("read removed database")
+        assert not path.exists()
+
+
+def test_hermes_conversation_legacy_rowids_and_ambiguous_or_cyclic_ownership():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "state.db"
+        store = _conversation_db(path)
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("drop table messages")
+            db.execute("create table messages (session_id text, role text, content text)")
+            db.execute("insert into messages values ('root', 'user', 'legacy')")
+            db.commit()
+            source = store.conversation_source("root")
+            assert source["records"][0]["message_id"] == "1"
+            assert source["records"][0]["timestamp"] is None
+            assert "rowids" in str(source["limitations"])
+            db.execute("update sessions set parent_session_id = 'nested' where id = 'root'")
+            db.commit()
+            try:
+                store.conversation_source("root")
+            except ConversationError as exc:
+                assert exc.code == "invalid_execution"
+            else:
+                raise AssertionError("accepted cycle")
+            db.execute("update sessions set parent_session_id = NULL where id = 'root'")
+            db.execute("drop table messages")
+            db.execute("create table messages (id text, session_id text, role text, content text)")
+            db.executemany(
+                "insert into messages values ('duplicate', 'root', 'assistant', ?)",
+                [("one",), ("two",)],
+            )
+            db.commit()
+            try:
+                store.conversation_source("root")
+            except ConversationError as exc:
+                assert "ambiguous" in exc.message
+            else:
+                raise AssertionError("accepted duplicate IDs")
 
 
 def test_hermes_node_prompt_reads_full_user_content_without_logs_or_assistant_rows():

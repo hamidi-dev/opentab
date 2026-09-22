@@ -1,11 +1,20 @@
 import os
+import tempfile
 from unittest.mock import Mock, patch
 
 import opentab as ot
+from opentab import sources
 from opentab.conversations.reader import ConversationError
 from opentab.tui import exporting
 
-from tests._support import FakeStore, _app_on_session, _model_row, app_with, workflow
+from tests._support import (
+    FakeStore,
+    _app_on_session,
+    _conversation_fixture,
+    _model_row,
+    app_with,
+    workflow,
+)
 
 
 def test_copy_conversation_keeps_full_root_text_and_reads_freshly_from_list_and_detail():
@@ -104,6 +113,28 @@ def test_copy_conversation_errors_and_empty_sources_leave_clipboard_untouched():
         app.handle_key(None, ord("y"))
         assert "clipboard copy failed" in app.notice
         copied.assert_called_once_with("## Assistant\n\nhello\n")
+
+
+def test_copy_conversation_uses_each_new_real_reader_and_keeps_zero_usage_text():
+    with tempfile.TemporaryDirectory() as directory:
+        for harness in ("hermes", "pi", "omp"):
+            source = os.path.join(directory, harness)
+            os.makedirs(source)
+            flags, root_id, _child_id = _conversation_fixture(source, harness)
+            args = ot.parse_args([*flags, "--no-cache", "--no-state"])
+            store, _loading = sources.make_store(args, harness)
+            app = ot.App(store, args)
+            assert [row.id for row in app.loaded] == [root_id]
+            app.view = "session"
+
+            with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+                app.handle_key(None, ord("y"))
+
+            markdown = copied.call_args.args[0]
+            assert f"{harness}needle Grüße" in markdown
+            assert "answerwithoutusage exact reply" in markdown
+            assert "excludedtoolsecret" not in markdown
+            assert "copied" in app.notice
 
 
 def test_export_dataset_follows_the_visible_view():

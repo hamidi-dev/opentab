@@ -24,14 +24,14 @@ def test_conversation_all_builds_only_present_supported_readers():
         patch.object(
             ot.sources,
             "available_sources",
-            return_value=["opencode", "hermes", "claude", "csv", "codex"],
+            return_value=["opencode", "hermes", "claude", "csv", "codex", "pi", "omp"],
         ),
         patch.object(ot.sources, "make_store", side_effect=make_store),
     ):
         store, _ = ot.sources._build_store(args, "all")
 
-    assert built == ["opencode", "claude", "codex"]
-    assert {row.id for row in store.workflows()} == {"opencode", "claude", "codex"}
+    assert built == ["opencode", "hermes", "claude", "codex", "pi", "omp"]
+    assert {row.id for row in store.workflows()} == ot.sources.CONVERSATION_SOURCES
 
 
 def test_ordinary_all_keeps_the_full_accounting_source_catalog():
