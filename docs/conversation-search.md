@@ -1,7 +1,7 @@
 # Conversation search
 
-Search retained OpenCode, Claude Code and Codex text across the local sessions
-OpenTab can already discover. This is **lexical search**, not semantic memory:
+Search retained OpenCode, Claude Code, Codex, Hermes, pi and omp text across the
+local sessions OpenTab can already discover. This is **lexical search**, not semantic memory:
 identifiers and shared wording work best. It does not summarize conversations,
 learn a personal profile, call an embedding model, or use the network.
 
@@ -61,12 +61,13 @@ opentab conversations search "retry sqlite locking" --project ~/work/my-project 
 ```
 
 CLI index and search load all present supported conversation readers by default:
-OpenCode, Claude Code and Codex. `--harness` (or its deprecated `--source` alias)
-can select one of them or `all`; accounting-only harnesses are rejected rather
-than loaded and later reported as unindexable. `--db`, `--claude-dir`, and
-`--codex-dir` override those readers' local paths. `--from-harness` filters the
-loaded catalog. Index/search also accept `--machine`, `--project` (an exact
-normalized project path), and `--session SESSION_KEY`. Saved project/session
+OpenCode, Claude Code, Codex, Hermes, pi and omp. `--harness` (or its deprecated
+`--source` alias) can select one of them or `all`; accounting-only harnesses are
+rejected rather than loaded and later reported as unindexable. `--db`,
+`--claude-dir`, `--codex-dir`, `--hermes-db`, `--pi-dir`, and `--omp-dir` override
+those readers' local paths. `--from-harness` accepts the same six harness values
+and filters the loaded catalog. Index/search also accept `--machine`, `--project`
+(an exact normalized project path), and `--session SESSION_KEY`. Saved project/session
 ignores apply; `--no-state` disables them. `--no-cache` bypasses only the
 accounting rollup cache used to construct the current session catalog, not the
 conversation index. Remote summaries are unsupported, not silently fetched over
@@ -118,6 +119,14 @@ the later `-shm` reader/lock region. The first refresh after upgrading from glob
 OpenCode manifests reads each selected root once to seed root-local manifests;
 unchanged text need not be rewritten. Scoped refreshes never mark untouched roots
 current. Neither path changes the accounting rollup cache.
+
+Hermes uses a conservative manifest of the main database and nonempty `-wal` file
+(not `-shm`). It reads no raw text and does not treat message timestamps as revisions;
+any database write invalidates all Hermes roots. Empty WAL creation by a reader is
+ignored. The same stamps also detect subtree changes between root and child reads.
+Pi and omp have no manifest shortcut, so every
+explicit refresh performs their full fresh reads; unchanged resulting snapshots still
+avoid rewriting indexed passages.
 
 This is incremental source verification, not an incremental parser or watcher.
 Manifests are change detectors, not content-integrity hashes: they rely on source

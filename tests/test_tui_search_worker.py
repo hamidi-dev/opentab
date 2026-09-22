@@ -11,7 +11,7 @@ from unittest.mock import patch
 from opentab.api.service import ServiceError
 from opentab.tui.search_worker import SearchWorker
 
-from tests._support import _write_opencode_db_with_turns
+from tests._support import _conversation_fixture, _write_opencode_db_with_turns
 
 
 def _args(**values):
@@ -270,3 +270,69 @@ def test_real_worker_indexes_searches_and_reads_a_synthetic_subagent_without_sou
                 worker.close()
         with open(db, "rb") as source:
             assert hashlib.sha256(source.read()).hexdigest() == before
+
+
+def test_real_worker_indexes_searches_and_reads_each_new_conversation_reader():
+    def source_digest(root):
+        digest = hashlib.sha256()
+        for base, _dirs, names in os.walk(root):
+            for name in sorted(names):
+                path = os.path.join(base, name)
+                digest.update(os.path.relpath(path, root).encode())
+                with open(path, "rb") as source_file:
+                    digest.update(source_file.read())
+        return digest.hexdigest()
+
+    with tempfile.TemporaryDirectory() as directory:
+        for harness in ("hermes", "pi", "omp"):
+            case = os.path.join(directory, harness)
+            source = os.path.join(case, "source")
+            os.makedirs(source)
+            flags, root_id, child_id = _conversation_fixture(source, harness)
+            path_name = "hermes_db" if harness == "hermes" else f"{harness}_dir"
+            values = {path_name: flags[-1]}
+            before = source_digest(source)
+            env = {
+                f"XDG_{name}_HOME": os.path.join(case, "xdg", name.lower())
+                for name in ("CACHE", "CONFIG", "DATA", "STATE")
+            }
+            worker = None
+            with patch.dict(os.environ, env):
+                worker = SearchWorker(_args(**values), harness)
+                try:
+                    worker.submit("index")
+                    indexed = _wait(worker, timeout=5)[0]
+                    assert indexed[3] is None, indexed
+                    assert indexed[2]["complete"] and indexed[2]["updated"] == 1
+
+                    worker.submit("search", query=f"{harness}needle Grüße")
+                    searched = _wait(worker, timeout=5)[0]
+                    assert searched[3] is None, searched
+                    (hit,) = searched[2]["hits"]
+                    assert hit["harness"] == harness and hit["native_id"] == root_id
+
+                    worker.submit(
+                        "conversation",
+                        session=hit["session_key"],
+                        execution_id=hit["execution_id"],
+                        anchor=hit["anchor"],
+                    )
+                    read = _wait(worker, timeout=5)[0]
+                    assert read[3] is None, read
+                    text = "\n".join(
+                        part["text"]
+                        for record in read[2]["records"]
+                        for part in record.get("parts", [])
+                    )
+                    assert f"{harness}needle Grüße" in text
+                    assert "answerwithoutusage exact reply" in text
+                    assert "excludedtoolsecret" not in text
+
+                    if child_id is not None:
+                        worker.submit("search", query="childneedle delegated")
+                        child_search = _wait(worker, timeout=5)[0]
+                        assert child_search[3] is None, child_search
+                        assert child_search[2]["hits"][0]["execution_id"] == child_id
+                finally:
+                    worker.close()
+            assert source_digest(source) == before

@@ -59,6 +59,8 @@ Stateless layout and formatting live outside those coordinators:
 one serial thread; never share the App's SQLite connections. Superseded reads are
 coalesced, but status and confirmed index jobs survive cancellation. Initial status
 reads only index metadata, without service creation or source discovery.
+The worker loads only the six local conversation-capable harnesses: OpenCode,
+Claude Code, Codex, Hermes, pi and omp. Demo and remote catalogs remain excluded.
 
 These modules do not import `App` or `Renderer`. Put reusable layouts in components
 and feature-specific builders alongside their feature, not in state-sharing mixins.

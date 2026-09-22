@@ -346,7 +346,10 @@ SOURCE_LABELS = {
     "all": "all",
 }
 
-CONVERSATION_SOURCES = frozenset(("opencode", "claude", "codex"))
+CONVERSATION_SOURCES = frozenset(("opencode", "claude", "codex", "hermes", "pi", "omp"))
+CONVERSATION_LABELS = {
+    key: label for key, label in SOURCE_LABELS.items() if key in CONVERSATION_SOURCES
+}
 
 
 RESUME_COMMANDS = {
@@ -525,7 +528,9 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         if not subs:
             if getattr(args, "conversation_sources_only", False):
                 raise SystemExit(
-                    "no supported conversation sources found (OpenCode, Claude Code, or Codex)"
+                    "no supported conversation sources found ("
+                    + ", ".join(CONVERSATION_LABELS.values())
+                    + ")"
                 )
             raise SystemExit("no data sources found (no OpenCode DB, no Claude Code transcripts)")
         if len(subs) == 1:

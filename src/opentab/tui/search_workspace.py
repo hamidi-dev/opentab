@@ -8,6 +8,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
+from opentab.sources import CONVERSATION_LABELS
 from opentab.tui import bindings
 
 
@@ -453,11 +454,7 @@ class SearchWorkspace:
         if self.filter_menu == "filters":
             harness_value = self.scope.get("harness")
             harness = (
-                {
-                    "opencode": "OpenCode",
-                    "claude": "Claude Code",
-                    "codex": "Codex",
-                }.get(harness_value, harness_value)
+                CONVERSATION_LABELS.get(harness_value, harness_value)
                 if harness_value
                 else "All harnesses"
             )
@@ -483,9 +480,7 @@ class SearchWorkspace:
         if self.filter_menu == "harness":
             return [
                 ("all", "All harnesses", True),
-                ("opencode", "OpenCode", True),
-                ("claude", "Claude Code", True),
-                ("codex", "Codex", True),
+                *((key, label, True) for key, label in CONVERSATION_LABELS.items()),
             ]
         if self.filter_menu == "date":
             return [

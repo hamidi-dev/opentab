@@ -149,12 +149,12 @@ sessions behind it. Filter as you type, change the date range, and keep explorin
 
 ## Search past conversations
 
-Find what you discussed across local sessions. **OpenCode, Codex, and Claude Code
-are supported for now.**
+Find what you discussed across local **OpenCode, Claude Code, Codex, Hermes, pi and
+omp** sessions.
 Search matches recorded user/assistant text, not just session titles, and returns
 excerpts with message anchors so you or your agent can read the surrounding context.
-This is keyword search through the CLI or MCP, not semantic memory. **TUI conversation
-search is planned.**
+This is keyword search, not semantic memory. Press **`Ctrl-F`** in the TUI, or use
+the CLI or MCP.
 Tool outputs, reasoning, and attachments are not indexed.
 
 **Enable it explicitly after installing or upgrading.** Building the index stores

@@ -10,7 +10,7 @@ import opentab as ot
 from opentab.api.mcp import LEGACY_VERSIONS, MODERN_VERSION, McpServer, run_server
 from opentab.conversations.reader import ConversationError
 
-from tests._support import _write_jsonl
+from tests._support import _conversation_fixture, _write_jsonl
 
 
 class FakeService:
@@ -32,6 +32,41 @@ def _request(method, params=None, request_id=1):
     if params is not None:
         out["params"] = params
     return out
+
+
+def test_mcp_added_conversation_readers_use_real_lazy_source_factory_and_confirmations():
+    for harness in ("hermes", "pi", "omp"):
+        with tempfile.TemporaryDirectory() as directory:
+            flags, sid, child = _conversation_fixture(directory, harness)
+            args = ot.parse_args(["mcp", *flags, "--allow-raw-content", "--no-cache", "--no-state"])
+            server = McpServer(args)
+            arguments = {"session": sid}
+            if child:
+                arguments["execution_id"] = child
+            denied = server.handle(
+                _request(
+                    "tools/call",
+                    {"name": "opentab_get_session_conversation", "arguments": arguments},
+                )
+            )["result"]
+            assert (
+                denied["isError"]
+                and denied["structuredContent"]["error"]["code"]
+                == "raw_content_confirmation_required"
+            )
+            result = server.handle(
+                _request(
+                    "tools/call",
+                    {
+                        "name": "opentab_get_session_conversation",
+                        "arguments": {**arguments, "confirm_raw": True},
+                    },
+                )
+            )["result"]
+            assert not result["isError"], result
+            data = result["structuredContent"]["data"]
+            assert data["execution_id"] == (child or sid)
+            assert data["records"] and "excludedtoolsecret" not in str(data)
 
 
 def test_mcp_legacy_initialize_lists_tools_and_calls_the_shared_service():

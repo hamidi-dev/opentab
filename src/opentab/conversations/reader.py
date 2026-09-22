@@ -11,7 +11,7 @@ from pathlib import Path
 MAX_SOURCE_BYTES = 256 * 1024 * 1024
 MAX_LINE_BYTES = 8 * 1024 * 1024
 # Bump for discovery, ownership, retained-text extraction, or index chunk projection changes.
-CONVERSATION_READER_VERSION = 2
+CONVERSATION_READER_VERSION = 3
 
 
 class ConversationError(Exception):
@@ -19,6 +19,55 @@ class ConversationError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def execution_tree(parents: dict, root: str, selected: str) -> list[dict]:
+    """Resolve exact execution membership without splicing out zero-usage nodes."""
+    if root not in parents or selected not in parents:
+        raise ConversationError(
+            "invalid_execution", "The exact conversation execution is unavailable."
+        )
+
+    def chain(sid):
+        seen = set()
+        while sid in parents:
+            if sid in seen:
+                raise ConversationError("invalid_execution", "Conversation ownership is cyclic.")
+            seen.add(sid)
+            sid = parents[sid]
+        return seen
+
+    chain(root)
+    children = {}
+    for sid, parent in parents.items():
+        children.setdefault(parent, []).append(sid)
+    owned, queue = {root}, [root]
+    while queue:
+        for sid in children.get(queue.pop(), ()):
+            if sid not in owned:
+                owned.add(sid)
+                queue.append(sid)
+    if selected not in owned:
+        raise ConversationError("invalid_execution", "The execution is not owned by this root.")
+    return [{"id": sid, "parent_id": parents[sid]} for sid in [root] + sorted(owned - {root})]
+
+
+def finish_source(records, selected, executions, limitations, ordering, *, binding=None):
+    """Hash a fresh text projection and its ownership/provenance, never cache its bodies."""
+    result = {
+        "records": records,
+        "execution_id": selected,
+        "executions": executions,
+        "limitations": list(dict.fromkeys(limitations)),
+        "ordering": ordering,
+    }
+    digest = hashlib.sha256()
+    for chunk in json.JSONEncoder(sort_keys=True, separators=(",", ":")).iterencode(
+        [binding, result]
+    ):
+        digest.update(chunk.encode("utf-8"))
+    result["snapshot"] = digest.hexdigest()
+    return result
 
 
 def source_key(path: Path) -> str:

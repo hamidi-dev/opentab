@@ -4625,7 +4625,9 @@ class App:
         try:
             if not callable(read) or not callable(check) or not check(session.id):
                 self.notify(
-                    "conversation copy requires local OpenCode, Claude Code or Codex", "error"
+                    "conversation copy requires local "
+                    + ", ".join(sources.CONVERSATION_LABELS.values()),
+                    "error",
                 )
                 return
             self.notify("reading session conversation…", "info")
@@ -6620,9 +6622,11 @@ class App:
         if getattr(self.store, "demo", False):
             self.notify("conversation search is unavailable in demo mode", "error")
             return
-        if self.source_key and self.source_key not in {"all", "opencode", "claude", "codex"}:
+        if self.source_key and self.source_key not in sources.CONVERSATION_SOURCES | {"all"}:
             self.notify(
-                "conversation search needs local OpenCode, Claude Code or Codex sessions",
+                "conversation search needs local "
+                + ", ".join(sources.CONVERSATION_LABELS.values())
+                + " sessions",
                 "error",
             )
             return
@@ -6656,8 +6660,7 @@ class App:
                     for row in self.loaded
                     if row.directory
                     and (not row.machine or row.machine == self.local_machine_name)
-                    and self._conversation_harness(row, self.store)
-                    in {"opencode", "claude", "codex"}
+                    and self._conversation_harness(row, self.store) in sources.CONVERSATION_SOURCES
                     and row.id not in self.ignored_sessions
                     and self.project_root(row.directory) not in self.ignored_projects
                 },

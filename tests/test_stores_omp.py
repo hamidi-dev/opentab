@@ -1,8 +1,11 @@
+import json
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import opentab as ot
+from opentab.conversations.reader import ConversationError
 
 from tests._support import (
     OMP_SID,
@@ -16,6 +19,109 @@ from tests._support import (
     _omp_write,
     _omp_write_subagent,
 )
+
+
+def test_omp_conversation_keeps_zero_usage_children_and_exact_recursive_ownership():
+    child, nested, empty, outside = (f"019fa4fd-{n * 4}-7000-a6e9-c9e0c7ce25fc" for n in "abcd")
+    with tempfile.TemporaryDirectory() as tmp:
+        _omp_write(tmp, "project", OMP_SID, [_omp_session(OMP_SID, tmp), _omp_user("Root only")])
+        _omp_write(
+            tmp, "project", outside, [_omp_session(outside, tmp), _omp_user("PRIVATE outside")]
+        )
+        for sid, nickname, chain in (
+            (child, "Scout", ()),
+            (nested, "Worker", ("Scout",)),
+            (empty, "Empty", ()),
+        ):
+            _omp_write_subagent(
+                tmp,
+                "project",
+                "2026-07-27T19-11-52-093Z",
+                OMP_SID,
+                nickname,
+                [
+                    _omp_session(sid, tmp),
+                    *([] if sid == empty else [_omp_user(nickname + " prompt")]),
+                ],
+                chain=chain,
+            )
+        store = ot.OmpStore(tmp, _omp_args())
+        with patch.object(store, "_parse", side_effect=AssertionError("accounting parse")):
+            root = store.conversation_source(OMP_SID)
+            assert [r["parts"][0]["text"] for r in root["records"]] == ["Root only"]
+            assert {e["id"]: e["parent_id"] for e in root["executions"]} == {
+                OMP_SID: None,
+                child: OMP_SID,
+                nested: child,
+                empty: OMP_SID,
+            }
+            assert (
+                store.conversation_source(OMP_SID, child)["records"][0]["parts"][0]["text"]
+                == "Scout prompt"
+            )
+            assert (
+                store.conversation_source(OMP_SID, nested)["records"][0]["parts"][0]["text"]
+                == "Worker prompt"
+            )
+            assert store.conversation_source(OMP_SID, empty)["records"] == []
+            for sid in (outside, "Scout", child[:8], "missing"):
+                try:
+                    store.conversation_source(OMP_SID, sid)
+                except ConversationError as exc:
+                    assert exc.code == "invalid_execution"
+                else:
+                    raise AssertionError(sid)
+        # A second root claiming the same child UUID must never authorize its content.
+        _omp_write_subagent(
+            tmp,
+            "project",
+            "2026-07-27T19-11-52-093Z",
+            outside,
+            "Scout",
+            [_omp_session(child, tmp), _omp_user("PRIVATE competing owner")],
+        )
+        for root_id in (OMP_SID, outside):
+            try:
+                store.conversation_source(root_id, child)
+            except ConversationError as exc:
+                assert exc.code == "invalid_execution" and "PRIVATE" not in exc.message
+            else:
+                raise AssertionError("ambiguous child accepted")
+
+
+def test_omp_conversation_revalidates_ancestor_headers_and_membership_on_every_read():
+    child = "019fa4fd-aaaa-7000-a6e9-c9e0c7ce25fc"
+    with tempfile.TemporaryDirectory() as tmp:
+        _omp_write(tmp, "project", OMP_SID, [_omp_session(OMP_SID, tmp), _omp_user("root")])
+        store = ot.OmpStore(tmp, _omp_args())
+        initial = store.conversation_source(OMP_SID)
+        _omp_write_subagent(
+            tmp,
+            "project",
+            "2026-07-27T19-11-52-093Z",
+            OMP_SID,
+            "Scout",
+            [_omp_session(child, tmp), _omp_user("child")],
+        )
+        assert store.conversation_source(OMP_SID)["snapshot"] != initial["snapshot"]
+        root_path = next(
+            path for path in Path(tmp).rglob("*.jsonl") if path.name.endswith(OMP_SID + ".jsonl")
+        )
+        with root_path.open("a") as fh:
+            fh.write(json.dumps(_omp_session("foreign", tmp)) + "\n")
+        try:
+            store.conversation_source(OMP_SID, child)
+        except ConversationError as exc:
+            assert exc.code == "invalid_execution"
+        else:
+            raise AssertionError("conflicting ancestor header accepted")
+        root_path.unlink()
+        try:
+            store.conversation_source(OMP_SID, child)
+        except ConversationError as exc:
+            assert exc.code == "invalid_execution"
+        else:
+            raise AssertionError("missing root accepted")
 
 
 def test_omp_node_prompt_uses_native_uuid_and_own_prompt_not_title_without_usage():

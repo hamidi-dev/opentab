@@ -1,11 +1,173 @@
 import json
 import os
 import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import opentab as ot
+from opentab.conversations.reader import ConversationError, window
 from opentab.presentation.formatting import iso_to_local
 
 from tests._support import PI_SID, _pi_args, _pi_assistant, _pi_session, _pi_user, _pi_write
+
+
+def test_pi_conversation_retains_zero_usage_multipart_and_replayed_occurrences():
+    with tempfile.TemporaryDirectory() as tmp:
+        text = "  Grüße 👋\n\n```py\n  x = 1\n```\n"
+        user = _pi_user(text)
+        answer = {
+            "type": "message",
+            "id": "a1",
+            "parentId": "u1",
+            "timestamp": "2026-05-15T08:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "PRIVATE THOUGHT"},
+                    {"type": "text", "text": "Checking"},
+                    {"type": "toolCall", "arguments": {"text": "PRIVATE ARGS"}},
+                    {"type": "image", "text": "PRIVATE IMAGE"},
+                    {"type": "text", "text": "Done\n"},
+                ],
+            },
+        }
+        rows = [
+            _pi_session(PI_SID, tmp),
+            user,
+            answer,
+            {"type": "message", "message": {"role": "toolResult", "content": "PRIVATE RESULT"}},
+            {"type": "message", "message": {"role": "system", "content": "PRIVATE SYSTEM"}},
+            _pi_user("Unanswered", mid="last"),
+        ]
+        _pi_write(tmp, "project", PI_SID, rows)
+        _pi_write(tmp, "project", PI_SID, [_pi_session(PI_SID, tmp), user], ts_prefix="2026-05-16")
+        store = ot.PiStore(tmp, _pi_args())
+        before = {p: p.read_bytes() for p in Path(tmp).rglob("*.jsonl")}
+        with patch.object(store, "_parse", side_effect=AssertionError("usage parse")):
+            source = store.conversation_source(PI_SID)
+            assert [r["message_id"] for r in source["records"]] == ["u1", "a1", "last", "u1"]
+            assert [p["text"] for p in source["records"][1]["parts"]] == ["Checking", "Done\n"]
+            assert source["records"][0]["parts"][0]["text"] == text
+            assert source["records"][1]["parent_id"] == "u1"
+            assert "PRIVATE" not in str(source)
+            assert len({r["id"] for r in source["records"]}) == 4
+            assert source["executions"] == [{"id": PI_SID, "parent_id": None}]
+            assert (
+                window(source, root_key=PI_SID, anchor=source["records"][-1]["id"])["records"][0][
+                    "parts"
+                ][0]["text"]
+                == text
+            )
+            try:
+                window(source, root_key=PI_SID, anchor="u1")
+            except ConversationError as exc:
+                assert exc.code == "ambiguous_anchor"
+            else:
+                raise AssertionError("native replay anchor was not ambiguous")
+        assert {p: p.read_bytes() for p in before} == before
+        store.demo = True
+        with patch.object(store, "_files", side_effect=AssertionError("demo discovery")):
+            assert not store.supports_conversation(PI_SID)
+            try:
+                store.conversation_source(PI_SID)
+            except ConversationError:
+                pass
+            else:
+                raise AssertionError("demo read allowed")
+
+
+def test_pi_conversation_is_fresh_and_rejects_foreign_headers_missing_sources_and_limits():
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [_pi_session(PI_SID, tmp), _pi_user("initial")]
+        _pi_write(tmp, "project", PI_SID, rows)
+        store = ot.PiStore(tmp, _pi_args())
+        path = next(Path(tmp).rglob("*.jsonl"))
+        source = store.conversation_source(PI_SID)
+        with path.open("a") as fh:
+            fh.write("PRIVATE malformed\n")
+            fh.write(json.dumps(_pi_user("new text", mid="new")) + "\n")
+        fresh = store.conversation_source(PI_SID)
+        assert fresh["snapshot"] != source["snapshot"]
+        assert fresh["records"][-1]["parts"][0]["text"] == "new text"
+        assert "malformed_jsonl_records_skipped" in fresh["limitations"]
+        with patch("opentab.conversations.reader.MAX_LINE_BYTES", 1):
+            try:
+                store.conversation_source(PI_SID)
+            except ConversationError as exc:
+                assert exc.code == "conversation_too_large"
+            else:
+                raise AssertionError("ignored line budget")
+        for bad_rows in (
+            [_pi_session("foreign", tmp), _pi_user("PRIVATE foreign")],
+            rows + [_pi_session("foreign", tmp)],
+            [_pi_user("PRIVATE before header"), *rows],
+            [_pi_user("PRIVATE no header")],
+        ):
+            path.write_text("\n".join(json.dumps(row) for row in bad_rows))
+            try:
+                store.conversation_source(PI_SID)
+            except ConversationError as exc:
+                assert exc.code == "invalid_execution"
+                assert "PRIVATE" not in exc.message
+            else:
+                raise AssertionError("foreign/missing metadata accepted")
+        path.unlink()
+        try:
+            store.conversation_source(PI_SID)
+        except ConversationError as exc:
+            assert exc.code == "invalid_execution"
+        else:
+            raise AssertionError("missing source accepted")
+
+
+def test_pi_conversation_detects_concurrent_source_change_and_valid_empty_execution():
+    from opentab.conversations import pi as reader
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _pi_write(tmp, "project", PI_SID, [_pi_session(PI_SID, tmp)])
+        store = ot.PiStore(tmp, _pi_args())
+        assert store.conversation_source(PI_SID)["records"] == []
+        original = reader.read_jsonl
+
+        def mutate(paths):
+            result = original(paths)
+            with paths[0].open("a") as fh:
+                fh.write(json.dumps(_pi_user("concurrent")) + "\n")
+            return result
+
+        with patch.object(reader, "read_jsonl", side_effect=mutate):
+            try:
+                store.conversation_source(PI_SID)
+            except ConversationError as exc:
+                assert exc.code == "source_changed"
+            else:
+                raise AssertionError("concurrent mutation accepted")
+
+
+def test_pi_conversation_allows_unrelated_activity_without_changing_snapshot():
+    from opentab.conversations import pi as reader
+
+    other = "019fa4fd-ffff-7000-a6e9-c9e0c7ce25fc"
+    with tempfile.TemporaryDirectory() as tmp:
+        _pi_write(tmp, "project", PI_SID, [_pi_session(PI_SID, tmp), _pi_user("selected")])
+        # These directory names sort differently as path components vs plain strings.
+        _pi_write(tmp, "project-other", other, [_pi_session(other, tmp), _pi_user("unrelated")])
+        store = ot.PiStore(tmp, _pi_args())
+        initial = store.conversation_source(PI_SID)
+        original = reader.read_jsonl
+
+        def mutate(paths):
+            result = original(paths)
+            _pi_write(
+                tmp,
+                "project-other",
+                other,
+                [_pi_session(other, tmp), _pi_user("changed unrelated")],
+            )
+            return result
+
+        with patch.object(reader, "read_jsonl", side_effect=mutate):
+            assert store.conversation_source(PI_SID) == initial
 
 
 def test_pi_store_ended_at_reflects_the_latest_assistant_reply():

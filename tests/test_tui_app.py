@@ -31,7 +31,7 @@ def test_search_project_picker_uses_local_loaded_projects_not_the_spend_date_ran
         workflow("worktree", "2026-09-19", directory="/work/new/.worktrees/feature"),
     ]
     rows[4].machine = "remote-machine"
-    rows[5].source = "Hermes"
+    rows[5].source = "Zaly"
     app = app_with(rows, since="2026-09-01")
     app.ignored_sessions = {"ignored"}
     app.ignored_projects = {"/work/ignored-project"}

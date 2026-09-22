@@ -797,7 +797,7 @@ class OpenTabService:
     def _conversation_source_id(owner):
         from opentab.conversations.reader import source_key
 
-        for field in ("db", "root_dir"):
+        for field in ("db", "db_path", "root_dir"):
             location = getattr(owner, field, None)
             if isinstance(location, (str, os.PathLike)) and location:
                 return source_key(location)

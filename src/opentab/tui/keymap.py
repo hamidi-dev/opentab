@@ -566,7 +566,7 @@ KEYS: tuple[Key, ...] = (
         id="search-harness",
         ctx="search",
         actions=("scope_harness",),
-        summary="filter: OpenCode / Claude / Codex / all",
+        summary="filter by a supported conversation harness, or all",
         section="here",
         when=search_commands,
     ),
