@@ -1067,7 +1067,7 @@ def test_opencode_v2_changes_skip_normalizing_non_edit_tool_output():
 
 
 def test_opencode_v2_changes_normalize_candidates_once_without_copying_messages():
-    def check(legacy):
+    def check(legacy, deterministic):
         with _v2_db(legacy=legacy) as (writer, store):
             _populate_v2(writer)
             expected = store.session_change_files("root")
@@ -1094,21 +1094,30 @@ def test_opencode_v2_changes_normalize_candidates_once_without_copying_messages(
 
             def instrument(uri):
                 conn = connect(uri)
-                conn.create_function("json_set", -1, normalize)
+                conn.create_function("json_set", -1, normalize, deterministic=deterministic)
                 conn.set_trace_callback(trace)
                 return conn
 
             try:
                 with patch.object(store, "_change_connection", instrument):
                     assert store.session_change_files("root") == expected
+                    assert counts == {"messages": 0, "patches": 1}, counts
+                    counts.update(messages=0, patches=0)
+                    key = next(
+                        e["key"]
+                        for f in expected["files"]
+                        for e in f["edits"]
+                        if e["source"] == "apply_patch" and e["available"]
+                    )
+                    assert store.session_change_diff("root", key) is not None
             finally:
                 oracle.close()
             assert counts["messages"] == 0, counts
-            if sqlite3.sqlite_version_info >= (3, 35, 0):
-                assert counts["patches"] == 1, counts
+            assert counts["patches"] == 1, counts
 
-    check(False)
-    check(True)
+    for legacy in (False, True):
+        for deterministic in (False, True):
+            check(legacy, deterministic)
 
 
 def test_opencode_v2_changes_debug_explains_worker_queries_and_preserves_payloads():

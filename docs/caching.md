@@ -182,9 +182,12 @@ For v2 keyed reads, a metadata-first candidate lookup additionally restricts sou
 tool/prompt message IDs and part-uniqueness reads, so unrelated messages inside the
 same session do not need normalization. All occurrences of candidate IDs remain
 visible to duplicate-ownership checks. File lists filter native completed edit candidates
-before output normalization, then request once-only candidate materialization before
-the ownership and metadata predicates. SQLite 3.37 can still inline these relations;
-the debug plan flags expose that residual repeated work. The independent uniqueness
+before output normalization, then fence candidate evaluation before ownership and
+metadata predicates. `LIMIT -1 OFFSET 0` prevents flattening even on SQLite 3.37,
+which can inline these relations despite `MATERIALIZED`; the unlimited row count
+preserves every candidate. A second fence reuses validated edits across projections.
+The debug plan flags expose materialization; normalization-count tests check actual
+evaluation for lists and keyed reads in pure and mixed schemas. The independent uniqueness
 reader still sees all part kinds and statuses, using metadata without normalized
 output: a read tool or unfinished edit with the same ID must invalidate ownership.
 Tool-change message joins project only role and
