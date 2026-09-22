@@ -224,6 +224,15 @@ class CachedStore:
     @debug.timed("cache.accounting_read")
     def _accounting_payload(self, scope=None):
         disk = self._disk or {}
+        self._debug(
+            "cache.accounting_source",
+            storage="sqlite"
+            if disk.get("accounting_external") == "sqlite-v1"
+            else "json"
+            if disk.get("accounting_external")
+            else "inline_or_absent",
+            scope="all" if scope is None else "subtree",
+        )
         if not disk.get("accounting_external"):
             return disk.get("accounting")  # migrate existing inline scalar caches lazily
         try:
@@ -231,8 +240,13 @@ class CachedStore:
                 return usage_cache.read(self._path + ".usage.sqlite3", scope)
             with open(self._path + ".usage.json", encoding="utf-8") as fh:
                 return json.load(fh)
-        except (OSError, ValueError, sqlite3.Error):
-            self._debug("cache.reject", layer="accounting", reason="missing_or_invalid_sidecar")
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            self._debug(
+                "cache.reject",
+                layer="accounting",
+                reason="missing_or_invalid_sidecar",
+                error_type=type(exc).__name__,
+            )
             return None
 
     @staticmethod

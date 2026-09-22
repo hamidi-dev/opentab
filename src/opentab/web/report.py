@@ -303,6 +303,7 @@ def _machine_meta_payload(app: App) -> dict:
 @debug.timed("web.session_extras")
 def session_extras(app: App, workflow_id: str) -> dict:
     """Return lazy drill-in data; empty capabilities remain hidden in the page."""
+    debug.event("web.session_request", session=debug.identity(workflow_id))
     turns = []
     turn_rows = []
     curve = False
@@ -485,6 +486,13 @@ def session_extras(app: App, workflow_id: str) -> dict:
                 "points": points,
                 "comp": comp,
             }
+    debug.event(
+        "web.session_ready",
+        turns=len(turns),
+        tools=len(tools),
+        tool_calls=len(tool_calls),
+        context=context is not None,
+    )
     return {
         "turns": turns,
         "tools": tools,

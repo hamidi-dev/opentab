@@ -2098,6 +2098,12 @@ class App:
         """Reset the active Changes drill without invalidating lifetime read caches."""
         scope = self._changes_scope
         if scope is not None:
+            debug.event(
+                "app.changes_leave",
+                session=debug.identity(str(scope[1])),
+                lists=len(self._changes_cache),
+                diffs=len(self._change_diff_cache),
+            )
             self._changes_errors.pop(scope, None)
             for cache_key in [key for key in self._change_diff_errors if key[0] == scope]:
                 self._change_diff_errors.pop(cache_key, None)
@@ -2188,6 +2194,12 @@ class App:
             self._changes_worker = ChangesWorker()
         if self._changes_worker.submit(cache_key, request):
             self._change_pending.add(cache_key)
+            debug.event(
+                "app.changes_queue",
+                session=debug.identity(str(scope[1])),
+                kind="diff" if key is not None else "files",
+                pending=len(self._change_pending),
+            )
         else:
             errors[result_key] = (
                 "Could not queue the selected recorded patch."
@@ -2209,7 +2221,14 @@ class App:
             self._change_pending.discard(cache_key)
             kind, scope, *rest = cache_key
             if self.store.demo or scope[0] != id(self.store):
+                debug.event("app.changes_result", kind=kind, result="discarded")
                 continue
+            debug.event(
+                "app.changes_result",
+                session=debug.identity(str(scope[1])),
+                kind=kind,
+                result="failed" if failed else "unavailable" if value is None else "ready",
+            )
             if kind == "files":
                 self._changes_loading = (
                     None if self._changes_loading == scope else self._changes_loading
@@ -2345,6 +2364,8 @@ class App:
         self.scroll = 0
         self._change_diff_error = ""
         self.renderer._change_layout_cache = None
+        if debug.enabled():
+            debug.event("app.change_diff_open", cached=self.change_diff_ready())
         return True
 
     def close_change_file(self) -> bool:
@@ -2378,6 +2399,8 @@ class App:
             self._change_diff_error = ""
             self.renderer._change_layout_cache = None
             self.scroll = 0
+            if debug.enabled():
+                debug.event("app.change_diff_step", cached=self.change_diff_ready())
         return True
 
     def remote_trace_reader(self, workflow_id: str):
@@ -3173,6 +3196,13 @@ class App:
             self.session_tool_rows(workflow_id)
         if self.session_supports_context(workflow_id):
             self.session_context_rows(workflow_id)
+        if debug.enabled():
+            debug.event(
+                "app.session_ready",
+                session=debug.identity(workflow_id),
+                ready=self.session_data_ready(workflow_id),
+                memo_sessions=len(self._nodes_by_session),
+            )
 
     def session_node_rows(self, workflow_id: str) -> list[dict]:
         # Memoize the recursive query/backend parse; repricing copies these rows.

@@ -113,7 +113,12 @@ def install_views(conn: sqlite3.Connection) -> bool:
 
 
 def scoped_detail_sql(
-    conn: sqlite3.Connection, sql: str, *, part_row: int | None = None, part_metadata: bool = False
+    conn: sqlite3.Connection,
+    sql: str,
+    *,
+    part_row: int | None = None,
+    part_metadata: bool = False,
+    change_candidates: bool = False,
 ) -> str:
     """Bound each detail UNION branch to the caller's recursive ``tree`` CTE.
 
@@ -164,18 +169,37 @@ def scoped_detail_sql(
         legacy_message,
         scope="select id from tree",
         keyed=part_row is not None,
-        part_metadata=part_metadata,
+        # The unfiltered Changes part reader validates identities only. Old
+        # SQLite may evaluate unused UNION columns, so do not normalize its bodies.
+        part_metadata=part_metadata or change_candidates,
+        change_messages=change_candidates,
     )
+    change_part = (
+        _detail_views(
+            conn,
+            legacy_message,
+            scope="select id from tree",
+            keyed=part_row is not None,
+            change_candidates=True,
+        )["part"]
+        if change_candidates
+        else None
+    )
+
     # Separate subqueries allow each alias's additional ID/rowid predicates to
     # narrow its own read. A multiply referenced CTE can instead materialize all
     # selected messages, even with NOT MATERIALIZED on supported SQLite versions.
     # Only our internal SQL's unqualified FROM/JOIN sources are substituted;
     # schema-qualified legacy reads and parameter values are never rewritten.
-    sql = re.sub(
-        r"\b(from|join) (message|part)\b",
-        lambda match: f"{match[1]} ({views[match[2]]})",
-        sql,
-    )
+    def source(match):
+        relation = views[match[2]]
+        # Only p is a candidate read. Alias x must retain every part kind/status
+        # so a non-edit part with the same ID still invalidates unique ownership.
+        if change_part is not None and match[2] == "part" and match[3]:
+            relation = change_part
+        return f"{match[1]} ({relation})" + (match[3] or "")
+
+    sql = re.sub(r"\b(from|join) (message|part)\b( p\b)?", source, sql)
     return prefix + candidates + sql[len(prefix) :]
 
 
@@ -186,6 +210,8 @@ def _detail_views(
     scope: str | None = None,
     keyed: bool = False,
     part_metadata: bool = False,
+    change_candidates: bool = False,
+    change_messages: bool = False,
 ) -> dict[str, str]:
     message_scope = f"m.session_id in ({scope}) and " if scope else ""
     part_message_scope = message_scope
@@ -211,6 +237,29 @@ def _detail_views(
         from main.message m
         where {message_scope}not exists (select 1 from main.session_v2 v where v.id = m.session_id)
         """
+    # Tool-change ownership needs role/parent only. Materializing full normalized
+    # assistant messages here copies all inline output into SQLite's temp joins.
+    # Snapshots and content readers must keep the full compatibility projection.
+    message_data = (
+        """json_object(
+          'role', case when json_valid(m.data) then
+            case when json_type(m.data) = 'object' then
+              case when m.type = 'compaction' then 'assistant' else m.type end end end,
+          'parentID', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.parentID'))"""
+        if change_messages
+        else """json_set(
+          case when json_valid(m.data) then m.data else '{}' end,
+          '$.role', case when not json_valid(m.data) then null
+                         when m.type = 'compaction' then 'assistant' else m.type end,
+          '$.providerID', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.model.providerID'),
+          '$.modelID', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.model.id'),
+          '$.variant', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.model.variant'),
+          '$.time.created', coalesce(json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.time.created'), m.time_created),
+          '$.__opentab_v2', 1,
+          '$.__opentab_type', m.type,
+          '$.__opentab_seq', m.seq
+        )"""
+    )
     message_sql = (
         """
         select m.rowid as rowid, m.id, m.session_id, m.time_created, m.time_updated,
@@ -218,18 +267,9 @@ def _detail_views(
                 where u.session_id = m.session_id and u.type = 'user' and u.seq < m.seq
                 order by u.seq desc limit 1) as parent_id,
                 m.seq, m.type,
-                json_set(
-                  case when json_valid(m.data) then m.data else '{}' end,
-                  '$.role', case when not json_valid(m.data) then null
-                                 when m.type = 'compaction' then 'assistant' else m.type end,
-                  '$.providerID', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.model.providerID'),
-                  '$.modelID', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.model.id'),
-                  '$.variant', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.model.variant'),
-                  '$.time.created', coalesce(json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.time.created'), m.time_created),
-                  '$.__opentab_v2', 1,
-                  '$.__opentab_type', m.type,
-                  '$.__opentab_seq', m.seq
-                ) as data
+        """
+        + message_data
+        + """ as data
         from main.session_message m
         """
         + ("where " + message_scope + "1 " if message_scope else "")
@@ -300,6 +340,19 @@ def _detail_views(
         where """
         + part_message_scope
         + """m.type = 'assistant' and c.type = 'object'
+        """
+        # Changes candidates need only completed edit tools. Apply this before
+        # normalizing inline output, which can dwarf the retained patch metadata.
+        # Never use this filter for the independent duplicate-identity reader.
+        + (
+            """and json_extract(c.value, '$.type') = 'tool'
+            and json_extract(c.value, '$.name') in ('apply_patch', 'patch', 'edit', 'write')
+            and json_extract(c.value, '$.state.status') = 'completed'
+            """
+            if change_candidates
+            else ""
+        )
+        + """
         union all
         select -m.rowid as rowid, m.id || ':user', m.id, m.session_id,
                m.time_created, m.time_updated, -1,

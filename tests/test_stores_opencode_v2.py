@@ -3,12 +3,13 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from unittest.mock import patch
 
 from opentab.stores.opencode import Store
-from opentab.stores.opencode_v2 import REQUIRED_SCHEMA_V2, install_views
+from opentab.stores.opencode_v2 import REQUIRED_SCHEMA_V2, install_views, scoped_detail_sql
 
 
 def _session(sid, parent=None, *, title=None, tokens=(0, 0, 0, 0, 0), cost: float = 0, updated=20):
@@ -999,6 +1000,227 @@ def test_opencode_v2_changes_scoping_preserves_duplicate_ownership_checks():
             for file in store.session_change_files("root")["files"]
             for edit in file["edits"]
         )
+
+
+def test_opencode_v2_changes_skip_normalizing_non_edit_tool_output():
+    # Same execution and assistant message as the patch: session/key scoping alone
+    # cannot avoid this output. Count VM work, not machine-dependent wall time.
+    import threading
+
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        original = json.loads(
+            writer.execute("select data from session_message where id='a-root'").fetchone()[0]
+        )
+
+        def measure(key=None):
+            ticks = 0
+            connect = Store._change_connection
+
+            def progress():
+                nonlocal ticks
+                ticks += 1
+                return False
+
+            def instrument(reader, uri):
+                conn = connect(reader, uri)
+                conn.set_progress_handler(progress, 100)
+                return conn
+
+            with patch.object(Store, "_change_connection", instrument):
+                result = store.change_request("root", key)(threading.Event())
+            return result, ticks
+
+        measurements = []
+        for fragments in (1, 1000):
+            data = dict(original)
+            data["content"] = original["content"] + [
+                {
+                    "type": "tool",
+                    "id": "unrelated-read",
+                    "name": "read",
+                    "state": {
+                        "status": "completed",
+                        "content": [{"type": "text", "text": "not a patch"}] * fragments,
+                    },
+                }
+            ]
+            writer.execute(
+                "update session_message set data=? where id='a-root'", [json.dumps(data)]
+            )
+            writer.commit()
+            listing, ticks = measure()
+            key = next(
+                edit["key"]
+                for file in listing["files"]
+                for edit in file["edits"]
+                if edit["source"] == "patch"
+            )
+            diff, diff_ticks = measure(key)
+            assert diff is not None
+            measurements.append((listing, ticks, diff, diff_ticks))
+        before, after = measurements
+        assert before[0] == after[0]
+        assert before[2] == after[2]
+        assert after[1] <= before[1] + 20, (before[1], after[1])
+        assert after[3] <= before[3] + 20, (before[3], after[3])
+
+
+def test_opencode_v2_changes_normalize_candidates_once_without_copying_messages():
+    def check(legacy):
+        with _v2_db(legacy=legacy) as (writer, store):
+            _populate_v2(writer)
+            expected = store.session_change_files("root")
+            connect = store._change_connection
+            counts = {"messages": 0, "patches": 0}
+            native_query = False
+            oracle = sqlite3.connect(":memory:")
+
+            def normalize(*args):
+                if native_query:
+                    data = json.loads(args[0])
+                    if "content" in data:
+                        counts["messages"] += 1
+                    if data.get("id") == "call-patch":
+                        counts["patches"] += 1
+                # Retain SQLite's exact JSON semantics while observing work.
+                return oracle.execute(
+                    "select json_set(" + ",".join("?" for _ in args) + ")", args
+                ).fetchone()[0]
+
+            def trace(sql):
+                nonlocal native_query
+                native_query = "native as" in sql
+
+            def instrument(uri):
+                conn = connect(uri)
+                conn.create_function("json_set", -1, normalize)
+                conn.set_trace_callback(trace)
+                return conn
+
+            try:
+                with patch.object(store, "_change_connection", instrument):
+                    assert store.session_change_files("root") == expected
+            finally:
+                oracle.close()
+            assert counts["messages"] == 0, counts
+            if sqlite3.sqlite_version_info >= (3, 35, 0):
+                assert counts["patches"] == 1, counts
+
+    check(False)
+    check(True)
+
+
+def test_opencode_v2_changes_debug_explains_worker_queries_and_preserves_payloads():
+    from opentab import diagnostics as debug
+
+    with tempfile.TemporaryDirectory() as tmp, _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        expected = store.change_request("root")(threading.Event())
+        key = next(e["key"] for f in expected["files"] for e in f["edits"] if e["available"])
+        expected_diff = store.change_request("root", key)(threading.Event())
+        log = os.path.join(tmp, "debug.jsonl")
+        with debug.session(filename=log):
+            assert store.change_request("root")(threading.Event()) == expected
+            assert store.change_request("root", key)(threading.Event()) == expected_diff
+            assert store.session_change_diff("root", "private-invalid-key") is None
+            cancelled = threading.Event()
+            cancelled.set()
+            assert store.change_request("root")(cancelled) is None
+        with open(log, encoding="utf-8") as handle:
+            text = handle.read()
+        for value in (key, "private-invalid-key", "patch result", "patch input", "a.py", store.db):
+            assert value not in text
+        records = [json.loads(line) for line in text.splitlines()]
+        plan = next(
+            r
+            for r in records
+            if r["event"] == "sql.plan" and r["query"] == "opencode.changes_native"
+        )
+        assert isinstance(plan["native_materialized"], bool)
+        native = next(r for r in records if r["event"] == "opencode.changes_native.end")
+        assert native["rows"] > 0 and native["execute_ms"] >= 0
+        ready = next(r for r in records if r["event"] == "opencode.changes_files_ready")
+        assert ready["files"] == len(expected["files"])
+        assert any(
+            r["event"] == "opencode.changes_outcome" and r["result"] == "cancelled_before_open"
+            for r in records
+        )
+        assert not any(r.get("status") == "error" for r in records)
+
+
+def test_opencode_v2_change_message_metadata_matches_full_projection():
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        samples = [
+            "{}",
+            "null",
+            "[]",
+            '"text"',
+            "123",
+            "false",
+            '{"broken":',
+            '{"role":"wrong","role":"other","parentID":"u-root"}',
+            '{"parentID":"u-root","parentID":"other","time":null}',
+            '{"parentID":{"nested":1}}',
+            '{"parentID":[1,2]}',
+            '{"parentID":false}',
+            '{"parentID":"é\\n"}',
+        ]
+        for index, data in enumerate(samples):
+            writer.execute(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                (
+                    f"metadata-{index}",
+                    "root",
+                    "compaction" if index % 2 else "assistant",
+                    100 + index,
+                    1,
+                    2,
+                    data,
+                ),
+            )
+        writer.commit()
+        sql = """with recursive tree(id) as (select 'root')
+          select m.id, m.parent_id, m.time_created, m.time_updated,
+                 json_extract(m.data, '$.role'), json_extract(m.data, '$.parentID')
+          from message m order by m.seq"""
+        full = store.conn.execute(scoped_detail_sql(store.conn, sql)).fetchall()
+        metadata = store.conn.execute(
+            scoped_detail_sql(store.conn, sql, change_candidates=True)
+        ).fetchall()
+        assert [tuple(row) for row in metadata] == [tuple(row) for row in full]
+
+
+def test_opencode_v2_changes_reject_non_edit_duplicate_part_identity():
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        listing = store.session_change_files("root")
+        key = next(
+            edit["key"]
+            for file in listing["files"]
+            for edit in file["edits"]
+            if edit["source"] == "patch"
+        )
+        data = json.loads(
+            writer.execute("select data from session_message where id='a-root'").fetchone()[0]
+        )
+        # Candidate filtering skips both, but uniqueness must still see them.
+        for name, status in (("read", "completed"), ("patch", "running")):
+            duplicate = dict(data)
+            duplicate["content"] = data["content"] + [
+                {"type": "tool", "id": "call-patch", "name": name, "state": {"status": status}}
+            ]
+            writer.execute(
+                "update session_message set data=? where id='a-root'", [json.dumps(duplicate)]
+            )
+            writer.commit()
+            assert store.session_change_diff("root", key) is None
+            assert not any(
+                edit["source"] == "patch"
+                for file in store.session_change_files("root")["files"]
+                for edit in file["edits"]
+            )
 
 
 def test_opencode_v2_scoped_changes_keep_legacy_parents_and_duplicate_parts():
