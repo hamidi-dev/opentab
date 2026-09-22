@@ -1525,9 +1525,13 @@ class Store:
             if self.has_v2:
                 # Freeze each candidate projection once, before the ownership and
                 # metadata predicates can cause repeated inline-output normalization.
+                # SQLite 3.37 can flatten this CTE despite MATERIALIZED. OFFSET 0
+                # is an optimization fence on older engines too; LIMIT -1 keeps
+                # every row, so neither filtering nor duplicate semantics change.
                 candidate_cte = f""", candidate_parts as {materialized} (
                   select p.* from part p
                   where session_id in (select id from tree) {"and rowid = ?" if locator else ""}
+                  limit -1 offset 0
                 )"""
                 part_source = "candidate_parts"
                 native_filter = ""
@@ -1569,6 +1573,7 @@ class Store:
             # again for every UNION branch. Keep unrelated tools and the unused
             # full assistant message out of this transient relation. Prompt bytes
             # only bind snapshot keys; tool keys use the prompt ID and tool revision.
+            # The same OFFSET fence keeps validation from being repeated per UNION.
             native_sql = f"""
             {tree}{candidate_cte}, native as {materialized} (
               select p.id, p.data, p.rowid as part_row, tm.rowid as tool_message_row, tm.id as tool_message_id,
@@ -1606,7 +1611,8 @@ class Store:
                      where x.id = p.id and x.message_id = p.message_id
                        and x.session_id = p.session_id
                        {duplicate_part_filter}
-                       and x.session_id in (select id from tree)) = 1
+                        and x.session_id in (select id from tree)) = 1
+              limit -1 offset 0
             ), projected as (
               select
                 case json_extract(n.data, '$.tool')
