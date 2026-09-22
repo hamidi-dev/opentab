@@ -73,6 +73,16 @@ class CachedStore:
             return
         changed = sorted(p for p in old.keys() | new.keys() if old.get(p) != new.get(p))
         for path in changed[:20]:
+            before = old.get(path, (None, None))[1]
+            after = new.get(path, (None, None))[1]
+            # SQLite uses a strong [mtime, device, inode] revision; other
+            # stores retain their ordinary scalar mtime fingerprint.
+            strong = (
+                isinstance(before, list)
+                and len(before) == 3
+                and isinstance(after, list)
+                and len(after) == 3
+            )
             self._debug(
                 "cache.input_changed",
                 input=debug.identity(path),
@@ -85,7 +95,8 @@ class CachedStore:
                 else "file",
                 change="added" if path not in old else "removed" if path not in new else "modified",
                 size_changed=old.get(path, (None, None))[0] != new.get(path, (None, None))[0],
-                mtime_changed=old.get(path, (None, None))[1] != new.get(path, (None, None))[1],
+                mtime_changed=(before[0] != after[0]) if strong else before != after,
+                identity_changed=(before[1:] != after[1:]) if strong else None,
             )
         self._debug("cache.input_changes", count=len(changed), omitted=max(0, len(changed) - 20))
 
@@ -100,6 +111,9 @@ class CachedStore:
 
     @debug.timed("cache.fingerprint")
     def _fingerprint(self) -> list:
+        fingerprint = getattr(self._store, "cache_fingerprint", None)
+        if fingerprint is not None:
+            return fingerprint()
         # Lists compare directly with the JSON-decoded [path, size, mtime_ns] rows.
         out = []
         for path in self._store.cache_inputs():

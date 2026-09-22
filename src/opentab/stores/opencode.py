@@ -319,16 +319,33 @@ class Store:
         return f"coalesce({', '.join(parts)}, {fallback})"
 
     def cache_inputs(self) -> list[str]:
-        # The DB file whose (size, mtime) fingerprints the warm-start cache, plus its
-        # WAL sidecars. OpenCode runs SQLite in WAL mode, so new sessions land in
-        # <db>-wal and the main .db's size/mtime don't move until a checkpoint -- so
-        # fingerprinting the .db alone made a reload (r, or the browser's refresh) serve
-        # the stale cache and never show sessions written since. The sidecars move on
-        # every commit; a read-only connection still reads them, so a re-parse sees the
-        # new rows. Missing sidecars (a non-WAL DB, or a checkpoint that removed them)
-        # are simply skipped by the fingerprint's stat().
+        # DB and WAL contain committed data: WAL writes invalidate before checkpoint,
+        # DB writes invalidate after it. SHM is a derived index whose reader marks
+        # and mtime change on read-only reopen; it is not an accounting input.
         db = os.path.abspath(self.db)
-        return [db, db + "-wal", db + "-shm"]
+        return [db, db + "-wal"]
+
+    def cache_fingerprint(self) -> list:
+        # Keep file identity as well as size/mtime: replacement with a
+        # preserved timestamp and same-size WAL reuse must not serve stale totals.
+        # Do not include ctime: SQLite can fchown an existing WAL on read-only open,
+        # changing ctime without changing its bytes (observed on Linux).
+        # The nested revision also invalidates the old timestamp-only cache format.
+        rows = []
+        for path in self.cache_inputs():
+            try:
+                info = os.stat(path)
+            except FileNotFoundError:
+                continue
+            rows.append(
+                [
+                    path,
+                    info.st_size,
+                    [info.st_mtime_ns, info.st_dev, info.st_ino],
+                ]
+            )
+        debug.event("opencode.cache_strategy", inputs="database_and_wal", file_identity=True)
+        return sorted(rows)
 
     @debug.timed("opencode.workflows")
     def workflows(self) -> list[Workflow]:
