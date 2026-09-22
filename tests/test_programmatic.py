@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 from unittest.mock import Mock, patch
 
 import opentab as ot
@@ -160,14 +161,282 @@ def test_programmatic_valid_option_bundles_parse_and_date_precedence_is_stable()
     assert programmatic._range(ot.parse_args(["sessions", "list", "--days", "30"])) == "30d"
 
 
-def _parser_help(argv):
+def _parser_help(argv, *, full=True):
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         try:
-            ot.parse_args([*argv, "--help"])
+            ot.parse_args([*argv, "--help-all" if full else "--help"])
         except SystemExit as exc:
             assert exc.code == 0
     return out.getvalue()
+
+
+def test_programmatic_help_explains_accounting_dates_filters_and_ordering():
+    for width in (80, 120):
+        with patch.dict(os.environ, {"COLUMNS": str(width)}):
+            for command in (("usage", "summary"), ("sessions", "list"), ("models", "list")):
+                text = _parser_help(command)
+                words = " ".join(text.split())
+                for meaning in (
+                    "JSON",
+                    "root start date",
+                    "whole recorded usage",
+                    "descendants and later activity",
+                    "since that date",
+                    "START..END",
+                    "overridden by --days, then by --since/--until",
+                    "retaining their other models' usage",
+                    "never load additional sources",
+                    "default: 0" if command != ("usage", "summary") else "default: none",
+                ):
+                    assert meaning in words, (command, meaning)
+                assert (
+                    text.index("Filters:")
+                    < text.index("Output and pagination:")
+                    < text.index("Advanced source paths:")
+                )
+                assert "UTC" not in text
+            sessions = " ".join(_parser_help(["sessions", "list"]).split())
+            assert "API-equivalent cost" in sessions and "alphabetical ascending" in sessions
+            assert "default: 100" in sessions and "default: 0" in sessions
+            summary = " ".join(_parser_help(["usage", "summary"]).split())
+            assert "day/month/year use root start dates" in summary
+            catalog = " ".join(_parser_help(["models", "list"]).split())
+            assert "alphabetically without opening sessions" in catalog
+            assert "Nondefault session/source selections are rejected" in catalog
+
+
+def test_programmatic_help_explains_raw_gates_workflow_and_stdio():
+    turns = " ".join(_parser_help(["sessions", "turns"]).split())
+    assert "without fetching trace text" in turns
+    assert "requires --allow-raw-content" in turns
+    content = " ".join(_parser_help(["sessions", "content"]).split())
+    assert "trace key from" in content and "SSH" in content
+    conversation = _parser_help(["sessions", "conversation"])
+    usage = conversation.split("\n\n", 1)[0]
+    assert "--anchor ANCHOR | --cursor CURSOR | --tail" in " ".join(usage.split())
+    for required in (
+        "SESSION_KEY|ID",
+        "--allow-raw-content",
+        "--anchor",
+        "--cursor",
+        "--tail",
+        "|",
+    ):
+        assert required in usage
+    words = " ".join(conversation.split())
+    for meaning in (
+        "OpenCode, Claude Code or Codex",
+        "root execution only",
+        "exact child",
+        "default 20",
+        "default 20000",
+        "source snapshot",
+    ):
+        assert meaning in words
+    workflow = " ".join(_parser_help(["conversations"]).split())
+    for meaning in (
+        "sensitive plaintext",
+        "existing index",
+        "saved ignores",
+        "never refreshes",
+        "SESSION_KEY",
+        "ANCHOR",
+        "exact execution ID",
+    ):
+        assert meaning in workflow
+    index = " ".join(_parser_help(["conversations", "index"]).split())
+    assert "complete, errors and unsupported" in index and "partial" in index
+    search = " ".join(_parser_help(["conversations", "search"]).split())
+    assert "UTC message-date" in search and "never refreshes" in search
+    status = " ".join(_parser_help(["conversations", "status"]).split())
+    assert "Read-only" in status and "does not create an index" in status
+    clear = " ".join(_parser_help(["conversations", "clear"]).split())
+    assert "source records and authored notes intact" in clear and "not secure erasure" in clear
+    mcp = " ".join(_parser_help(["mcp"]).split())
+    assert "client-launched stdio" in mcp and "no HTTP listener" in mcp
+    assert "does not automatically index" in mcp and "--pretty" not in mcp
+
+
+def test_programmatic_quick_help_retains_consequential_semantics():
+    expected = {
+        ("usage", "summary"): ("whole sessions", "root start", "later activity", "JSON"),
+        ("sessions", "list"): ("session_key", "root start", "other models' usage", "default: 100"),
+        ("models", "list"): ("--catalog", "not session filters"),
+        ("sessions", "turns"): ("without fetching trace text", "requires --allow-raw-content"),
+        ("sessions", "conversation"): (
+            "OpenCode, Claude Code, Codex",
+            "Root execution only",
+            "exact --execution-id",
+            "--allow-raw-content",
+        ),
+        ("conversations", "index"): (
+            "sensitive plaintext",
+            "saved ignores",
+            "partial failures",
+            "--allow-raw-content",
+        ),
+        ("conversations", "search"): (
+            "existing local",
+            "No automatic refresh",
+            "UTC messages",
+            "stale evidence",
+        ),
+        ("conversations", "clear"): (
+            "keeping original records",
+            "empty database",
+            "not secure erasure",
+        ),
+        ("mcp",): (
+            "stdio",
+            "No HTTP listener",
+            "opt-in and confirmation",
+            "nothing is auto-indexed",
+        ),
+    }
+    for path, meanings in expected.items():
+        text = " ".join(_parser_help(path, full=False).split())
+        for meaning in meanings:
+            assert meaning in text, (path, meaning)
+    usage = _parser_help(["sessions", "conversation"], full=False).split("\n\n", 1)[0]
+    assert "--anchor ANCHOR | --cursor CURSOR | --tail" in " ".join(usage.split())
+
+
+def test_programmatic_option_surface_matches_the_pre_help_baseline():
+    from opentab.cli.main import _build_parser
+
+    debug = {"--debug", "--debug-log", "-h", "--help"}
+    source = {
+        "--harness",
+        "--source",
+        "--db",
+        "--claude-dir",
+        "--codex-dir",
+        "--hermes-db",
+        "--copilot-dir",
+        "--vscode-dir",
+        "--pi-dir",
+        "--omp-dir",
+        "--openclaw-dir",
+        "--zaly-dir",
+        "--gemini-dir",
+        "--antigravity-dir",
+        "--csv",
+        "--jsonl",
+    }
+    store = source | {"--remotes", "--no-state", "--no-cache"}
+    read = store - {"--no-state"}
+    query = {
+        "--range",
+        "--days",
+        "--since",
+        "--until",
+        "--project",
+        "--from-harness",
+        "--machine",
+        "--model",
+        "--search",
+        "--bookmarked",
+        "--include-ignored",
+    }
+    page = {"--limit", "--offset"}
+    expected = {
+        "usage summary": store | query | {"--group-by"},
+        "sessions list": store | query | page | {"--sort", "--reverse"},
+        "sessions get": store,
+        "sessions nodes": read,
+        "sessions tools": read,
+        "sessions context": read,
+        "sessions turns": store
+        | {"--include-prompts", "--include-content-keys", "--allow-raw-content"},
+        "sessions content": store | {"--allow-raw-content"},
+        "sessions conversation": read
+        | {
+            "--allow-raw-content",
+            "--execution-id",
+            "--anchor",
+            "--cursor",
+            "--tail",
+            "--limit",
+            "--max-chars",
+            "--before",
+        },
+        "models list": store | query | page | {"--catalog"},
+        "models compare": read,
+        "sources list": source,
+        "bookmarks list": {"--no-state"},
+        "ignore list": {"--no-state"},
+        "mcp": store | {"--allow-raw-content"},
+    }
+    for action in ("pin", "unpin"):
+        expected[f"models {action}"] = {"--no-state"}
+    for action in ("get", "set", "delete"):
+        expected[f"notes {action}"] = store
+    for action in ("add", "remove"):
+        expected[f"bookmarks {action}"] = store
+        expected[f"ignore session {action}"] = store
+        expected[f"ignore project {action}"] = {"--no-state"}
+    conversation = {
+        "--harness",
+        "--source",
+        "--db",
+        "--claude-dir",
+        "--codex-dir",
+        "--no-state",
+        "--no-cache",
+        "--project",
+        "--from-harness",
+        "--machine",
+        "--session",
+    }
+    expected.update(
+        {
+            "conversations index": conversation | {"--allow-raw-content", "--rebuild"},
+            "conversations search": conversation
+            | {
+                "--allow-raw-content",
+                "--exclude-session",
+                "--limit",
+                "--max-chars",
+                "--since",
+                "--until",
+            },
+            "conversations status": set(),
+            "conversations clear": {"--allow-raw-content"},
+        }
+    )
+    root = _build_parser()
+    for path, options in expected.items():
+        parser = root
+        for word in path.split():
+            subs = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+            parser = subs.choices[word]
+        common = {"-h", "--help"} if path.startswith("conversations ") else debug
+        common = common if path == "mcp" else common | {"--pretty"}
+        assert set(parser._option_string_actions) == options | common | {"--help-all"}, path
+        assert parser.allow_abbrev is True
+
+
+def test_programmatic_help_examples_parse_without_executing_them():
+    import shlex
+
+    from opentab.cli.main import _build_parser
+
+    def walk(parser):
+        yield parser
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    yield from walk(child)
+
+    root = _build_parser()
+    for parser in walk(root):
+        if not parser.epilog:
+            continue
+        for line in parser.epilog.splitlines():
+            if line.startswith("  opentab "):
+                # Parse only: no validation requiring real files and no dispatch.
+                root.parse_args(shlex.split(line)[1:])
 
 
 def test_programmatic_help_only_exposes_options_used_by_each_command():

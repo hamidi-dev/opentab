@@ -27,6 +27,7 @@ from opentab.demo import DEMO_CATEGORIES, demo_config, demo_machine
 from opentab.persistence import paths
 from opentab.persistence.state import apply_state, load_state, save_state
 from opentab.presentation import themes
+from opentab.presentation.cli_help import HelpParser, RootHelpFormatter, arrange_help
 from opentab.presentation.formatting import (
     cost_bar,
     human_bytes,
@@ -114,15 +115,17 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
             "remote",
         ),
         default="auto",
-        help="which harness's spend to browse: opencode · claude · codex · hermes · csv · "
-        "jsonl · copilot · vscode · pi · omp · openclaw · zaly · gemini · antigravity · "
-        "all (merged) · "
-        "remote "
-        "(other machines, via pull/export). Default auto merges every present local "
-        "harness. Or just pass a file path -- e.g. `opentab requests.csv`. (--source is a "
-        "deprecated alias for --harness)",
+        help="sources to load (default: auto merges present local harnesses): "
+        "opencode, claude, codex, hermes, csv, jsonl, copilot, vscode, pi, omp, "
+        "openclaw, zaly, gemini, antigravity, all, remote (saved machine summaries). "
+        "--source is a deprecated alias; see docs/sources.md",
     )
-    parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
+    parser.add_argument(
+        "--db",
+        default=os.path.expanduser("~/.local/share/opencode/opencode.db"),
+        metavar="FILE",
+        help="OpenCode SQLite database (default: ~/.local/share/opencode/opencode.db)",
+    )
     parser.add_argument(
         "--claude-dir",
         default=claude_projects_dir(),
@@ -147,11 +150,8 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--vscode-dir",
         default=None,
-        help="a VS Code User directory (or chatSessions directory) holding Copilot Chat "
-        "sessions (for --harness vscode); by default every installed variant (Code, "
-        "Code - Insiders, VSCodium) is scanned. From WSL, point it at the Windows-side "
-        "store (not scanned by default -- reading through /mnt/c slows startup), e.g. "
-        "alias opentab='opentab --vscode-dir \"/mnt/c/Users/<you>/AppData/Roaming/Code/User\"'",
+        help="VS Code User or chatSessions directory for Copilot Chat; overrides "
+        "discovery across installed variants. Windows-side WSL setup: docs/sources.md",
     )
     parser.add_argument(
         "--pi-dir",
@@ -162,9 +162,8 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--omp-dir",
         default=_default_omp_dir(),
-        help="omp sessions directory (for --harness omp; omp is a pi-agent fork and "
-        "reads the same records); honors $OMP_AGENT_DIR (opentab's own override -- omp "
-        "itself has no session-dir env var), default ~/.omp/agent/sessions",
+        help="omp sessions directory; honors OpenTab's $OMP_AGENT_DIR override "
+        "(default: ~/.omp/agent/sessions)",
     )
     parser.add_argument(
         "--openclaw-dir",
@@ -206,22 +205,27 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         "--days",
         type=int,
         default=None,
-        help="initial range in days (default: all time; change live with R)",
+        help="initial range in days (default: all time); --since/--until take precedence",
     )
-    parser.add_argument("--since")
-    parser.add_argument("--until")
+    parser.add_argument(
+        "--since",
+        metavar="YYYY-MM-DD",
+        help="inclusive session start-date lower bound; overrides --days",
+    )
+    parser.add_argument(
+        "--until",
+        metavar="YYYY-MM-DD",
+        help="inclusive session start-date upper bound; overrides --days",
+    )
     parser.add_argument(
         "--demo",
         nargs="?",
         const="all",
         default=None,
         metavar="CATS",
-        help="anonymize for live demos and screenshots (never writes to the DB). Bare "
-        "--demo scrambles everything; a comma list limits it to some of titles "
-        "(session/prompt/model/machine names), paths (project directories), turns (the "
-        "expandable full prompt text), spend (dollars + token magnitudes) -- e.g. "
-        "--demo titles,spend shows real project paths and prompt bodies but fake "
-        "session names and hidden costs. Toggle live in the TUI with D",
+        help="anonymize output: bare --demo applies all categories; a comma list "
+        "selects titles, paths, turns, spend. Selective demo leaves other data real; "
+        "review output before sharing",
     )
     parser.add_argument(
         "--no-state",
@@ -245,8 +249,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         "--label",
         default=None,
         metavar="NAME",
-        help="machine name recorded in --export (default: this host's name); how the "
-        "session shows up under --source remote when several machines are merged",
+        help="machine name in the exported summary (default: this host's name)",
     )
     parser.add_argument(
         "--theme",
@@ -255,8 +258,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         metavar="THEME",  # Hide the 30-name choices wall; argparse still validates it.
         help="colour theme for the TUI and the web browser (opentab, "
         "catppuccin-mocha/latte, tokyo-night/-day, gruvbox, nord, dracula, rose-pine); "
-        "switch live in the TUI with C or the browser's theme button, and your choice is "
-        f"remembered. Default: {themes.DEFAULT_THEME}",
+        f"default: {themes.DEFAULT_THEME}",
     )
     parser.add_argument(
         "--port", type=int, default=8321, help="port for `opentab web` (default: 8321)"
@@ -271,9 +273,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="skip the warm-start rollup cache and always re-parse from scratch. The "
-        "cache (under $XDG_CACHE_HOME/opentab) reuses the previous parse when a backend's "
-        "files are unchanged; use this to force a cold read or to measure it",
+        help="bypass the accounting rollup cache and re-parse source records",
     )
 
 
@@ -286,16 +286,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         const="",
         default=None,
         metavar="DIR|SESSION",
-        help="print the cost of the most recently active agent session (subagent "
-        "subtree included) and exit, consulting every present harness backend "
-        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly, Gemini); with DIR "
-        "only "
-        "sessions of that project count, with a session id (ses_... or a UUID -- the "
-        "id is matched to its own backend) exactly that session is priced, and "
-        "--harness pins one backend. Made for a tmux status line: set -g "
-        "status-right '#(opentab cost \"#{pane_current_path}\")'. A leading ~ "
-        "marks a list-price estimate for usage recorded at $0 (subscription models). "
-        "Deprecated alias for `opentab cost`",
+        help="deprecated alias for `opentab cost [DIR|SESSION]`; print latest-session cost and exit",
     )
     parser.add_argument(
         "--goto",
@@ -306,9 +297,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         help="open the TUI drilled straight into a session: a session id opens "
         "exactly that session (a subagent id resolves to its root), a DIR (default: "
         "the current directory) opens the project's most recently active session -- "
-        "resolved across every present harness backend like `cost`. Made for a "
-        "tmux binding: bind t run 'tmux popup -E \"opentab --goto "
-        "#{pane_current_path}\"'",
+        "resolved across every present harness backend like `cost`",
     )
     parser.add_argument(
         "--tab",
@@ -317,10 +306,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         help="with --goto, land on this session tab instead of Overview: overview, "
         "subagents, turns, tools, or context (case-insensitive; a tab the session's "
         "backend doesn't have keeps Overview and says so). Implies --goto of the "
-        "current directory when --goto is absent -- so `opentab --tab context` jumps "
-        "straight to the context curve of the cwd's live session. Made for a tmux "
-        "binding: bind t run 'tmux popup -E \"opentab --goto #{pane_current_path} "
-        "--tab context\"'",
+        "current directory when --goto is absent",
     )
     parser.add_argument(
         "--export",
@@ -328,39 +314,26 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         const="-",
         default=None,
         metavar="FILE",
-        help="write this machine's spend summary (every present harness, merged) as a "
-        "portable JSON file and exit -- totals + per-model breakdown, no transcripts. "
-        "Default FILE is stdout, so `ssh box opentab --export - > box.json` works. "
-        "Copy the file to this machine and open it with `opentab remote box.json` "
-        "(several: `opentab remote a.json b.json`); pairs with --demo for a shareable "
-        "summary",
+        help="compatibility alias for `opentab export [FILE]` (default: stdout)",
     )
     parser.add_argument(
         "--pull",
         nargs="*",
         default=None,
         metavar="HOST",
-        help="fetch other machines' spend summaries over SSH (all in parallel) and open "
-        "them merged (--source remote). HOST is an ssh target -- `box`, `user@host`, "
-        "`name=user@host`, or `http://host:port` for an `opentab --serve` box; each is "
-        "remembered in remotes.json, so a later bare `opentab --pull` refreshes them all. "
-        "Needs opentab on the remote (it runs `opentab --export -` there via SSH -- "
-        "nothing has to be listening); set a machine's `cmd` in remotes.json if opentab "
-        "isn't on its non-interactive PATH",
+        help="compatibility alias for `opentab pull [HOST ...]`; fetch and remember hosts",
     )
     parser.add_argument(
         "--remote",
         action="store_true",
-        help="open the already-pulled machine summaries (--source remote) without "
-        "re-fetching -- the offline twin of --pull",
+        help="compatibility alias for `opentab remote`; open saved summaries offline",
     )
     parser.add_argument(
         "--forget",
         nargs="+",
         default=None,
         metavar="NAME",
-        help="remove machines from remotes.json (and delete their cached summaries under "
-        "--remotes), then exit",
+        help="compatibility alias for `opentab forget NAME ...`; remove saved hosts and local summaries",
     )
     parser.add_argument(
         "--html",
@@ -368,25 +341,17 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         const="opentab-report.html",
         default=None,
         metavar="FILE",
-        help="write a self-contained HTML browser and exit (deprecated alias for "
-        "`opentab web --html`): drill-in by month/day/project/session, calendar heat "
-        "map, sortable tables, the $ what-if toggle -- all client-side in one file "
-        "(default FILE: opentab-report.html). Pairs with --demo for a shareable page",
+        help="deprecated alias for `opentab web --html [FILE]` (default: opentab-report.html)",
     )
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="serve the HTML browser from a local web server (deprecated alias for "
-        "`opentab web --headless`); adds the per-session Turns/Tools drill-in as live "
-        "endpoints and a data-refresh button (Ctrl-C stops it)",
+        help="deprecated alias for `opentab web --headless`; Ctrl-C stops the server",
     )
     parser.add_argument(
         "--web",
         action="store_true",
-        help="like --serve, but also open it in your default web browser (deprecated "
-        "alias for `opentab web`; cross-platform via the stdlib webbrowser: `open` on "
-        "macOS, `xdg-open` on Linux, the shell association on Windows); honors "
-        "--port/--bind",
+        help="deprecated alias for `opentab web`; serve and open a browser",
     )
     parser.add_argument(
         "--refresh-models",
@@ -515,9 +480,19 @@ def _build_parser() -> argparse.ArgumentParser:
         for action in probe._actions
         if action.dest not in ("help", "version") and action.default is not argparse.SUPPRESS
     }
-    parser = argparse.ArgumentParser(
-        prog="opentab", description="OpenTab — browse your AI-coding spend"
+    parser = HelpParser(
+        prog="opentab",
+        formatter_class=RootHelpFormatter,
+        description="OpenTab — browse your AI-coding spend. Bare `opentab` opens the "
+        "terminal UI and automatically discovers supported local sources.",
+        epilog="Examples:\n"
+        "  opentab\n  opentab web\n  opentab doctor\n"
+        "  opentab usage summary --range 30d --group-by project\n"
+        "  opentab sessions list --from-harness claude --limit 20\n\n"
+        "Implicit-TUI options: opentab tui --help\n"
+        "More help: opentab COMMAND --help",
     )
+    parser._positionals.title = "Commands"
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     # Keep one complete namespace for legacy dispatch, App/state, and path routing.
     parser.set_defaults(
@@ -545,7 +520,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="browse spend in the terminal (the default when no command is named)",
         description="Browse AI-coding spend in a terminal UI. This is the default "
         "command, so a bare `opentab` and `opentab <file>` run it without naming it, "
-        "and the old top-level flags (--web, --status, --pull, ...) still work here.",
+        "and compatibility flags still work here. Dates select whole sessions by root "
+        "start date, including descendants and later activity. Use R to change the "
+        "range, D to toggle demo, and C to change theme.",
+        epilog="Examples:\n  opentab tui --goto . --tab turns\n  opentab tui requests.csv\n\n"
+        "Controls: docs/keys.md. Source setup: docs/sources.md",
     )
     _add_global_args(tui)
     tui.add_argument(
@@ -563,7 +542,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="open the spend browser in your web browser (serve + open)",
         description="Serve the self-contained HTML spend browser and open it in your "
         "default browser. Add --headless to serve without opening one, or --html FILE "
-        "to write the static page and exit instead of serving.",
+        "to write the static page and exit instead of serving. Reports expose session "
+        "titles, paths and spend; use localhost or a trusted/VPN interface. Dates "
+        "select whole sessions by root start date, including later activity.",
+        epilog="Examples:\n  opentab web\n  opentab web --html report.html\n\n"
+        "Live versus static reports: docs/web.md. Source setup: docs/sources.md",
     )
     _add_command_global_args(
         web,
@@ -604,7 +587,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FILE",
         help="write a self-contained HTML file and exit, instead of serving it live "
-        "(default FILE: opentab-report.html). Pairs with --demo for a shareable page",
+        "(default FILE: opentab-report.html); selective --demo leaves other data real",
     )
     web.add_argument(
         "--headless",
@@ -618,13 +601,14 @@ def _build_parser() -> argparse.ArgumentParser:
     status = subs.add_parser(
         "cost",
         help="print one line of cost for a session or project (for a status bar)",
-        description="Print the cost of an agent session (subagent subtree included) and "
-        "exit -- the one-shot made for a tmux status line. With no TARGET the current "
-        "directory's most recently active session is priced; every present harness "
-        "backend is consulted unless --harness pins one. Several targets (or --batch) "
-        "print a `<target>\\t<price>` table instead of one bare line, priced in a single "
-        "process -- which is the point: the interpreter start dwarfs the pricing, so a "
-        "shell loop calling this once per pane pays it once per pane.",
+        description="Print one session's cost, including its subagent subtree, then exit. "
+        "A project target selects its most recently active session, not total project "
+        "spend; no TARGET uses the current directory. A leading ~ marks a list-price "
+        "estimate for unpriced or subscription usage, not an actual subscription bill. "
+        "Several targets or --batch produce a <target>\\t<price> table; unpriceable "
+        "targets are omitted. Every present supported local harness is checked unless selected explicitly.",
+        epilog="Examples:\n  opentab cost .\n  printf '%s\\n' ./project-a ./project-b | opentab cost --batch -\n\n"
+        "Pricing: docs/pricing.md. Source setup: docs/sources.md",
     )
     _add_command_global_args(
         status,
@@ -643,7 +627,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "demo",
         },
         source_choices=_STATUS_SOURCE_CHOICES,
-        source_help="which interactive local harness to price (default: auto; all checks every present one)",
+        source_help="local harness to price: auto (default), all, opencode, claude, codex, "
+        "hermes, pi, omp, openclaw, zaly, gemini, antigravity; auto/all check every present one",
     )
     status.add_argument(
         "targets",
@@ -671,6 +656,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "a bug report: paths are folded to ~ and machine names are counted rather than "
         "named, no transcript is ever read, and nothing is created or repaired. Exits 1 "
         "if something is actually broken (a warning alone doesn't).",
+        epilog="Examples:\n  opentab doctor\n  opentab doctor --json\n\n"
+        "Diagnostics: docs/troubleshooting.md. Source setup: docs/sources.md",
     )
     _add_command_global_args(
         doctor,
@@ -697,6 +684,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "its PATH -- it runs `opentab export -` there; nothing has to be listening. "
         "--demo changes the fleet view after fetching; pull remains an explicit network "
         "request and the remote export itself is not put in demo mode.",
+        epilog="Examples:\n  opentab pull user@host\n  opentab pull\n\n"
+        "Saved connections and HTTP sources: docs/machines.md",
     )
     fleet_globals = {
         "source",
@@ -738,6 +727,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "`opentab pull`. Name one or more exported *.json FILEs to open summaries you "
         "moved here yourself (`opentab export -` on the far side, scp, then "
         "`opentab remote box.json`) instead of the pulled ones.",
+        epilog="Examples:\n  opentab remote\n  opentab remote box.json\n\n"
+        "Fleet setup: docs/machines.md",
     )
     _add_command_global_args(
         remote,
@@ -761,7 +752,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "breakdown, no transcripts. Copy "
         "it to another machine and open it there with `opentab remote box.json`; "
         "`opentab pull` is the automatic twin and takes an SSH target, never a file. "
-        "Pairs with --demo for a shareable summary.",
+        "Selective --demo leaves other data real; review exports before sharing.",
+        epilog="Examples:\n  opentab export box.json\n  opentab export - --demo\n\n"
+        "Export content and privacy: docs/machines.md. Source setup: docs/sources.md",
     )
     _add_command_global_args(
         export,
@@ -771,7 +764,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help_overrides={
             "demo": "anonymize titles, paths, prompts, and/or spend in the exported "
             "summary; bare --demo applies every category, or pass a comma list such as "
-            "titles,spend. Review the file before sharing"
+            "titles,spend. Selective demo leaves other data real; review the file before sharing"
         },
     )
     export.add_argument(
@@ -785,7 +778,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "forget",
         help="drop machines from the saved fleet",
         description="Remove machines from remotes.json and delete their cached summaries "
-        "(under --remotes), then exit.",
+        "(under --remotes), then exit. Remote machines and their source records are untouched.",
+        epilog="Examples:\n  opentab forget old-laptop\n\nFleet storage: docs/machines.md",
     )
     _add_command_global_args(forget, {"remotes"})
     forget._option_string_actions[
@@ -801,13 +795,90 @@ def _build_parser() -> argparse.ArgumentParser:
     from opentab.api.json_cli import add_parsers
 
     add_parsers(subs, _add_global_args)
+    guides = {
+        tui: (
+            "Your AI-coding spend, in the terminal. Bare opentab opens this view.\n"
+            "Sources are discovered automatically. R: range · D: demo · C: theme.",
+            {"goto", "tab", "days", "source", "demo", "theme"},
+        ),
+        web: (
+            "Open your spend dashboard in a browser. Use --html for a static report.\n"
+            "Reports contain titles, paths and spend; serve on localhost or a trusted interface.",
+            {"headless", "html", "web_port", "web_bind", "demo", "days"},
+        ),
+        status: (
+            "Print a session's cost, including subagents. A directory selects its most\n"
+            "recently active session; no target uses the current directory.\n"
+            "~ marks a list-price estimate, not a subscription bill.",
+            {"batch", "source"},
+        ),
+        doctor: (
+            "Find missing sources and configuration problems. Read-only; nothing repaired.\n"
+            "Paths are redacted by default. Errors exit 1; warnings alone do not.",
+            {"json", "full"},
+        ),
+        pull: (
+            "Fetch machine summaries over SSH or HTTP and open the combined fleet view.\n"
+            "Hosts are remembered. With no host, refresh all saved machines.",
+            {"days", "demo", "remotes"},
+        ),
+        remote: (
+            "Browse saved machine summaries offline, alongside local sessions.\n"
+            "Pass files to open copied exports instead of the saved fleet.",
+            {"days", "demo", "remotes"},
+        ),
+        export: (
+            "Write this machine's usage as portable JSON: totals and models, no transcripts.\n"
+            "Open it elsewhere with opentab remote FILE. Review before sharing.",
+            {"label", "demo", "source"},
+        ),
+        forget: (
+            "Remove saved hosts and their local summary files. Remote data stays intact.",
+            {"remotes"},
+        ),
+    }
+    brief = {
+        "path": "Source file or directory; harness detected automatically.",
+        "hosts": "SSH host, user@host, name=user@host, or http://host:port.",
+        "files": "Exported JSON files or directories (default: saved fleet).",
+        "file": "Output file (default: - for stdout).",
+        "targets": "Directory or session ID; - reads targets from stdin.",
+        "source": "Harness to load (default: auto).",
+        "days": "Show sessions started within this many days (default: all time).",
+        "demo": "Anonymize all by default; partial categories leave other data real.",
+        "theme": "Colour theme (default: " + themes.DEFAULT_THEME + ").",
+        "goto": "Open a session ID or the latest session in DIR (default: cwd).",
+        "tab": "With --goto: overview, subagents, turns, tools, context.",
+        "headless": "Serve without opening a browser; Ctrl-C stops it.",
+        "html": "Write a static report (default: opentab-report.html).",
+        "web_port": "Server port (default: 8321).",
+        "web_bind": "Listen address (default: 127.0.0.1); trusted interfaces only.",
+        "remotes": "Machine-summary path (default: OpenTab's saved fleet).",
+        "label": "Machine name in the export (default: hostname).",
+        "batch": "Print target<TAB>price rows; omit unpriceable targets.",
+        "json": "Output JSON instead of the text report.",
+        "full": "Include absolute paths and machine names; for local use.",
+    }
+    for command in (tui, web, status, doctor, pull, remote, export, forget):
+        arrange_help(
+            command,
+            source_paths=_SOURCE_PATH_DESTS,
+            legacy={"status", "export", "pull", "remote", "forget", "html", "serve", "web"}
+            if command is tui
+            else (),
+            summary=guides[command][0],
+            common=guides[command][1],
+            brief={**brief, "remotes": "Directory holding saved hosts and their cached summaries."}
+            if command is forget
+            else brief,
+        )
     return parser
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
     # Preserve bare invocation, positional paths, and legacy flags by inserting `tui`.
     # A file named like a subcommand must be opened as `opentab tui <name>`.
-    if argv and (argv[0] in _SUBCOMMANDS or argv[0] in ("-h", "--help", "--version")):
+    if argv and (argv[0] in _SUBCOMMANDS or argv[0] in ("-h", "--help", "--help-all", "--version")):
         return argv
     return ["tui", *argv]
 

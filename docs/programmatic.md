@@ -14,7 +14,18 @@ string `schema_version` and either `data` or `error`:
 {"schema_version":"1","ok":true,"data":{"sessions":[]}}
 ```
 
-Start with these commands; each subcommand has complete `--help` output:
+Start with `opentab --help` for commands grouped by task, then
+`opentab COMMAND --help` and, for example, `opentab sessions list --help`.
+Each help screen is a short task guide: purpose, copyable examples, and common
+options. Use `opentab sessions list --help-all` for the complete reference,
+including extra filters, pagination, source paths, state/cache controls and aliases.
+Those options remain accepted even when omitted from the quick guide.
+Bare `opentab` opens the TUI; use `opentab tui --help-all` for its full option list,
+including compatibility flags. Both help levels work offline and stop before
+opening stores or executing the command. `--pretty` only indents JSON; it does
+not change the result.
+
+Common queries and saved-preference commands:
 
 ```sh
 opentab usage summary --range 30d --group-by project
@@ -61,6 +72,18 @@ Session query dates preserve the established precedence: `--since` or `--until`
 override `--days`, which overrides `--range`. This permits one-sided explicit date
 bounds while keeping existing `--days` scripts working. Detail and mutation
 commands do not accept date options because they address one resource directly.
+The default range is all time. `--range 2026-09-01` means **since** September 1;
+use `--range 2026-09-01..2026-09-07` for a bounded interval. These are root-session
+start dates with whole-session usage, as explained below.
+
+`sessions list` returns at most 100 sessions by default, starting at offset 0.
+The default sort is descending API-equivalent cost. Tokens, root start date and
+last activity also sort descending; title and project sort alphabetically
+ascending. `--reverse` reverses that direction. Saved session/project ignores
+hide sessions unless `--include-ignored` or `--no-state` is used. `--harness`
+chooses which sources to load; `--from-harness` only filters that loaded catalog.
+It never loads another harness or fetches remote data. Detailed path and environment
+overrides are in [Sources](sources.md).
 
 Recorded spend and API-equivalent costs are separate fields. API-equivalent cost
 preserves recorded dollars and adds list-rate estimates for the unpriced portion;
@@ -154,7 +177,8 @@ be less safe than failing explicitly. Use the TUI or web frontend for demo outpu
 
 ## MCP server
 
-Run the newline-delimited JSON-RPC server over stdio:
+Configure your MCP client to launch the newline-delimited JSON-RPC server as a
+stdio process. It has no HTTP listener:
 
 ```sh
 opentab mcp

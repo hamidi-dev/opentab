@@ -9,6 +9,10 @@ for parsing, deduplication and attribution rules.
 
 ## Picking a harness
 
+Quick `--help` focuses on everyday tasks. For a command's complete source-path
+options, use `--help-all`, for example `opentab sessions list --help-all` or
+`opentab tui --help-all`. Advanced options work in normal invocations too.
+
 Pick one with `--harness`, point its flag at a non-default location, or just pass a
 file path (`opentab requests.csv`, `opentab path/to/opencode.db`) and the harness is
 inferred from the extension:
@@ -199,7 +203,20 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Reads** VS Code's own store, `<User>/workspaceStorage/*/chatSessions` plus
   empty-window sessions, across Code, Code&nbsp;-&nbsp;Insiders, and VSCodium. Point
   `--vscode-dir` at one User directory for a portable/remote copy — from WSL, at the
-  Windows-side store (see [Windows & WSL](windows.md)).
+  Windows-side store (see [Windows & WSL](windows.md)). Windows-side paths are not
+  scanned from WSL by default because `/mnt/c` access can slow startup. For a
+  persistent shell override, replace `<you>` in this example:
+
+  ```sh
+  alias opentab='opentab --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"'
+  ```
+
+  This alias supplies implicit-TUI options. For an explicit command, put its
+  options after the command instead, for example:
+
+  ```sh
+  command opentab sessions list --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"
+  ```
 - **Cost**: no dollar cost is recorded (Copilot credits are a quota unit, not USD) —
   `$0` recorded, estimated under `$`.
 - **Notes**: token figures are VS Code's own; the recorded input covers a turn's final

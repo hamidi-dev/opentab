@@ -28,6 +28,22 @@ See [Search controls](keys.md#scope--filter) and [Privacy](privacy.md).
 
 ## Build deliberately
 
+`opentab conversations --help` shows the index → search → read workflow;
+`opentab conversations COMMAND --help` gives a short guide to each step.
+Use `--help-all` for every scope, source override, window limit and freshness
+detail. Both help levels exit without reading or indexing conversations. For example:
+
+```sh
+opentab conversations index --harness all --allow-raw-content
+opentab conversations search "cache configuration" --allow-raw-content
+opentab sessions conversation SESSION_KEY --allow-raw-content --anchor ANCHOR
+```
+
+The first command writes sensitive plaintext locally; search requires an existing
+index and never refreshes it automatically. `SESSION_KEY` and `ANCHOR` are
+placeholders from a search result. For a child hit, also pass its exact
+`execution_id` as `--execution-id`; keep the root's `session_key` as `SESSION_KEY`.
+
 Nothing is indexed during normal startup, reload, accounting queries or ordinary
 TUI/web browsing. Building an index is a separate explicit `I` or CLI/MCP action
 that **persists sensitive text**:
