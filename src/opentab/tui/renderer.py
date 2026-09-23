@@ -1621,26 +1621,21 @@ class Renderer:
             return
         # Footer and help share keymap.KEYS so advertised actions cannot diverge.
         # Active toggle segments use the accent; less common actions remain help-only.
-        parts: list = keymap.footer_parts(self.app)
+        parts, trailing = keymap.footer_hints(self.app)
         self.hline(stdscr, height - 2, 0, width)
-        # Reserve the version slot before drawing the keybar, then paint it last. The bar
-        # centres on the whole row, not on what the version leaves, so it lines up with
-        # the centred mode tabs above it.
-        ver = f" v{__version__} "
-        if len(ver) + 4 < width:
-            self.draw_keybar(stdscr, height - 1, width, parts, limit=width - len(ver))
-            self.write(stdscr, height - 1, width - len(ver), ver, curses.color_pair(1))
-        else:
-            self.draw_keybar(stdscr, height - 1, width, parts)
+        self.draw_keybar(stdscr, height - 1, width, parts, trailing=trailing)
 
-    def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts, limit: int = 0) -> None:
+    def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts, *, trailing=()) -> None:
         # Entries may contain contiguous sub-segments so only the active token is accented.
-        base = curses.color_pair(4)
-        active = curses.color_pair(6) | curses.A_BOLD
-        layout = keybar_layout(parts, width, limit=limit or None)
+        attrs = {
+            "key": curses.color_pair(4),
+            "label": curses.A_NORMAL,
+            "separator": curses.color_pair(1),
+            "active": curses.color_pair(6) | curses.A_BOLD,
+        }
+        layout = keybar_layout(parts, width, trailing=trailing)
         for span in layout.spans:
-            attr = active if span.style == "active" else base
-            self.write(stdscr, y, span.x, span.text, attr)
+            self.write(stdscr, y, span.x, span.text, attrs[span.style])
 
     # Each visible list owns its sort arrow; shared screens must not use effective_sort_by.
     def sort_heading(self, key: str, label: str) -> str:
@@ -5116,7 +5111,7 @@ class Renderer:
             box_x,
             box_h,
             box_w,
-            f"Keys · {self._key('help', 'close')} close",
+            f"Keys · v{__version__} · {self._key('help', 'close')} close",
             active=True,
         )
 

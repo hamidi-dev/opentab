@@ -12,6 +12,11 @@ form is *this* page. The footer strip reads the same table, so it can only ever 
 key that does something here — and `j/k` in Trends says whether it is paging a month or
 walking a list, because there it depends on the tab.
 
+Footer actions are left-aligned, separated by thin `│` dividers, with muted keys,
+bright labels and accented active toggles. Help stays at the right edge (using your
+configured binding). Narrow terminals drop whole hints; the full list and app
+version are in Help.
+
 ## How the views nest
 
 Three levels: **browse** → **zoom** → **session**. `Enter` (or `+`) drills in, `Esc`

@@ -76,6 +76,35 @@ class Key(NamedTuple):
         label = f"{keys} {word}" if keys else str(word)
         return [(label, bool(self.active(app)) if self.active else False)]
 
+    def footer_segments(self, app: App) -> list[tuple[str, str]]:
+        """Style keys separately from labels, preserving composite active tokens."""
+        segments = self.chip_segments(app)
+        if not segments:
+            return []
+        text = "".join(text for text, _active in segments)
+        if self.id == "mode":
+            boundary = len(text) - len(" mode")
+        elif self.id == "trends-chart-cursor":
+            boundary = len(_chart_arrows(app))
+        else:
+            boundary = len(self.chip_keys(app))
+        out = []
+        offset = 0
+        for text, active in segments:
+            cut = max(0, min(len(text), boundary - offset))
+            if cut:
+                out.append((text[:cut], "active" if active else "key"))
+            if cut < len(text):
+                label = text[cut:]
+                # Only title-case the first label character, never names or shortcuts.
+                if offset + cut <= boundary + 1:
+                    pad = len(label) - len(label.lstrip())
+                    label = label[:pad] + label[pad : pad + 1].upper() + label[pad + 1 :]
+                style = "key" if self.id == "tab-focus" and len(segments) > 1 else "label"
+                out.append((label, "active" if active else style))
+            offset += len(text)
+        return out
+
 
 # Context follows handle_key precedence, not the raw open flags. Trends and Prices cover
 # each other -- whichever was opened last owns the keyboard, and advertising the covered
@@ -691,7 +720,7 @@ KEYS: tuple[Key, ...] = (
         if _on_turns(app) and app.active_turn_drill is not None and not _trace_available(app)
         else "turns"
         if app._on_subagents_tab() and not _on_turns(app) and app.active_subagent_drill is not None
-        else "in",
+        else "open",
     ),
     Key(
         id="max",
@@ -1038,7 +1067,7 @@ KEYS: tuple[Key, ...] = (
         when=lambda app: in_main(app) and app.view != "browse",
         chip=lambda app: "execution"
         if app.active_subagent_turns and app.active_turn_drill is None
-        else "out",
+        else "back",
         chip_actions=("back",),
     ),
     Key(
@@ -1330,28 +1359,28 @@ FOOTER_ORDER = (
     "esc",
     "max",
     "mode",
+    "sort",
+    "filter",
+    "launch",
+    "whatif",
     "machine-filter",
     "refresh-machines",
-    "ignore",
-    "ignored",
     "bookmark",
-    "bookmarks",
     "note",
-    "source",
+    "bookmarks",
+    "ignored",
     "conversation-search",
     "range",
-    "filter",
-    "sort",
+    "source",
     "prices-refresh",
     "trends",
     "prices",
-    "launch",
+    "ignore",
     "copy-conversation",
     "demo",
     "demo-toggle",
     "hide-prompts",
     "dollar",
-    "whatif",
     "whats-new",
     "help",
     "quit",
@@ -1388,7 +1417,7 @@ def sections(app: App) -> list[tuple[str, list[Key]]]:
     return out
 
 
-def footer_parts(app: App) -> list:
+def footer_entries(app: App) -> list[Key]:
     if in_conversation_search(app):
         ids = (
             ("search-filter-choose", "search-filter-cancel")
@@ -1410,12 +1439,8 @@ def footer_parts(app: App) -> list:
                 "search-index",
             )
         )
-        return [
-            BY_ID[key].chip_segments(app)
-            for key in ids
-            if BY_ID[key].shown(app) and BY_ID[key].chip_segments(app)
-        ]
-    parts: list = []
+        return [BY_ID[key] for key in ids if BY_ID[key].shown(app)]
+    entries = []
     for key_id in FOOTER_ORDER:
         if _on_trace(app) and key_id not in (
             "trace-siblings",
@@ -1431,7 +1456,22 @@ def footer_parts(app: App) -> list:
             continue
         if not entry.shown(app):
             continue
-        segs = entry.chip_segments(app)
-        if segs:
-            parts.append(segs)
-    return parts
+        entries.append(entry)
+    return entries
+
+
+def footer_parts(app: App) -> list:
+    return [segments for entry in footer_entries(app) if (segments := entry.chip_segments(app))]
+
+
+def footer_hints(app: App) -> tuple[list, list]:
+    """Return contextual hints and the live Help binding for the right-hand anchor."""
+    parts = []
+    trailing = []
+    for entry in footer_entries(app):
+        segments = entry.footer_segments(app)
+        if entry.id in ("help", "search-help"):
+            trailing = segments
+        elif segments:
+            parts.append(segments)
+    return parts, trailing

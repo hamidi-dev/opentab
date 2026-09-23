@@ -521,7 +521,7 @@ def test_filters_shortcut_is_visible_while_query_is_focused_and_follows_remaps()
     ws.editing = True
     app.keymap = bindings.Keymap({("search.edit", "filters"): ["ctrl-e"]})
     text = screen_text(_paint(app, 20, 80))
-    assert "^E filters" in text
+    assert "^E Filters" in text
     app.handle_key(None, 5)
     assert ws.filter_menu == "filters" and ws.editing
     ws.open_filter("project")
@@ -576,7 +576,7 @@ def test_search_help_scrolls_at_minimum_size_and_close_releases_raw_layout():
     assert app.renderer._search_layout_cache is None
 
 
-def test_search_reuses_centered_footer_and_styled_help_without_underlying_actions():
+def test_search_reuses_left_aligned_footer_and_styled_help_without_underlying_actions():
     app, ws = _app()
     app.help = True
     app.help_scroll = 71
@@ -586,8 +586,8 @@ def test_search_reuses_centered_footer_and_styled_help_without_underlying_action
         screen = _paint(app, 36, 160)
     assert keybar.call_count == 1
     footer = "".join(screen.cells.get((34, x), " ") for x in range(160))
-    assert "J/K preview" in footer and "? help" in footer
-    assert footer.index("Enter read") > 3
+    assert "J/K Preview" in footer and "? Help" in footer
+    assert footer.index("Enter Read") == 2  # one cell inside the app frame
     assert "underlying-filter" not in screen_text(screen)
     assert "demo" not in footer and "range" not in footer
     ws.handle_key(ord("?"), bindings.DEFAULT)

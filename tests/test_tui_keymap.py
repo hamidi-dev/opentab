@@ -488,7 +488,7 @@ def test_footer_highlights_the_focused_time_panel():
             app.renderer.draw_footer(scr, 24, 120)
             row = 23
             line = "".join(scr.cells.get((row, x), " ") for x in range(120))
-            i = line.index("Tab yr/mo/day")
+            i = line.index("Tab Yr/mo/day")
             return {
                 "yr": scr.attrs[(row, i + 4)],
                 "mo": scr.attrs[(row, i + 7)],
@@ -503,29 +503,28 @@ def test_footer_highlights_the_focused_time_panel():
         a = token_attrs("years")
         assert a["yr"] == accent and a["day"] == 4
 
-        # The p/t hint mirrors the idea for the browse mode; and the footer stays
-        # lean -- sort/export/open live in the help overlay, not down here.
+        # The mode hint accents only the current key; labels are brighter than keys.
         def footer_line():
             scr = AttrScreen(24, 120)
             app.renderer.draw_footer(scr, 24, 120)
             return scr, "".join(scr.cells.get((23, x), " ") for x in range(120))
 
         scr, line = footer_line()
-        for gone in ("s sort", "e export", "o open"):
+        for gone in ("e Export", "o Open"):
             assert gone not in line
-        i = line.index("t/p/u/m mode")  # all four modes, fleet or not
+        i = line.index("t/p/u/m Mode")  # all four modes, fleet or not
         assert scr.attrs[(23, i)] == accent and scr.attrs[(23, i + 2)] == 4  # time mode: t lit
         app.browse_mode = "projects"
         scr, line = footer_line()
-        i = line.index("t/p/u/m mode")
+        i = line.index("t/p/u/m Mode")
         assert scr.attrs[(23, i + 2)] == accent and scr.attrs[(23, i)] == 4  # projects: p lit
         app.browse_mode = "harnesses"
         scr, line = footer_line()
-        i = line.index("t/p/u/m mode")
+        i = line.index("t/p/u/m Mode")
         assert scr.attrs[(23, i + 4)] == accent and scr.attrs[(23, i)] == 4  # harnesses: u lit
         app.browse_mode = "machines"
         scr, line = footer_line()
-        i = line.index("t/p/u/m mode")
+        i = line.index("t/p/u/m Mode")
         assert scr.attrs[(23, i + 6)] == accent and scr.attrs[(23, i)] == 4  # machines: m lit
     finally:
         ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
@@ -597,9 +596,7 @@ def test_the_focused_chart_and_calendar_shades_keep_their_own_keybar_chips():
     assert {"← ↑ ↓ → move", "+/- shades"} <= painted
 
 
-def test_the_keybar_is_centred_and_never_crowds_the_version():
-    # The hints sit centred under the centred mode tabs; where the row is too narrow to
-    # do that clear of the version tag, they re-centre in the room left of it.
+def test_the_keybar_is_left_aligned_and_reserves_the_live_help_binding():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.can_switch_source = lambda: False
     app.renderer.hline = lambda *a: None  # ACS_HLINE needs initscr
@@ -607,17 +604,21 @@ def test_the_keybar_is_centred_and_never_crowds_the_version():
     ot.curses.color_pair, ot.curses.init_pair = (lambda n: 0), (lambda *a: None)
     try:
 
-        def margins(width):
+        def footer(width):
             scr = AttrScreen(24, width)
             app.renderer.draw_footer(scr, 24, width)
-            line = "".join(scr.cells.get((23, x), " ") for x in range(width))
-            hints, ver = line[: line.index(" v")], line[line.index(" v") :]
-            return len(hints) - len(hints.rstrip()), hints.index(hints.strip()[0]), ver
+            return "".join(scr.cells.get((23, x), " ") for x in range(width))
 
-        right, left, ver = margins(200)  # room to centre on the whole row
-        assert abs(left - (right + len(ver))) <= 1 and left > 1
-        right, left, _ = margins(80)  # version in the way: centred in what is left
-        assert abs(left - right) <= 1 and left > 0
+        for width in (40, 80, 120, 200):
+            line = footer(width)
+            assert line.startswith(" Tab Yr/mo/day │ ")
+            assert line.endswith("  ? Help ")
+            assert line.count("? Help") == 1
+
+        app.keymap = ot.tui.bindings.Keymap({("main", "help"): ["F1"]})
+        assert footer(80).endswith("  F1 Help ")
+        app.keymap = ot.tui.bindings.Keymap({("main", "help"): []})
+        assert "Help" not in footer(80)
     finally:
         ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
 

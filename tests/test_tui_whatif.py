@@ -441,7 +441,7 @@ def test_whatif_target_is_not_tagged_into_the_header():
         assert ot.money(1.94) in header  # still the actual spend
 
         # ... and the footer chip does light up, so "armed" is never invisible.
-        assert "w model" in screen_text(footer)
+        assert "w Model" in screen_text(footer)
 
 
 def test_whatif_key_opens_the_picker_and_clears_an_active_target():

@@ -95,11 +95,18 @@ Dispatch by tab name rather than assuming a class tuple's index is still valid.
 
 `zoom_maximized` controls whether **zoom** hides its sidebar. It is a global
 preference saved and restored by `persistence/state.py`, not a transient flag reset on entry.
-The footer consistently labels `+` as `expand` and highlights it only in a visibly
+The footer consistently labels `+` as `Expand` and highlights it only in a visibly
 maximized zoom, never from that saved preference while browsing or in a session.
 The session layout is full-screen regardless of that flag; changing it there
 affects the zoom layout on return. A browse preview's trailing `detail` click
 region focuses it, but its more specific table and tab regions take precedence.
+
+Footer metadata comes from `keymap.footer_entries`; `footer_hints` supplies semantic
+key/label/active spans and a separate live Help binding. `keybar_layout` left-aligns
+whole hints with quiet dividers and reserves Help at the right edge before fitting
+actions. Contextual navigation, sort/filter and session actions precede secondary
+shortcuts; Help contains the full set. The footer uses terminal-cell widths, including
+for remapped keys, and never clips a partial hint.
 
 `BROWSE_MODES` describes Time, Projects, Harnesses, and Machines, including their labels,
 actions, and hierarchical/flat distinction. It feeds the mode strip, help/footer,
