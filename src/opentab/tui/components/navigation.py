@@ -120,33 +120,40 @@ def tab_strip_layout(
     return TabStripLayout(tuple(spans), tuple(hits), tuple(rules))
 
 
-def keybar_layout(parts, width: int, *, limit: int | None = None) -> KeybarLayout:
-    """Fit complete footer hints and return their centered styled spans."""
-    limit = width if limit is None else limit
-    shown = []
-    total = 0
-    for part in parts:
-        segments = part if isinstance(part, list) else [part]
-        span = (2 if shown else 0) + sum(display_width(text) for text, _active in segments)
-        if total + span > limit - 2:
-            break
-        shown.append(segments)
-        total += span
-    if not shown:
-        return KeybarLayout((), 0)
+def keybar_layout(parts, width: int, *, trailing=()) -> KeybarLayout:
+    """Left-align whole hints, with a reserved right-hand action and quiet dividers.
 
-    x = max(1, (width - total) // 2)
-    if x + total > limit - 1:
-        x = max(1, (limit - total) // 2)
+    Parts contain semantic (text, style) segments. All fitting uses terminal cells;
+    neither a shortcut nor the trailing action is ever partially rendered.
+    """
     spans = []
-    for index, segments in enumerate(shown):
-        if index:
-            spans.append(TextSpan(x, "  ", "normal"))
-            x += 2
-        for text, active in segments:
-            spans.append(TextSpan(x, text, "active" if active else "normal"))
+    right = width - 1
+    tail_width = sum(display_width(text) for text, _style in trailing)
+    if trailing and tail_width <= width - 2:
+        x = right - tail_width
+        for text, style in trailing:
+            spans.append(TextSpan(x, text, style))
             x += display_width(text)
-    return KeybarLayout(tuple(spans), total)
+        right -= tail_width + 2
+
+    x = 1
+    for segments in parts:
+        cells = sum(display_width(text) for text, _style in segments)
+        gap = 3 if x > 1 else 0
+        if not cells:
+            continue
+        if x + gap + cells > right:
+            break
+        if gap:
+            spans.append(TextSpan(x, " │ ", "separator"))
+            x += gap
+        for text, style in segments:
+            spans.append(TextSpan(x, text, style))
+            x += display_width(text)
+    return KeybarLayout(
+        tuple(sorted(spans, key=lambda span: span.x)),
+        sum(display_width(span.text) for span in spans),
+    )
 
 
 def viewport_geometry(total: int, visible: int, offset: int) -> ViewportGeometry:

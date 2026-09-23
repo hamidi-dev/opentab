@@ -38,29 +38,40 @@ def test_ruled_tabs_clip_without_partial_extra_hits_and_disable_clicks():
 
 def test_navigation_spans_measure_terminal_cells_for_wide_labels():
     tabs = tab_strip_layout(("界", "X"), 0, 11, center=True)
-    keys = keybar_layout([[("界", True), (" go", False)]], 20)
+    keys = keybar_layout([[("界", "active"), (" Go", "label")]], 20)
 
     assert [(hit.x0, hit.x1) for hit in tabs.hits] == [(1, 4), (7, 9)]
-    assert [(span.x, span.text) for span in keys.spans] == [(7, "界"), (9, " go")]
+    assert [(span.x, span.text) for span in keys.spans] == [(1, "界"), (3, " Go")]
 
 
 def test_keybar_uses_passed_labels_styles_and_drops_whole_hints_at_limit():
     parts = [
-        [("z", True), (" move", False)],
-        [("q", True), (" quit", False)],
+        [("z", "active"), (" Move", "label")],
+        [("q", "key"), (" Quit", "label")],
     ]
     full = keybar_layout(parts, 30)
-    limited = keybar_layout(parts, 30, limit=12)
+    limited = keybar_layout(parts, 16, trailing=[("?", "key"), (" Help", "label")])
 
     assert [(span.text, span.style) for span in full.spans] == [
         ("z", "active"),
-        (" move", "normal"),
-        ("  ", "normal"),
-        ("q", "active"),
-        (" quit", "normal"),
+        (" Move", "label"),
+        (" │ ", "separator"),
+        ("q", "key"),
+        (" Quit", "label"),
     ]
-    assert full.width == 14 and full.spans[0].x == 8
-    assert [span.text for span in limited.spans] == ["z", " move"]
+    assert full.width == 15 and full.spans[0].x == 1
+    assert [span.text for span in limited.spans] == ["z", " Move", "?", " Help"]
+    assert limited.spans[-1].x + len(limited.spans[-1].text) == 15
+
+    # No dangling divider, clipped action, or off-screen span at tiny widths.
+    from opentab.presentation.formatting import display_width
+
+    for width in range(32):
+        layout = keybar_layout(parts, width, trailing=[("界 Help", "label")])
+        assert all(1 <= span.x < span.x + display_width(span.text) < width for span in layout.spans)
+        assert not layout.spans or layout.spans[-1].text != " │ "
+        if width >= 9:
+            assert layout.spans[-1].text == "界 Help"
 
 
 def test_scrollbar_layout_clamps_viewport_and_uses_at_most_three_runs():
