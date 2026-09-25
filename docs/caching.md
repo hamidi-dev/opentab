@@ -410,6 +410,19 @@ workflow/model/provenance stashes together on a hit, keeping them one answer.
 
 ## Cost polling and direct entry
 
+`opentab launch` reads only existing, version-compatible rollup JSON for the
+configured local resumable harness roots. It does not check harness availability,
+fingerprint records, or update caches by default. `--refresh` explicitly loads
+local stores headlessly and completes both workflow and model reads to persist
+their normal caches before opening fzf. Missing or stale sessions remain absent
+until a refresh; a missing directory or executable at selection time is reported.
+Ignored sessions and projects are hidden unless `--no-state` is used. fzf sorts
+matches by relevance, breaking ties in the original newest-activity order.
+The picker uses aligned tool, compact project, updated-time and session columns;
+narrow terminals give priority to the title. Long titles remain fully searchable.
+The picker uses its own fzf options instead of `FZF_DEFAULT_OPTS` or
+`FZF_DEFAULT_OPTS_FILE`, so global bindings cannot change its selection protocol.
+
 `opentab cost` is a curses-free fast path using raw stores, not persistent
 rollups. `--harness` limits which local tool it queries.
 

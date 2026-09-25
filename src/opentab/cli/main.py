@@ -395,6 +395,7 @@ _SUBCOMMANDS = (
     "bookmarks",
     "ignore",
     "mcp",
+    "launch",
 )
 
 
@@ -487,7 +488,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "terminal UI and automatically discovers supported local sources.",
         epilog="Examples:\n"
         "  opentab\n  opentab web\n  opentab doctor\n"
-        "  opentab usage summary --range 30d --group-by project\n"
+        "  opentab launch\n  opentab usage summary --range 30d --group-by project\n"
         "  opentab sessions list --from-harness claude --limit 20\n\n"
         "Implicit-TUI options: opentab tui --help\n"
         "More help: opentab COMMAND --help",
@@ -646,6 +647,52 @@ def _build_parser() -> argparse.ArgumentParser:
         "script's parsing doesn't change with the number of targets it happened to "
         "collect. Targets that can't be priced are omitted, so an empty table means "
         "nothing matched",
+    )
+    launch = subs.add_parser(
+        "launch",
+        help="pick a cached local session in fzf and resume it in this terminal",
+        description="Pick a local session by title, harness, project and activity. Reads only "
+        "existing OpenTab rollup caches unless --refresh is supplied. Requires fzf on PATH.",
+        epilog="Examples:\n  opentab launch\n  opentab launch --refresh\n\n"
+        "Cache behavior: docs/caching.md",
+    )
+    _add_command_global_args(
+        launch,
+        {
+            "source",
+            "db",
+            "claude_dir",
+            "codex_dir",
+            "hermes_db",
+            "copilot_dir",
+            "pi_dir",
+            "omp_dir",
+            "zaly_dir",
+            "gemini_dir",
+            "antigravity_dir",
+            "no_state",
+            "no_worktrees",
+        },
+        source_choices=(
+            "auto",
+            "all",
+            "opencode",
+            "claude",
+            "codex",
+            "hermes",
+            "copilot",
+            "pi",
+            "omp",
+            "zaly",
+            "gemini",
+            "antigravity",
+        ),
+        source_help="local resumable harness (default: all cached local harnesses)",
+    )
+    launch.add_argument(
+        "--refresh",
+        action="store_true",
+        help="refresh ordinary local rollup caches before picking (reads harness data)",
     )
     doctor = subs.add_parser(
         "doctor",
@@ -812,6 +859,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "~ marks a list-price estimate, not a subscription bill.",
             {"batch", "source"},
         ),
+        launch: (
+            "Choose a cached local session in fzf, then resume it in this terminal.\n"
+            "--refresh updates local caches first; default never scans harness records.",
+            {"refresh", "source"},
+        ),
         doctor: (
             "Find missing sources and configuration problems. Read-only; nothing repaired.\n"
             "Paths are redacted by default. Errors exit 1; warnings alone do not.",
@@ -859,7 +911,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "json": "Output JSON instead of the text report.",
         "full": "Include absolute paths and machine names; for local use.",
     }
-    for command in (tui, web, status, doctor, pull, remote, export, forget):
+    for command in (tui, web, status, launch, doctor, pull, remote, export, forget):
         arrange_help(
             command,
             source_paths=_SOURCE_PATH_DESTS,
@@ -2113,6 +2165,10 @@ def main() -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if getattr(args, "command", None) == "launch":
+        from opentab.cli.launch import launch_command
+
+        return launch_command(args)
     if getattr(args, "command", None) in {
         "usage",
         "sessions",

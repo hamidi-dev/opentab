@@ -32,13 +32,18 @@ def cache_dir() -> str:
     return os.path.join(paths.cache_dir(), "cache")
 
 
+def cache_path(cache_id: str) -> str:
+    source = cache_id.split("|", 1)[0]
+    name = hashlib.sha1(cache_id.encode("utf-8", "replace")).hexdigest()[:16]
+    return os.path.join(cache_dir(), f"{source}-{name}.json")
+
+
 class CachedStore:
     def __init__(self, store, cache_id: str, args: argparse.Namespace):
         self._store = store  # set FIRST so __getattr__ never recurses on a missing attr
         self._args = args
         self._source = cache_id.split("|", 1)[0]
-        name = hashlib.sha1(cache_id.encode("utf-8", "replace")).hexdigest()[:16]
-        self._path = os.path.join(cache_dir(), f"{self._source}-{name}.json")
+        self._path = cache_path(cache_id)
         self._disk = self._read()  # the on-disk cache, or None
         loader = getattr(store, "set_accounting_cache_loader", None)
         if loader is not None:
