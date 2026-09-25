@@ -1157,6 +1157,7 @@ def test_cli_help_covers_the_complete_command_tree_at_multiple_widths_without_ac
         "tui",
         "web",
         "cost",
+        "launch",
         "doctor",
         "pull",
         "remote",
@@ -1272,7 +1273,7 @@ def test_cli_root_help_groups_each_command_once_and_guides_the_default_tui():
             assert len(re.findall(r"^    " + name + r"\s", text, re.MULTILINE)) == 1
     assert "automatically discovers supported local sources" in " ".join(text.split())
     assert "opentab tui --help" in text and text.rstrip().endswith("opentab COMMAND --help")
-    assert text.count("\n  opentab") == 5
+    assert text.count("\n  opentab") == 6
 
 
 def test_cli_help_preserves_context_and_separates_actual_legacy_options():

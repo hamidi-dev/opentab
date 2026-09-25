@@ -6,7 +6,7 @@ import sys
 import textwrap
 
 COMMAND_GROUPS = (
-    ("Browse", ("tui", "web")),
+    ("Browse", ("tui", "web", "launch")),
     ("Query", ("cost", "usage", "sessions", "models", "sources")),
     ("Conversations", ("conversations",)),
     ("Machines and exports", ("pull", "remote", "export", "forget")),

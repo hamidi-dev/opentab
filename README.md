@@ -139,6 +139,12 @@ sessions behind it. Filter as you type, change the date range, and keep explorin
 - **Find your way back.** Bookmark sessions, add searchable notes, and reopen supported
   sessions in their original coding tool with **`L`**. Launch through tmux, Herdr, or a
   custom launcher, or copy a ready-to-run resume command.
+
+  `opentab launch` opens an external [fzf](https://github.com/junegunn/fzf) picker of
+  cached local sessions, then resumes the selected harness in the current terminal
+  from its recorded project directory. It reads only existing OpenTab rollup caches
+  by default; use `opentab launch --refresh` to update the local caches first. Esc
+  or Ctrl-C cancels without launching. fzf is optional and must be on `PATH`.
 - **Make it yours.** Keyboard and mouse navigation, 30 bundled themes, and remappable
   keys. Your sort, selected tool, theme, bookmarks, and pricing view are remembered; the
   date range is not, so every launch starts on the default window.

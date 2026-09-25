@@ -77,7 +77,7 @@ from opentab.presentation.heatmap import (
     week_key,
 )
 from opentab.presentation.whats_new import RELEASES_URL, load_release_history, should_announce
-from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
+from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, diff_pager, exporting, keymap
 from opentab.tui.renderer import Renderer
 from opentab.tui.search_workspace import SearchWorkspace
@@ -4746,11 +4746,13 @@ class App:
     def resume_parts(self, workflow: Workflow) -> tuple[str, str] | None:
         # (project directory, bare resume command) for the selected session —
         # launch backends receive the directory separately from the bare resume command.
-        cli = RESUME_COMMANDS.get(workflow.source)
-        directory = workflow.directory
-        if not cli or not directory or directory == "(unknown)":
+        from opentab.launch import resume_argv
+
+        parts = resume_argv(workflow)
+        if parts is None:
             return None
-        return directory, f"{cli} {shlex.quote(workflow.id)}"
+        directory, argv = parts
+        return directory, shlex.join(argv)
 
     def machine_ssh_target(self, workflow: Workflow) -> str | None:
         # The ssh target for the box a PULLED session ran on -- its machine's
