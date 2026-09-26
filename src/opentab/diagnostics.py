@@ -59,6 +59,7 @@ class _Sink:
         self.sequence = 0
         self.size = 0
         self.stopped = False
+        self.stderr_progress = False
 
     def emit(self, event: str, fields: dict) -> int:
         with self.lock:
@@ -93,6 +94,32 @@ def event(name: str, **fields) -> None:
     sink = _sink
     if sink is not None:
         sink.emit(name, fields)
+
+
+def progress(name: str, **fields) -> None:
+    """Flush an opt-in CLI milestone to both the log and stderr.
+
+    Callers must supply only static labels, counts and run-local hashed identities.
+    Unlike span events this remains visible without a second tail process.
+    """
+    sink = _sink
+    if sink is None:
+        return
+    sink.emit(name, fields)
+    if not sink.stderr_progress:
+        return
+    sys.stderr.write(
+        "OpenTab debug: "
+        + json.dumps(
+            {
+                "stage": name,
+                "elapsed_ms": round((time.perf_counter() - sink.started) * 1000, 3),
+                **fields,
+            }
+        )
+        + "\n"
+    )
+    sys.stderr.flush()
 
 
 def _memory() -> dict:
@@ -278,7 +305,7 @@ def query_plan(conn, sql: str, params=(), *, label: str) -> None:
 
 
 @contextlib.contextmanager
-def session(active: bool = False, filename: str | None = None):
+def session(active: bool = False, filename: str | None = None, *, stderr_progress: bool = False):
     """Own the CLI log's lifetime; stdout remains usable for JSON/MCP/exports."""
     global _sink
     if not active and filename is None:
@@ -296,7 +323,9 @@ def session(active: bool = False, filename: str | None = None):
             f"opentab: cannot create debug log ({type(exc).__name__}); use a new writable --debug-log path"
         ) from None
     _sink = sink
+    sink.stderr_progress = stderr_progress
     sys.stderr.write(f"OpenTab debug log: {sink.path}\n")
+    sys.stderr.flush()
     try:
         with span(
             "run",

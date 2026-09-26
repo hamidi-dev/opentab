@@ -119,9 +119,16 @@ class OpenTabService:
                 "demo_unsupported",
                 "programmatic access is unavailable in demo mode",
             )
-        source_key = sources.resolve_source(args, {})
-        store, _loading = sources.make_store(args, source_key)
-        return cls(store, args, source_key, allow_raw_content=allow_raw_content)
+        from opentab import diagnostics
+
+        with diagnostics.span("service.source.resolve"):
+            source_key = sources.resolve_source(args, {})
+        diagnostics.progress("service.source.selected", harness=source_key)
+        with diagnostics.span("service.store.build", harness=source_key):
+            store, _loading = sources.make_store(args, source_key)
+        diagnostics.progress("service.store.ready", harness=source_key)
+        with diagnostics.span("service.catalog.build", harness=source_key):
+            return cls(store, args, source_key, allow_raw_content=allow_raw_content)
 
     def reload(self) -> None:
         reload_store = getattr(self.store, "reload", None)
@@ -816,6 +823,7 @@ class OpenTabService:
     def index_conversations(
         self, *, project=None, harness=None, machine=None, session=None, rebuild=False
     ):
+        from opentab import diagnostics
         from opentab.conversations.index import ConversationIndex
         from opentab.conversations.reader import CONVERSATION_READER_VERSION, ConversationError
 
@@ -824,10 +832,15 @@ class OpenTabService:
         )
         if not isinstance(rebuild, bool):
             raise ServiceError("invalid_arguments", "rebuild must be a boolean")
-        self.reload()
-        rows = self._conversation_scope(
-            project=project, harness=harness, machine=machine, session=session
-        )
+        diagnostics.progress("conversations.reload.start")
+        with diagnostics.span("conversations.reload"):
+            self.reload()
+        diagnostics.progress("conversations.reload.ready", roots=len(self._sessions))
+        with diagnostics.span("conversations.scope"):
+            rows = self._conversation_scope(
+                project=project, harness=harness, machine=machine, session=session
+            )
+        diagnostics.progress("conversations.scope.ready", roots=len(rows))
         eligible = {item.ref.encode(): item for item in rows}
         selected_key = self.resolve_session(session).ref.encode() if session else None
         domains = set()
@@ -866,9 +879,12 @@ class OpenTabService:
             "errors": [],
         }
         try:
+            diagnostics.progress("conversations.index.open.start")
             with ConversationIndex(write=True) as index:
+                diagnostics.progress("conversations.index.open.ready")
                 # Prune only the currently loaded local domains and requested scope.
                 # A narrow OpenCode refresh must not remove a Claude index built earlier.
+                diagnostics.progress("conversations.index.prune.start")
                 for old in index.roots():
                     if (old["machine"], old["harness"], old.get("source_id")) not in domains:
                         continue
@@ -883,21 +899,43 @@ class OpenTabService:
                     if old["session_key"] not in eligible:
                         index.remove_root(old["session_key"])
                         report["removed"] += 1
-                indexed = {row["session_key"]: row for row in index.roots()}
-                manifests = index.manifests()
+                diagnostics.progress("conversations.index.prune.ready", removed=report["removed"])
+                with diagnostics.span("conversations.index.metadata"):
+                    indexed = {row["session_key"]: row for row in index.roots()}
+                    manifests = index.manifests()
+                diagnostics.progress(
+                    "conversations.index.metadata.ready",
+                    roots=len(indexed),
+                    manifests=len(manifests),
+                )
                 owners = []
                 for item in eligible.values():
                     if all(item.owner is not owner for owner in owners):
                         owners.append(item.owner)
                 prepared = []
                 try:
-                    for owner in owners:
+                    for owner_number, owner in enumerate(owners, 1):
                         prepare = getattr(owner, "prepare_conversation_refresh", None)
                         if callable(prepare):
-                            prepare()
+                            diagnostics.progress(
+                                "conversations.owner.prepare.start",
+                                ordinal=owner_number,
+                                total=len(owners),
+                            )
+                            with diagnostics.span("conversations.owner.prepare"):
+                                prepare()
                             prepared.append(owner)
-                    for key, item in eligible.items():
+                            diagnostics.progress("conversations.owner.prepare.ready")
+                    for ordinal, (key, item) in enumerate(eligible.items(), 1):
                         owner, sid = item.owner, item.workflow.id
+                        marker = diagnostics.identity(key)
+                        diagnostics.progress(
+                            "conversations.root.start",
+                            root=marker,
+                            ordinal=ordinal,
+                            total=len(eligible),
+                            harness=item.ref.harness,
+                        )
                         metadata = {
                             "session_key": key,
                             "native_id": sid,
@@ -907,7 +945,9 @@ class OpenTabService:
                             "title": item.workflow.title,
                             "source_id": self._conversation_source_id(owner),
                         }
-                        before = self._conversation_manifest(owner, sid)
+                        diagnostics.progress("conversations.root.manifest.start", root=marker)
+                        with diagnostics.span("conversations.root.manifest", root=marker):
+                            before = self._conversation_manifest(owner, sid)
                         source_manifest = (
                             [CONVERSATION_READER_VERSION, before] if before is not None else None
                         )
@@ -920,6 +960,11 @@ class OpenTabService:
                             and all(old.get(name) == value for name, value in metadata.items())
                         ):
                             report["unchanged"] += 1
+                            diagnostics.progress(
+                                "conversations.root.ready",
+                                root=marker,
+                                outcome="manifest_unchanged",
+                            )
                             continue
                         try:
                             supports = getattr(owner, "supports_conversation", None)
@@ -930,23 +975,53 @@ class OpenTabService:
                             ):
                                 index.remove_root(key)
                                 report["unsupported"] += 1
+                                diagnostics.progress(
+                                    "conversations.root.ready", root=marker, outcome="unsupported"
+                                )
                                 continue
-                            root = owner.conversation_source(sid)
+                            diagnostics.progress("conversations.root.read.start", root=marker)
+                            with diagnostics.span("conversations.root.read", root=marker):
+                                root = owner.conversation_source(sid)
                             sources = [root]
                             for execution in root["executions"]:
                                 if execution["id"] != root["execution_id"]:
-                                    sources.append(
-                                        owner.conversation_source(sid, execution_id=execution["id"])
+                                    diagnostics.progress(
+                                        "conversations.execution.read.start",
+                                        root=marker,
+                                        ordinal=len(sources) + 1,
+                                        total=len(root["executions"]),
                                     )
+                                    with diagnostics.span(
+                                        "conversations.execution.read", root=marker
+                                    ):
+                                        sources.append(
+                                            owner.conversation_source(
+                                                sid, execution_id=execution["id"]
+                                            )
+                                        )
                             # Refuse a mixed root membership/root-text snapshot during refresh.
-                            if (
-                                len(sources) > 1
-                                and owner.conversation_source(sid)["snapshot"] != root["snapshot"]
-                            ):
+                            if len(sources) > 1:
+                                diagnostics.progress(
+                                    "conversations.root.recheck.start", root=marker
+                                )
+                                with diagnostics.span("conversations.root.recheck", root=marker):
+                                    current_snapshot = owner.conversation_source(sid)["snapshot"]
+                                diagnostics.progress(
+                                    "conversations.root.recheck.ready", root=marker
+                                )
+                            else:
+                                current_snapshot = root["snapshot"]
+                            if len(sources) > 1 and current_snapshot != root["snapshot"]:
                                 raise ConversationError(
                                     "source_changed", "Root changed during indexing"
                                 )
-                            after = self._conversation_manifest(owner, sid)
+                            diagnostics.progress(
+                                "conversations.root.manifest_recheck.start", root=marker
+                            )
+                            with diagnostics.span(
+                                "conversations.root.manifest_recheck", root=marker
+                            ):
+                                after = self._conversation_manifest(owner, sid)
                             if before is not None and after != before:
                                 raise ConversationError(
                                     "source_changed", "Conversation sources changed during indexing"
@@ -961,20 +1036,47 @@ class OpenTabService:
                                     else "conversation_unavailable",
                                 }
                             )
+                            diagnostics.progress(
+                                "conversations.root.ready",
+                                root=marker,
+                                outcome="error",
+                                error_type=type(exc).__name__,
+                            )
                             continue
                         if rebuild:
                             index.remove_root(key)
-                        result = index.replace_root(metadata, sources, source_manifest)
+                        diagnostics.progress(
+                            "conversations.root.write.start", root=marker, executions=len(sources)
+                        )
+                        with diagnostics.span("conversations.root.write", root=marker):
+                            result = index.replace_root(metadata, sources, source_manifest)
                         report["updated" if result["changed"] else "unchanged"] += 1
+                        diagnostics.progress(
+                            "conversations.root.ready",
+                            root=marker,
+                            outcome="updated" if result["changed"] else "unchanged",
+                        )
                 finally:
                     for owner in prepared:
                         finish = getattr(owner, "finish_conversation_refresh", None)
                         if callable(finish):
-                            finish()
+                            diagnostics.progress("conversations.owner.finish.start")
+                            with diagnostics.span("conversations.owner.finish"):
+                                finish()
+                            diagnostics.progress("conversations.owner.finish.ready")
+                diagnostics.progress("conversations.index.status.start")
                 report["index"] = index.status()
+                diagnostics.progress("conversations.index.status.ready")
         except ConversationError as exc:
             raise ServiceError(exc.code, exc.message) from exc
         report["complete"] = not report["errors"] and not report["unsupported"]
+        diagnostics.progress(
+            "conversations.index.ready",
+            updated=report["updated"],
+            unchanged=report["unchanged"],
+            removed=report["removed"],
+            errors=len(report["errors"]),
+        )
         report["refresh_policy"] = (
             "cheap source manifests skip unchanged roots; changed roots are read and verified; "
             "no automatic refresh"
@@ -995,12 +1097,16 @@ class OpenTabService:
         limit=10,
         max_chars=6000,
     ):
+        from opentab import diagnostics
         from opentab.conversations.index import ConversationIndex, validate_search
         from opentab.conversations.reader import ConversationError
 
-        rows = self._conversation_scope(
-            project=project, harness=harness, machine=machine, session=session
-        )
+        diagnostics.progress("conversations.search.scope.start")
+        with diagnostics.span("conversations.search.scope"):
+            rows = self._conversation_scope(
+                project=project, harness=harness, machine=machine, session=session
+            )
+        diagnostics.progress("conversations.search.scope.ready", roots=len(rows))
         try:
             validate_search(query, since=since, until=until, limit=limit, max_chars=max_chars)
             if exclude_session is not None:
@@ -1040,19 +1146,28 @@ class OpenTabService:
                 }
                 for key, item in eligible.items()
             }
+            diagnostics.progress("conversations.search.index.start")
             with ConversationIndex() as index:
+                diagnostics.progress("conversations.search.index.ready")
                 indexed = {row["session_key"]: row for row in index.roots()}
                 current_metadata = {
                     key
                     for key, metadata in expected_metadata.items()
                     if key in indexed and all(indexed[key].get(k) == v for k, v in metadata.items())
                 }
-                candidates = index.candidates(
-                    query,
-                    current_metadata,
-                    since=since,
-                    until=until,
-                    group_by="record" if session else "root",
+                diagnostics.progress(
+                    "conversations.search.candidates.start", roots=len(current_metadata)
+                )
+                with diagnostics.span("conversations.search.candidates"):
+                    candidates = index.candidates(
+                        query,
+                        current_metadata,
+                        since=since,
+                        until=until,
+                        group_by="record" if session else "root",
+                    )
+                diagnostics.progress(
+                    "conversations.search.candidates.ready", candidates=len(candidates["hits"])
                 )
                 status = index.status()
             hits, seen, checked, stale = [], set(), {}, set()
@@ -1079,6 +1194,11 @@ class OpenTabService:
                     owner = item.owner
                     supports = getattr(owner, "supports_conversation", None)
                     try:
+                        diagnostics.progress(
+                            "conversations.search.verify.start",
+                            root=diagnostics.identity(key),
+                            ordinal=len(checked) + 1,
+                        )
                         if (
                             getattr(owner, "demo", False)
                             or not callable(supports)
@@ -1093,8 +1213,16 @@ class OpenTabService:
                             {r["id"] for r in source["records"]},
                         )
                         del source
+                        diagnostics.progress(
+                            "conversations.search.verify.ready", root=diagnostics.identity(key)
+                        )
                     except (ConversationError, OSError, ValueError):
                         checked[identity] = None
+                        diagnostics.progress(
+                            "conversations.search.verify.ready",
+                            root=diagnostics.identity(key),
+                            outcome="unavailable",
+                        )
                 current = checked[identity]
                 if (
                     current is None

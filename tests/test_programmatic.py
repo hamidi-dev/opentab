@@ -415,7 +415,7 @@ def test_programmatic_option_surface_matches_the_pre_help_baseline():
         for word in path.split():
             subs = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
             parser = subs.choices[word]
-        common = {"-h", "--help"} if path.startswith("conversations ") else debug
+        common = {"-h", "--help"} | debug if path.startswith("conversations ") else debug
         common = common if path == "mcp" else common | {"--pretty"}
         assert set(parser._option_string_actions) == options | common | {"--help-all"}, path
         assert parser.allow_abbrev is True

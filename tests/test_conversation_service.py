@@ -1,11 +1,12 @@
 """Service orchestration over synthetic stores and a real, XDG-isolated FTS index."""
 
+import io
 import json
 import os
 import sqlite3
 import stat
 import tempfile
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, redirect_stderr
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import opentab as ot
+from opentab import diagnostics
 from opentab.api import service as service_module
 from opentab.conversations import index as search
 from opentab.conversations.reader import ConversationError
@@ -139,6 +141,29 @@ def _service(*stores, allowed=True, no_state=False):
 def _key(store, sid="root"):
     harness = {"OpenCode": "opencode", "Claude Code": "claude", "Codex": "codex"}[store.source_name]
     return ot.SessionRef(store._machine, harness, sid).encode()
+
+
+def test_debug_index_progress_flushes_safe_root_stages_and_timings():
+    with _isolated() as path:
+        store = ConversationStore(ids=("private-session-id",))
+        store.put("private-session-id", "private prompt marker")
+        service = _service(store)
+        output = io.StringIO()
+        log = path.parent / "debug.jsonl"
+        log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with redirect_stderr(output), diagnostics.session(True, str(log), stderr_progress=True):
+            result = service.index_conversations()
+        assert result["updated"] == 1
+        text = output.getvalue()
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+        assert "conversations.root.read.start" in text
+        assert "conversations.root.write.start" in text
+        assert any(
+            row["event"] == "conversations.root.read.end" and "duration_ms" in row
+            for row in records
+        )
+        assert "private-session-id" not in text + log.read_text()
+        assert "private prompt marker" not in text + log.read_text()
 
 
 @contextmanager
