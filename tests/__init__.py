@@ -30,6 +30,11 @@ for _var in (
 ):
     os.environ.pop(_var, None)
 
+# argparse reads the terminal width even when help is captured into a StringIO.
+# Keep structural help assertions independent of the caller's tmux pane size;
+# width-specific tests override COLUMNS explicitly.
+os.environ["COLUMNS"] = "80"
+
 import opentab as ot  # noqa: E402  (must follow the sys.path shim and XDG isolation above)
 
 ot.invalidate_price_cache()
