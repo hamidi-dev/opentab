@@ -174,6 +174,40 @@ def test_resume_args_match_tui_shell_form():
     assert App.resume_parts(None, row) == ("/a path", "claude --resume 'a'\"'\"'b'")
 
 
+def test_hermes_resume_without_cwd_preserves_id_validation():
+    for directory in ("", "(unknown)"):
+        row = _row("a'b", "Hermes", directory)
+        assert resume_argv(row) == ("", ["hermes", "--resume", "a'b"])
+        for source in ("OpenCode", "Claude Code", "Codex", ""):
+            row.source = source
+            assert resume_argv(row) is None
+        row.source = "Hermes"
+        for sid in ("", "bad\0id"):
+            row.id = sid
+            assert resume_argv(row) is None
+    assert resume_argv(_row("ok", "Hermes", "/bad\0path")) is None
+
+
+def test_cached_hermes_without_cwd_launches_from_local_home():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = cli.parse_args(["launch", "--no-state", "--harness", "hermes", "--hermes-db", tmp])
+        _cache(args, "hermes", [_row("hermes-id", "Hermes", "(unknown)")])
+        with patch.object(
+            picker.shutil, "which", side_effect=lambda name: "/bin/" + name
+        ), patch.object(
+            picker.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, b"0\tchosen\0", b""),
+        ), patch.object(picker.os, "execv") as execute, patch.object(
+            picker.os, "chdir"
+        ) as chdir, patch.object(picker.sys, "platform", "linux"):
+            assert cli._run(args) == 0
+            execute.assert_called_once_with("/bin/hermes", ["/bin/hermes", "--resume", "hermes-id"])
+            chdir.assert_called_once_with(os.path.expanduser("~"))
+
+
 def test_explicit_refresh_persists_an_ordinary_cache():
     with tempfile.TemporaryDirectory() as tmp, patch(
         "opentab.stores.cached.cache_dir", return_value=tmp

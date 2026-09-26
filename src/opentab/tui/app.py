@@ -4781,7 +4781,7 @@ class App:
         directory, command = parts
         target = self.machine_ssh_target(workflow)
         if not target:
-            return directory, command
+            return directory or os.path.expanduser("~"), command
         return os.path.expanduser("~"), util.ssh_command(target, directory, command)
 
     def resume_command(self, workflow: Workflow) -> str | None:

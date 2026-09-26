@@ -670,14 +670,16 @@ def clipboard_tools_label() -> str:
 def resume_copy_command(directory: str, command: str) -> str:
     """Format a generated local resume command for the native platform shell."""
     if sys.platform != "win32":
-        return f"cd {shlex.quote(directory)} && {command}"
+        cd = f"cd {shlex.quote(directory)}" if directory else "cd"
+        return f"{cd} && {command}"
 
     def quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
     argv = shlex.split(command)
     invocation = " ".join(quote(arg) for arg in argv)
-    return f"Set-Location -LiteralPath {quote(directory)}; if ($?) {{ & {invocation} }}"
+    destination = quote(directory) if directory else "$HOME"
+    return f"Set-Location -LiteralPath {destination}; if ($?) {{ & {invocation} }}"
 
 
 def copy_to_clipboard(text: str) -> bool:
@@ -927,7 +929,8 @@ def local_machine_name() -> str:
 def ssh_command(target: str, directory: str, command: str) -> str:
     # Agent CLIs need a tty. Quote the remote command as one argument so `&&` runs in the
     # remote shell rather than changing the local shell's directory.
-    inner = f"cd {shlex.quote(directory)} && {command}"
+    cd = f"cd {shlex.quote(directory)}" if directory else "cd"
+    inner = f"{cd} && {command}"
     return f"ssh -t {shlex.quote(target)} {shlex.quote(inner)}"
 
 

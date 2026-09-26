@@ -258,6 +258,7 @@ def launch_command(args) -> int:
         print("launch: fzf returned an invalid selection", file=sys.stderr)
         return 1
     directory, argv = resume_argv(row)
+    directory = directory or os.path.expanduser("~")
     if not os.path.isdir(directory):
         print(f"launch: session directory no longer exists: {directory}", file=sys.stderr)
         return 1
