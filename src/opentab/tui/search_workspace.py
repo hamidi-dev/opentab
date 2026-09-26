@@ -273,6 +273,12 @@ class SearchWorkspace:
                     f"{int(self.index_report.get('unsupported') or 0)} unsupported, "
                     f"{errors} error{'s' if errors != 1 else ''}. Date filters were not used."
                 )
+                limited = int(self.index_report.get("limited_roots") or 0)
+                if limited:
+                    self.notice += (
+                        f" Oversized content omitted in {limited} "
+                        f"session{'s' if limited != 1 else ''}."
+                    )
                 self._schedule_search()
             elif operation == "search":
                 self.response = result or {}

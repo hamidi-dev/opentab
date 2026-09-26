@@ -1,6 +1,7 @@
 import argparse
 import io
 import json
+import os
 import sqlite3
 import tempfile
 from dataclasses import asdict
@@ -59,7 +60,7 @@ def test_opencode_debug_explains_hit_refresh_and_detail_without_changing_results
             assert secret not in text
         records = [json.loads(line) for line in text.splitlines()]
         decisions = [r.get("result") for r in records if r["event"] == "cache.decision"]
-        assert {"hit", "miss", "parsed", "incremental_accounting"} <= set(decisions)
+        assert {"miss", "parsed", "incremental_accounting"} <= set(decisions)
         assert any(r["event"] == "cache.input_changed" and r["mtime_changed"] for r in records)
         assert any(
             r["event"] == "usage.native_summary" and r["decoded"] == 1 and r["reused"] > 0
@@ -525,7 +526,15 @@ def test_opencode_usage_malformed_persistent_projection_rebuilds_without_losing_
         store.restore_accounting_cache(payload)
         with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
             assert _read(store) == expected
-        assert parse.call_count == 7
+        assert parse.call_count == 0  # malformed disk payload cannot erase valid live rows
+        fresh = Store(store.db, argparse.Namespace(demo=False))
+        try:
+            fresh.restore_accounting_cache(payload)
+            with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
+                assert _read(fresh) == expected
+            assert parse.call_count == 7  # a fresh process rejects rather than trusting it
+        finally:
+            fresh.conn.close()
 
 
 def test_opencode_usage_tui_and_web_preserve_deferred_models_and_exact_usage():
@@ -546,3 +555,38 @@ def test_opencode_usage_tui_and_web_preserve_deferred_models_and_exact_usage():
                 assert payload[key] == expected[key], key
         finally:
             reference.conn.close()
+
+
+def test_old_runtime_large_accounting_keeps_tokens_and_handles_nontext():
+    class OlderConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, *args):
+            assert "substr(" not in args[0].lower()
+            return self.conn.execute(*args)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = sqlite3.connect(os.path.join(tmp, "source.db"))
+        try:
+            conn.execute("create table session_message(data text)")
+            conn.execute(
+                "insert into session_message values(?)",
+                [
+                    json.dumps(
+                        {
+                            "content": "z" * (8 * 1024 * 1024),
+                            "tokens": {"input": 23},
+                        }
+                    )
+                ],
+            )
+            compact, size, _, streamed, _ = _read_usage(OlderConnection(conn), 1, False)
+            assert size > 8 * 1024 * 1024 and not streamed
+            assert json.loads(compact)["tokens"]["input"] == 23
+            for value in (b"\xffinvalid", None, 42):
+                conn.execute("update session_message set data=?", [value])
+                compact, _, _, _, _ = _read_usage(OlderConnection(conn), 1, False)
+                assert compact == "null"
+        finally:
+            conn.close()

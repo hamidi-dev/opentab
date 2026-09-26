@@ -65,6 +65,7 @@ REQUIRED_SCHEMA = {
 }
 
 CONVERSATION_TEXT_BUDGET = 256 * 1024 * 1024
+CONVERSATION_MESSAGE_LIMIT = 8 * 1024 * 1024
 
 CHANGE_SUMMARY_LIMIT = 2000
 CHANGE_SUMMARY_BYTES = 1024 * 1024
@@ -757,8 +758,7 @@ class Store:
         )
         if loader is not None and (
             not self._usage_cache.ready
-            or self._usage_cache.scope is not None
-            and self._usage_cache.scope != frozenset(ids)
+            or (self._usage_cache.scope is not None and self._usage_cache.scope != frozenset(ids))
         ):
             self.restore_accounting_cache(loader(ids))
         self._usage_cache.prepare(self.conn, self._legacy_usage_available(), scope=ids)
@@ -2419,7 +2419,24 @@ class Store:
             with closing(sqlite3.connect(uri, uri=True)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("begin")
-                install_views(conn)
+                # Filter physical source branches before compatibility JSON expansion.
+                # Oversized raw cells are excluded individually, not charged to the
+                # text budget (which only bounds retained output after extraction).
+                conn.execute("create temp table opentab_conversation_scope(id text primary key)")
+                conn.execute("insert into opentab_conversation_scope values(?)", [selected])
+                native_views = install_views(conn, conversation_limit=CONVERSATION_MESSAGE_LIMIT)
+                if not native_views:
+                    limit = int(CONVERSATION_MESSAGE_LIMIT)
+                    conn.execute(
+                        "create temp view message as select * from main.message "
+                        f"where session_id in (select id from opentab_conversation_scope) and length(cast(data as blob))<={limit}"
+                    )
+                    conn.execute(
+                        "create temp view part as select p.* from main.part p "
+                        "join main.message m on m.id=p.message_id "
+                        "where m.session_id in (select id from opentab_conversation_scope) "
+                        f"and length(cast(m.data as blob))<={limit} and length(cast(p.data as blob))<={limit}"
+                    )
                 columns = self._conversation_columns(conn)
                 if not columns:
                     raise ConversationError(
@@ -2455,6 +2472,106 @@ class Store:
                     raise ConversationError(
                         "conversation_unavailable", "Conversation execution is unavailable."
                     )
+                skipped_messages = 0
+                skipped_parts = 0
+                legacy_messages = {"id", "session_id", "data"} <= {
+                    row[1] for row in conn.execute("pragma main.table_info(message)")
+                }
+                legacy_parts = {"id", "message_id", "data"} <= {
+                    row[1] for row in conn.execute("pragma main.table_info(part)")
+                }
+                # Candidate identities include oversized rows: omitting their text
+                # cannot make a duplicate ID safe. Only native-owned legacy rows
+                # are excluded, as in the compatibility views.
+                native = (
+                    "select id from main.session_message where session_id=?" if native_views else ""
+                )
+                legacy = (
+                    "select m.id from main.message m where m.session_id=? "
+                    + (
+                        "and not exists (select 1 from main.session_v2 v where v.id=m.session_id)"
+                        if native_views
+                        else ""
+                    )
+                    if legacy_messages
+                    else ""
+                )
+                candidate_sql = " union ".join(filter(None, (native, legacy)))
+                owner_sql = " union all ".join(
+                    filter(
+                        None,
+                        (
+                            "select id from main.session_message where id in (select id from candidates)"
+                            if native_views
+                            else "",
+                            "select m.id from main.message m where m.id in (select id from candidates) "
+                            + (
+                                "and not exists (select 1 from main.session_v2 v where v.id=m.session_id)"
+                                if native_views
+                                else ""
+                            )
+                            if legacy_messages
+                            else "",
+                        ),
+                    )
+                )
+                params = [selected] * (bool(native) + bool(legacy))
+                if conn.execute(
+                    "with candidates(id) as ("
+                    + candidate_sql
+                    + "), owners(id) as ("
+                    + owner_sql
+                    + ") select 1 from owners group by id having count(*)>1 limit 1",
+                    params,
+                ).fetchone():
+                    raise ConversationError(
+                        "conversation_unavailable", "Conversation message identity is ambiguous."
+                    )
+                if native_views:
+                    skipped_messages += conn.execute(
+                        "select count(*) from main.session_message where session_id=? "
+                        "and type in ('user','assistant') and length(cast(data as blob))>?",
+                        [selected, CONVERSATION_MESSAGE_LIMIT],
+                    ).fetchone()[0]
+                if legacy_messages:
+                    skipped_messages += conn.execute(
+                        "select count(*) from main.message m where m.session_id=? "
+                        "and length(cast(m.data as blob))>? "
+                        + (
+                            "and not exists (select 1 from main.session_v2 v where v.id=m.session_id)"
+                            if native_views
+                            else ""
+                        ),
+                        [selected, CONVERSATION_MESSAGE_LIMIT],
+                    ).fetchone()[0]
+                    if legacy_parts:
+                        skipped_parts = conn.execute(
+                            "select count(*) from main.part p join main.message m on m.id=p.message_id "
+                            "where m.session_id=? and length(cast(m.data as blob))<=? and length(cast(p.data as blob))>? "
+                            + (
+                                "and not exists (select 1 from main.session_v2 v where v.id=m.session_id)"
+                                if native_views
+                                else ""
+                            ),
+                            [selected, CONVERSATION_MESSAGE_LIMIT, CONVERSATION_MESSAGE_LIMIT],
+                        ).fetchone()[0]
+                if legacy_messages and legacy_parts:
+                    ambiguous_part = conn.execute(
+                        "select 1 from main.part where id in "
+                        "(select p.id from main.part p join main.message m on m.id=p.message_id "
+                        "where m.session_id=? "
+                        + (
+                            "and not exists (select 1 from main.session_v2 v where v.id=m.session_id)"
+                            if native_views
+                            else ""
+                        )
+                        + ") group by id having count(*)>1 limit 1",
+                        [selected],
+                    ).fetchone()
+                    if ambiguous_part:
+                        raise ConversationError(
+                            "conversation_unavailable", "Conversation part identity is ambiguous."
+                        )
                 resolved = set()
                 for sid in parents:
                     path = set()
@@ -2583,7 +2700,11 @@ class Store:
                         "retained_messages_only",
                         "synthetic_text_excluded",
                         "non_text_parts_excluded",
-                    ],
+                    ]
+                    + (["oversized_messages_skipped"] if skipped_messages else [])
+                    + (["oversized_parts_skipped"] if skipped_parts else []),
+                    "skipped_messages": skipped_messages,
+                    "skipped_parts": skipped_parts,
                     "ordering": f"messages: {message_order}; parts: {part_order}",
                 }
                 digest = hashlib.sha256()

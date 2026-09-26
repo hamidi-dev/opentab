@@ -85,6 +85,320 @@ def _v2_db(*, legacy=False, legacy_part=True, message_pk=True):
             writer.close()
 
 
+def test_conversation_v2_skips_only_oversized_raw_messages_and_keeps_accounting():
+    with _v2_db(legacy=True) as (writer, store):
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("unrelated")
+        )
+        giant = {
+            "role": "assistant",
+            "tokens": {"input": 17},
+            "content": [
+                {
+                    "type": "tool",
+                    "state": {"content": [{"type": "text", "text": "x" * (9 * 1024 * 1024)}]},
+                },
+                {"type": "text", "text": "answer behind tool"},
+            ],
+        }
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message("oversize", "root", "assistant", 1, giant),
+                _message("small", "root", "user", 2, {"text": "retained answer"}),
+                _message("other", "unrelated", "assistant", 1, giant),
+            ],
+        )
+        writer.commit()
+        source = store.conversation_source("root")
+        assert source["skipped_messages"] == 1
+        assert "oversized_messages_skipped" in source["limitations"]
+        assert [r["message_id"] for r in source["records"]] == ["small"]
+        assert source["records"][0]["parts"][0]["text"] == "retained answer"
+        assert sum(row["input"] for row in store.model_breakdown()) == 34
+
+
+def test_conversation_mixed_legacy_oversize_part_is_reported():
+    with _v2_db(legacy=True) as (writer, store):
+        writer.execute("insert into session values ('legacy',null,'Legacy','/repo',null,1,1)")
+        writer.execute("insert into message values ('m','legacy','{\"role\":\"user\"}')")
+        writer.executemany(
+            "insert into part values (?,?,?,?)",
+            [
+                (
+                    "large",
+                    "m",
+                    "legacy",
+                    json.dumps({"type": "text", "text": "x" * (9 * 1024 * 1024)}),
+                ),
+                ("small", "m", "legacy", json.dumps({"type": "text", "text": "retained"})),
+            ],
+        )
+        writer.commit()
+        source = store.conversation_source("legacy")
+        assert source["skipped_parts"] == 1
+        assert "oversized_parts_skipped" in source["limitations"]
+        assert [part["text"] for part in source["records"][0]["parts"]] == ["retained"]
+
+
+def test_conversation_raw_limit_counts_utf8_bytes_not_characters():
+    with _v2_db() as (writer, store):
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        row = list(_message("unicode", "root", "user", 1, {"text": "short"}))
+        row[-1] = json.dumps({"text": "😀" * (3 * 1024 * 1024)}, ensure_ascii=False)
+        assert len(row[-1]) < 8 * 1024 * 1024
+        writer.execute("insert into session_message values (?,?,?,?,?,?,?)", row)
+        writer.commit()
+        source = store.conversation_source("root")
+        assert source["skipped_messages"] == 1 and source["records"] == []
+
+
+def test_conversation_source_work_is_scoped_before_unrelated_inline_json():
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        original = sqlite3.connect
+
+        def steps():
+            count = [0]
+
+            def connect(*args, **kwargs):
+                conn = original(*args, **kwargs)
+
+                def tick():
+                    count[0] += 100
+                    return 0
+
+                conn.set_progress_handler(tick, 100)
+                return conn
+
+            with patch("opentab.stores.opencode.sqlite3.connect", connect):
+                source = store.conversation_source("root")
+            return count[0], source
+
+        baseline, source = steps()
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("unrelated")
+        )
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(
+                    f"unrelated-{n}",
+                    "unrelated",
+                    "assistant",
+                    n + 1,
+                    {
+                        "content": [
+                            {
+                                "type": "tool",
+                                "state": {
+                                    "content": [
+                                        {"type": "text", "text": "noise" * 1024},
+                                    ]
+                                },
+                            }
+                        ],
+                    },
+                )
+                for n in range(400)
+            ],
+        )
+        writer.commit()
+        expanded, same = steps()
+        assert same == source
+        assert expanded < baseline + 15000, (baseline, expanded)
+
+
+def test_conversation_mixed_rejects_duplicate_physical_ids_including_skipped_rows():
+    from opentab.conversations.reader import ConversationError
+
+    for scenario in ("legacy_legacy", "native_legacy", "oversized_legacy"):
+        with _v2_db(legacy=True, message_pk=False) as (writer, store):
+            writer.execute(
+                "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("native")
+            )
+            writer.execute("insert into session values ('legacy',null,'Legacy','/repo',null,1,1)")
+            writer.execute("insert into session values ('outside',null,'Outside','/repo',null,1,1)")
+            if scenario == "legacy_legacy":
+                writer.execute("drop table message")
+                writer.execute("create table message(id text, session_id text, data text)")
+                writer.executemany(
+                    "insert into message values (?,?,?)",
+                    [
+                        ("same", "legacy", '{"role":"user"}'),
+                        ("same", "outside", '{"role":"user"}'),
+                    ],
+                )
+                selected = "legacy"
+            else:
+                writer.execute(
+                    "insert into session_message values (?,?,?,?,?,?,?)",
+                    _message(
+                        "same",
+                        "native",
+                        "assistant",
+                        1,
+                        {
+                            "content": [
+                                {"type": "tool", "state": {"output": "x" * (9 * 1024 * 1024)}}
+                            ]
+                        }
+                        if scenario == "oversized_legacy"
+                        else {"content": [{"type": "text", "text": "answer"}]},
+                    ),
+                )
+                writer.execute("insert into message values ('same','legacy','{\"role\":\"user\"}')")
+                selected = "native"
+            writer.commit()
+            try:
+                store.conversation_source(selected)
+            except ConversationError as exc:
+                assert exc.code == "conversation_unavailable"
+            else:
+                raise AssertionError(scenario)
+
+
+def test_conversation_minimal_projection_matches_original_v2_timestamp_semantics():
+    with _v2_db() as (writer, store):
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        values = [None, 3, [], {}, {"created": None}, {"created": 0}, {"created": "stamp"}]
+        data = [{"text": "body"}] + [{"time": value, "text": "body"} for value in values]
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message("m" + str(n), "root", "user", n + 1, item, created=99)
+                for n, item in enumerate(data)
+            ],
+        )
+        writer.commit()
+        original = sqlite3.connect(store.db)
+        try:
+            install_views(original)
+            before = original.execute(
+                "select id, json_extract(data,'$.role'), "
+                "coalesce(json_extract(data,'$.time.created'),time_created),parent_id "
+                "from message where session_id='root' order by seq,id"
+            ).fetchall()
+        finally:
+            original.close()
+        records = store.conversation_source("root")["records"]
+        assert [
+            (r["message_id"], r["role"], r["timestamp"], r["parent_id"]) for r in records
+        ] == before
+
+
+def test_conversation_json_functions_never_receive_oversize_or_unrelated_cells():
+    from functools import partial
+
+    with _v2_db(legacy=True) as (writer, store):
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("unrelated")
+        )
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(
+                    "giant",
+                    "root",
+                    "assistant",
+                    1,
+                    {
+                        "content": [
+                            {"type": "tool", "state": {"output": "x" * (9 * 1024 * 1024)}},
+                        ]
+                    },
+                ),
+                _message("small", "root", "user", 2, {"text": "retained"}),
+                _message(
+                    "foreign",
+                    "unrelated",
+                    "assistant",
+                    1,
+                    {
+                        "content": [
+                            {"type": "tool", "state": {"output": "y" * (9 * 1024 * 1024)}},
+                        ]
+                    },
+                ),
+            ],
+        )
+        writer.commit()
+        original_connect = sqlite3.connect
+        checker = original_connect(":memory:")
+        seen = []
+
+        def connect(*args, deterministic=False, **kwargs):
+            conn = original_connect(*args, **kwargs)
+
+            def bounded(value):
+                assert (
+                    value is None
+                    or len(value.encode("utf-8") if isinstance(value, str) else value)
+                    <= 8 * 1024 * 1024
+                )
+                assert not isinstance(value, str) or "y" * 128 not in value
+                seen.append(1)
+
+            def valid(value):
+                bounded(value)
+                return checker.execute("select json_valid(?)", [value]).fetchone()[0]
+
+            def extract(*values):
+                bounded(values[0])
+                return checker.execute(
+                    "select json_extract(" + ",".join("?" for _ in values) + ")", values
+                ).fetchone()[0]
+
+            conn.create_function("json_valid", 1, valid, deterministic=deterministic)
+            conn.create_function("json_extract", -1, extract, deterministic=deterministic)
+            return conn
+
+        try:
+            for deterministic in (False, True):
+                with patch(
+                    "opentab.stores.opencode.sqlite3.connect",
+                    partial(connect, deterministic=deterministic),
+                ):
+                    source = store.conversation_source("root")
+                assert seen and source["skipped_messages"] == 1
+                assert [r["message_id"] for r in source["records"]] == ["small"]
+            writer.execute("insert into session values ('legacy',null,'Legacy','/repo',null,1,1)")
+            writer.execute("insert into message values ('old','legacy','{\"role\":\"user\"}')")
+            writer.executemany(
+                "insert into part values (?,?,?,?)",
+                [
+                    (
+                        "huge",
+                        "old",
+                        "legacy",
+                        json.dumps({"type": "text", "text": "z" * (9 * 1024 * 1024)}),
+                    ),
+                    ("kept", "old", "legacy", '{"type":"text","text":"hello"}'),
+                ],
+            )
+            writer.commit()
+            for deterministic in (False, True):
+                with patch(
+                    "opentab.stores.opencode.sqlite3.connect",
+                    partial(connect, deterministic=deterministic),
+                ):
+                    legacy = store.conversation_source("legacy")
+                assert legacy["skipped_parts"] == 1
+            assert legacy["records"][0]["parts"][0]["text"] == "hello"
+        finally:
+            checker.close()
+
+
 def _populate_v2(writer):
     writer.executemany(
         "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

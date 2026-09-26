@@ -212,6 +212,9 @@ class CachedStore:
                     payload["accounting_external"] = "sqlite-v1"
             self._write_json(self._path, payload)
             self._disk = payload
+            self._fresh_wf = None
+            self._fresh_models = None
+            self._fresh_prov = None
             self._debug("cache.written", workflows=len(workflows), models=len(model_breakdown))
         except (OSError, sqlite3.Error) as exc:
             self._debug("cache.write_failed", error_type=type(exc).__name__)
@@ -375,7 +378,13 @@ class CachedStore:
     @debug.timed("cache.workflows")
     def workflows(self) -> list:
         # Reload must observe changes, so fingerprint every call.
-        self._live_fp = self._fingerprint()
+        live_fp = self._fingerprint()
+        if self._fresh_wf is not None and self._live_fp == live_fp:
+            self.served_from_cache = False
+            self.served_incrementally = False
+            self._debug("cache.decision", result="memory_hit", workflows=len(self._fresh_wf))
+            return [Workflow(**row) for row in self._fresh_wf]
+        self._live_fp = live_fp
         # Timing state describes this call, not the wrapper's history.
         self.served_incrementally = False
         if self._disk is not None and self._disk.get("fingerprint") == self._live_fp:
@@ -457,3 +466,14 @@ class CachedStore:
                 prov = getter() if getter is not None else None
             self._write(fp, self._fresh_wf, rows, prov)
         return rows
+
+    def persist_accounting(self) -> None:
+        """Complete an explicitly requested headless catalog refresh.
+
+        This may perform the deferred model scan for a cold OpenCode store; the
+        normal TUI path never calls it before the first paint. Refuse to write a
+        stale fingerprint.
+        """
+        if self._fresh_wf is None or self._live_fp != self._fingerprint():
+            return
+        self.model_breakdown()

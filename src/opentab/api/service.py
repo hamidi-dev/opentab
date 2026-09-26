@@ -158,6 +158,19 @@ class OpenTabService:
             self._by_native[item.workflow.id].append(item)
         self._models_by_owner.clear()
 
+    def _persist_catalog_accounting(self) -> None:
+        def visit(store):
+            children = getattr(store, "stores", None)
+            if children is not None:
+                for child in children:
+                    visit(child)
+            else:
+                persist = getattr(store, "persist_accounting", None)
+                if callable(persist):
+                    persist()
+
+        visit(self.store)
+
     @staticmethod
     def _harness(workflow: Workflow, owner) -> str:
         value = str(workflow.source or getattr(owner, "source_name", "") or "unknown")
@@ -835,6 +848,7 @@ class OpenTabService:
         diagnostics.progress("conversations.reload.start")
         with diagnostics.span("conversations.reload"):
             self.reload()
+            self._persist_catalog_accounting()
         diagnostics.progress("conversations.reload.ready", roots=len(self._sessions))
         with diagnostics.span("conversations.scope"):
             rows = self._conversation_scope(
@@ -876,6 +890,9 @@ class OpenTabService:
             "unchanged": 0,
             "removed": 0,
             "unsupported": 0,
+            "skipped_messages": 0,
+            "skipped_parts": 0,
+            "limited_roots": 0,
             "errors": [],
         }
         try:
@@ -1050,6 +1067,14 @@ class OpenTabService:
                         )
                         with diagnostics.span("conversations.root.write", root=marker):
                             result = index.replace_root(metadata, sources, source_manifest)
+                        # Count only successful root replacements. A failed recheck
+                        # removes stale text and reports an error, not partial coverage.
+                        report["skipped_messages"] += sum(
+                            source.get("skipped_messages", 0) for source in sources
+                        )
+                        report["skipped_parts"] += sum(
+                            source.get("skipped_parts", 0) for source in sources
+                        )
                         report["updated" if result["changed"] else "unchanged"] += 1
                         diagnostics.progress(
                             "conversations.root.ready",
@@ -1066,16 +1091,30 @@ class OpenTabService:
                             diagnostics.progress("conversations.owner.finish.ready")
                 diagnostics.progress("conversations.index.status.start")
                 report["index"] = index.status()
+                report["limited_roots"] = sum(
+                    bool(
+                        {"oversized_messages_skipped", "oversized_parts_skipped"}
+                        & set(row.get("limitations", ()))
+                    )
+                    for row in index.roots()
+                    if row["session_key"] in eligible
+                )
                 diagnostics.progress("conversations.index.status.ready")
         except ConversationError as exc:
             raise ServiceError(exc.code, exc.message) from exc
-        report["complete"] = not report["errors"] and not report["unsupported"]
+        report["complete"] = (
+            not report["errors"] and not report["unsupported"] and not report["limited_roots"]
+        )
         diagnostics.progress(
             "conversations.index.ready",
             updated=report["updated"],
             unchanged=report["unchanged"],
             removed=report["removed"],
             errors=len(report["errors"]),
+            skipped_messages=report["skipped_messages"],
+            skipped_parts=report["skipped_parts"],
+            limited_roots=report["limited_roots"],
+            complete=report["complete"],
         )
         report["refresh_policy"] = (
             "cheap source manifests skip unchanged roots; changed roots are read and verified; "

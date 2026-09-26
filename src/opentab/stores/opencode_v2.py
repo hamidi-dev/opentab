@@ -78,7 +78,7 @@ def _legacy_session_projection(columns: list[str], available: set[str]) -> str:
     return ", ".join(out)
 
 
-def install_views(conn: sqlite3.Connection) -> bool:
+def install_views(conn: sqlite3.Connection, *, conversation_limit: int | None = None) -> bool:
     """Shadow the legacy tables with a v2-first union on this connection."""
     if not has_v2(conn):
         return False
@@ -107,7 +107,15 @@ def install_views(conn: sqlite3.Connection) -> bool:
         )
     conn.execute("create temp view session as " + session_sql)
 
-    for name, sql in _detail_views(conn, legacy_message).items():
+    detail = _detail_views(
+        conn,
+        legacy_message,
+        scope="select id from opentab_conversation_scope"
+        if conversation_limit is not None
+        else None,
+        conversation_limit=conversation_limit,
+    )
+    for name, sql in detail.items():
         conn.execute(f"create temp view {name} as " + sql)
     return True
 
@@ -212,8 +220,11 @@ def _detail_views(
     part_metadata: bool = False,
     change_candidates: bool = False,
     change_messages: bool = False,
+    conversation_limit: int | None = None,
 ) -> dict[str, str]:
     message_scope = f"m.session_id in ({scope}) and " if scope else ""
+    if conversation_limit is not None:
+        message_scope += f"length(cast(m.data as blob)) <= {int(conversation_limit)} and "
     part_message_scope = message_scope
     if keyed:
         message_scope += (
@@ -241,7 +252,14 @@ def _detail_views(
     # assistant messages here copies all inline output into SQLite's temp joins.
     # Snapshots and content readers must keep the full compatibility projection.
     message_data = (
-        """json_object(
+        """json_object('role', case when json_valid(m.data) then
+          case when json_type(m.data) = 'object' then
+            case when m.type = 'compaction' then 'assistant' else m.type end end end,
+          'parentID', json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.parentID'),
+          'time', json_object('created', coalesce(json_extract(case when json_valid(m.data) then m.data else '{}' end, '$.time.created'), m.time_created)),
+          '__opentab_type', m.type)"""
+        if conversation_limit is not None
+        else """json_object(
           'role', case when json_valid(m.data) then
             case when json_type(m.data) = 'object' then
               case when m.type = 'compaction' then 'assistant' else m.type end end end,
@@ -293,13 +311,19 @@ def _detail_views(
         from main.part p
         join main.message m on m.id = p.message_id
         where {f"{('p.session_id' if 'session_id' in legacy_part else 'm.session_id')} in ({scope}) and " if scope else ""}
+          {f'length(cast(m.data as blob)) <= {int(conversation_limit)} and length(cast(p.data as blob)) <= {int(conversation_limit)} and ' if conversation_limit is not None else ''}
           {"p.message_id in (select id from opentab_detail_candidates) and " if keyed else ""}
           not exists (select 1 from main.session_v2 v where v.id = m.session_id)
         """
     # Accounting and readability markers need names/types, never normalized tool
     # output. Avoid constructing/copying inline results for these metadata reads.
     part_data = (
-        """json_object(
+        """json_object('type', json_extract(c.value, '$.type'),
+          'text', case when json_extract(c.value, '$.type') = 'text'
+            then json_extract(c.value, '$.text') end,
+          'synthetic', json_extract(c.value, '$.synthetic'))"""
+        if conversation_limit is not None
+        else """json_object(
       'type', json_extract(c.value, '$.type'),
       'tool', json_extract(c.value, '$.name'),
       'text', case when json_extract(c.value, '$.type') in ('text', 'reasoning')

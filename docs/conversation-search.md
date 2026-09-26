@@ -154,10 +154,20 @@ history or a writer that bypasses those revision updates. Rebuild still performs
 the full readers; search always independently verifies returned evidence live.
 
 The result includes `updated`, `unchanged`, `removed`, `unsupported`, `errors`,
-`complete`, and index counts. A finished command can report a partial build via
+`skipped_messages`, `skipped_parts`, `limited_roots`, `complete`, and index counts.
+OpenCode limits each raw message/part cell to 8 MiB before JSON extraction. A
+larger message (including any small answer embedded in it) or legacy part is
+omitted from conversation text; remaining records continue to index. This does not
+alter token or cost accounting. Skip counts cover only roots verified and written
+during this refresh;
+`limited_roots` also includes unchanged, manifest-reused roots with recorded skips.
+The same limitations appear in reads and search results. The TUI also identifies
+sessions with omitted oversized content after a refresh. A finished command can
+report a partial build via
 `complete: false`; inspect these fields rather than assuming every root succeeded.
-Here `complete` means no root-level failures or unsupported readers, not complete
-historical retention or inclusion of every character; source limitations remain.
+Here `complete` means no root-level failures, unsupported readers or known oversized
+OpenCode cells; it does not imply complete historical retention or inclusion of
+every character; source limitations remain.
 Failed source reads remove that root's old text instead of retaining apparently
 current evidence. A refresh prunes removed/ignored roots only inside its requested
 scope and loaded source origins. Changing `--db` or a harness directory does not

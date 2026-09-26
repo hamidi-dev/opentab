@@ -430,8 +430,8 @@ class UsageCache:
 
     @debug.timed("usage.restore")
     def restore(self, payload) -> None:
-        self.rows = {}
-        self.built_at = 0
+        # A rejected disk snapshot must not evict a newer in-process projection.
+        # A subsequent refresh still validates every retained row's revision.
         if not isinstance(payload, dict) or payload.get("version") != 1:
             debug.event("usage.restore_rejected", reason="missing_or_version")
             return
@@ -457,8 +457,9 @@ class UsageCache:
                     debug.event("usage.restore_rejected", reason="duplicate_row")
                     return
                 rows[stamp[0]] = (tuple(stamp), tuple(values))
-            self.rows = rows
-            self.built_at = payload["built_at"]
+            if not self.ready or self.scope is not None:
+                self.rows = rows
+                self.built_at = payload["built_at"]
             debug.event("usage.restored", rows=len(rows))
         except (KeyError, TypeError, ValueError):
             debug.event("usage.restore_rejected", reason="invalid_payload")

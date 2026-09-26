@@ -11,7 +11,7 @@ from pathlib import Path
 MAX_SOURCE_BYTES = 256 * 1024 * 1024
 MAX_LINE_BYTES = 8 * 1024 * 1024
 # Bump for discovery, ownership, retained-text extraction, or index chunk projection changes.
-CONVERSATION_READER_VERSION = 3
+CONVERSATION_READER_VERSION = 4
 
 
 class ConversationError(Exception):
@@ -306,6 +306,10 @@ def window(
         "text_scope": "retained user/assistant text; no tools, reasoning or attachments",
         "history_completeness": "unknown",
         "limitations": source["limitations"],
+        **(
+            {"skipped_messages": source["skipped_messages"]} if "skipped_messages" in source else {}
+        ),
+        **({"skipped_parts": source["skipped_parts"]} if "skipped_parts" in source else {}),
         "records": result,
         "has_earlier": has_earlier,
         "has_more": has_more,

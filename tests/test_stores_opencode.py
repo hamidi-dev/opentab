@@ -1870,10 +1870,20 @@ def test_opencode_conversation_transaction_is_coherent_and_sql_never_projects_ra
             assert store.conversation_source("root") == before
         assert queries[0] == "begin"
         assert all(
-            "p.data" not in sql.replace("json_extract(p.data,", "").replace("json_type(p.data,", "")
+            "p.data"
+            not in sql.replace("json_extract(p.data,", "")
+            .replace("json_type(p.data,", "")
+            .replace("length(p.data)", "")
+            .replace("length(cast(p.data as blob))", "")
             for sql in queries
         )
-        assert all("m.data" not in sql.replace("json_extract(m.data,", "") for sql in queries)
+        assert all(
+            "m.data"
+            not in sql.replace("json_extract(m.data,", "")
+            .replace("length(m.data)", "")
+            .replace("length(cast(m.data as blob))", "")
+            for sql in queries
+        )
         assert not any("$.state" in sql or "$.output" in sql or "$.input" in sql for sql in queries)
         assert store.conversation_source("root")["records"][0]["parts"][0]["text"] == "after"
 
