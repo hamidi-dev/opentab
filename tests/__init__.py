@@ -35,6 +35,12 @@ for _var in (
 # width-specific tests override COLUMNS explicitly.
 os.environ["COLUMNS"] = "80"
 
+# Python 3.14 argparse colors direct format_help() on a TTY, but not help
+# captured into StringIO. Keep both plain, including under forced-color shells.
+# PYTHON_COLORS takes precedence over NO_COLOR in Python's color detection.
+os.environ["NO_COLOR"] = "1"
+os.environ["PYTHON_COLORS"] = "0"
+
 import opentab as ot  # noqa: E402  (must follow the sys.path shim and XDG isolation above)
 
 ot.invalidate_price_cache()

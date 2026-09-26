@@ -1323,6 +1323,40 @@ def test_cli_help_is_repeatable_and_actions_are_isolated_between_siblings():
     assert tree[("usage", "summary")].format_help() == before[("usage", "summary")]
 
 
+def test_cli_help_test_setup_isolates_terminal_and_forced_colors():
+    # Fresh imports must apply the shared setup even outside run_tests.py. Simulate
+    # a terminal for direct format_help(); redirect_stdout still uses StringIO.
+    probe = """
+from unittest.mock import patch
+from tests.test_cli import (
+    test_cli_help_is_repeatable_and_actions_are_isolated_between_siblings,
+    test_cli_quick_root_help_keeps_every_command_in_its_task_group,
+    test_cli_root_help_groups_each_command_once_and_guides_the_default_tui,
+)
+
+with patch('os.isatty', return_value=True):
+    test_cli_help_is_repeatable_and_actions_are_isolated_between_siblings()
+    test_cli_quick_root_help_keeps_every_command_in_its_task_group()
+    test_cli_root_help_groups_each_command_once_and_guides_the_default_tui()
+"""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"NO_COLOR", "FORCE_COLOR", "PYTHON_COLORS"}
+    }
+    env.update(TERM="xterm-256color", COLUMNS="20")
+    for colors in ({}, {"FORCE_COLOR": "1", "PYTHON_COLORS": "1"}):
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env={**env, **colors},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (colors, result.stdout, result.stderr)
+
+
 def test_cli_help_keeps_command_named_paths_repeated_aliases_and_optional_values():
     # The explicit TUI may open a synthetic file named exactly like a command.
     # With an explicit harness, path routing needs only the existence check.
