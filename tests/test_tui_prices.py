@@ -305,6 +305,76 @@ def test_price_model_sessions_aggregates_alias_spellings():
     assert [w.id for w, _c, _t in rows] == ["a", "b"]
 
 
+def test_prices_and_totals_follow_ignored_visibility_across_harnesses():
+    app = app_with(
+        [
+            workflow("kept", "2026-06-01 12:00:00", cost=1, directory="/repo/kept"),
+            workflow("project", "2026-06-02 12:00:00", cost=5, directory="/repo/hidden"),
+            workflow("session", "2026-06-03 12:00:00", cost=3, directory="/repo/kept"),
+        ]
+    )
+    app.loaded[1].source = "pi"
+    app._model_by_root = {
+        "kept": [_model_row("openai/gpt-5-mini", 1.0, 100)],
+        "project": [_model_row("anthropic/claude-opus-4-8", 5.0, 200)],
+        "session": [_model_row("openai/gpt-5-mini", 3.0, 300)],
+    }
+    app.ignored_projects = {"/repo/hidden"}
+    app.ignored_sessions = {"session"}
+    app.browse_mode = "projects"
+
+    assert app.range_cost_total() == 1
+    assert app.months[0].cost == 1
+    assert app.price_token_mix()[1] == 100
+    assert app.priced_model_names() == ["gpt-5-mini"]
+    assert [w.id for w, _, _ in app.price_model_sessions("claude-opus-4-8")] == []
+    assert app.price_model_sessions("gpt-5-mini")[0][2] == 100
+
+    app.handle_key(None, ord("I"))
+    assert app.range_cost_total() == 9
+    assert app.months[0].cost == 9
+    assert app.price_token_mix()[1] == 600
+    assert set(app.priced_model_names()) == {"gpt-5-mini", "claude-opus-4-8"}
+    assert [w.id for w, _, _ in app.price_model_sessions("claude-opus-4-8")] == ["project"]
+    assert sum(tok for _, _, tok in app.price_model_sessions("gpt-5-mini")) == 400
+    app.project_index = next(i for i, p in enumerate(app.projects) if p.directory == "/repo/hidden")
+    assert [w.id for w in app.current_sessions()] == ["project"]
+
+    app.handle_key(None, ord("I"))
+    assert app.range_cost_total() == 1
+    assert app.price_token_mix()[1] == 100
+    assert app.ignored_projects == {"/repo/hidden"}
+    assert app.ignored_sessions == {"session"}
+
+
+def test_ignoring_and_unignoring_a_project_updates_prices_immediately():
+    app = app_with(
+        [
+            workflow("kept", "2026-06-01 12:00:00", directory="/repo/kept"),
+            workflow("pi", "2026-06-02 12:00:00", directory="/repo/pi"),
+        ]
+    )
+    app.loaded[1].source = "pi"
+    app._model_by_root = {
+        "kept": [_model_row("openai/gpt-5-mini", 1, 100)],
+        "pi": [_model_row("anthropic/claude-opus-4-8", 2, 200)],
+    }
+    app.browse_mode = "projects"
+    app.project_index = next(i for i, p in enumerate(app.projects) if p.directory == "/repo/pi")
+    assert len(app.priced_model_entries()) == 2
+
+    app.handle_key(None, ord("i"))
+    assert app.priced_model_names() == ["gpt-5-mini"]
+    app.handle_key(None, ord("I"))
+    assert set(app.priced_model_names()) == {"gpt-5-mini", "claude-opus-4-8"}
+    app.project_index = next(i for i, p in enumerate(app.projects) if p.directory == "/repo/pi")
+    app.handle_key(None, ord("i"))
+    assert not app.ignored_projects
+    app.handle_key(None, ord("I"))
+    assert app.notice == "no ignored items"
+    assert len(app.priced_model_entries()) == 2
+
+
 def test_prices_group_by_family_dedupes_routes_and_tags_them():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {

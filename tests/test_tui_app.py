@@ -928,7 +928,7 @@ def test_ignored_project_detail_still_uses_its_workflows_when_shown():
     project = app.selected_project_summary
 
     assert project and project.ignored
-    assert {w.id for w in app.workflows_for_project(project.directory)} == set()
+    assert {w.id for w in app.workflows_for_project(project.directory)} == {"b"}
     assert {w.id for w in app.workflows_for_project(project.directory, include_ignored=True)} == {
         "b"
     }

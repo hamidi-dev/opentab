@@ -397,9 +397,10 @@ rewritten history; the rollup cache is not a content-integrity check.
 
 In [tui/app.py](../src/opentab/tui/app.py), reload and harness/demo replacement
 clear node, Turns, Tools, Context, and trace memos, release expanded trace content,
-and rebuild the model cache. Changes
-to range or ignored projects invalidate the derived workflow projections via
-`_invalidate_workflow_cache()`; they do not require new source parsing.
+and rebuild the model cache. Changes to range or ignored projects/sessions
+invalidate derived workflow projections via `_invalidate_workflow_cache()`;
+showing ignored items also changes the projection cache key. Neither requires
+new source parsing.
 
 The backend has its own parsed-state memos. Claude's `workflows()` clears
 `_sessions`, `_one`, and `_trace_one`; a subset parse must clear them too because

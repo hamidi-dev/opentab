@@ -293,7 +293,7 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 
 | Key | Action |
 |-----|--------|
-| `i` / `I` | Ignore / unignore the selection; `I` reveals hidden rows so they can be unignored |
+| `i` / `I` | Ignore / unignore the selection; `I` shows hidden rows and includes their usage in totals and Prices while shown, so they can be unignored |
 | `b` / `B` | Bookmark ★ the selected session (remembered between runs); `B` shows only bookmarks, within the active range |
 | `n` | Note ✎ on the selected session — *why* it cost what it did, which no token count records. Opens a prompt seeded with the existing note (`Enter` saves · `Ctrl-U` clears · `Ctrl-W` kills a word · `Esc` cancels); saving an empty note removes it. An annotated session shows a `✎` in every list and the note in its **Overview**; `f`/`/` searches note text too, and `e` exports it as a `note` column. Notes live in their own `~/.local/share/opentab/notes.json` and are written the moment you save. Off under `--demo` / `--no-state` |
 | `o` | Open the selected session's / project's directory |
