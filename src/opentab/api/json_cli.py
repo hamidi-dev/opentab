@@ -6,7 +6,7 @@ import copy
 import json
 import sys
 
-from opentab import sources
+from opentab import diagnostics, sources
 from opentab.accounting.models import API_SCHEMA_VERSION
 from opentab.conversations.reader import ConversationError
 from opentab.persistence.state import load_state
@@ -461,6 +461,14 @@ def add_parsers(subs, add_globals) -> None:
             "Index/search/read workflow: opentab conversations --help\n"
             "Privacy, source limits and freshness: docs/conversation-search.md",
         )
+        parser.add_argument(
+            "--debug",
+            action="store_true",
+            help="flush indexing/search stages and timings to stderr and a private JSONL log",
+        )
+        parser.add_argument(
+            "--debug-log", metavar="FILE", help="write diagnostics to a new file (implies --debug)"
+        )
         _add_output(parser)
         if action != "status":
             permission_help = {
@@ -695,7 +703,14 @@ def add_parsers(subs, add_globals) -> None:
         "models list": {"catalog", "model_search", "range", "project", "limit", "pretty"},
         "sessions conversation": {"execution_id", "anchor", "cursor", "tail", "limit", "pretty"},
         "conversations index": {"source", "project", "session", "rebuild", "pretty"},
-        "conversations search": {"project", "session", "since", "until", "limit", "pretty"},
+        "conversations search": {
+            "project",
+            "session",
+            "since",
+            "until",
+            "limit",
+            "pretty",
+        },
     }
     summaries = {
         "usage summary": "Summarize usage as JSON totals, optionally grouped. Dates select whole\n"
@@ -954,9 +969,14 @@ def command(args) -> int:
                 "ignored_projects": prefs["ignored_projects"],
             }
         else:
-            service = OpenTabService.open(
-                args, allow_raw_content=bool(getattr(args, "allow_raw_content", False))
-            )
+            if args.command == "conversations":
+                diagnostics.progress("conversations.catalog.start", action=args.action)
+            with diagnostics.span("conversations.catalog.open"):
+                service = OpenTabService.open(
+                    args, allow_raw_content=bool(getattr(args, "allow_raw_content", False))
+                )
+            if args.command == "conversations":
+                diagnostics.progress("conversations.catalog.ready", action=args.action)
             if args.command == "conversations":
                 scope = dict(
                     project=args.project,

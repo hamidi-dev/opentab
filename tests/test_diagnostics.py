@@ -86,6 +86,23 @@ def test_debug_nested_spans_workers_errors_and_private_values():
         assert len({r["seq"] for r in rows}) == len(rows)
 
 
+def test_debug_progress_stays_in_log_unless_cli_explicitly_enables_stderr():
+    with tempfile.TemporaryDirectory() as tmp:
+        for visible in (False, True):
+            output = io.StringIO()
+            filename = os.path.join(tmp, f"progress-{visible}.jsonl")
+            with contextlib.redirect_stderr(output), debug.session(
+                filename=filename, stderr_progress=visible
+            ):
+                output.seek(0)
+                output.truncate()
+                with patch.object(output, "flush", wraps=output.flush) as flush:
+                    debug.progress("test.progress", roots=3)
+                    assert flush.called == visible
+                assert bool(output.getvalue()) == visible
+                assert any(row["event"] == "test.progress" for row in _records(filename))
+
+
 def test_debug_default_xdg_unique_files_and_explicit_no_clobber():
     with tempfile.TemporaryDirectory() as tmp, patch.dict(
         os.environ, {"XDG_STATE_HOME": tmp}

@@ -45,6 +45,22 @@ opentab conversations search "cache configuration" --allow-raw-content
 opentab sessions conversation SESSION_KEY --allow-raw-content --anchor ANCHOR
 ```
 
+To diagnose a slow or stalled refresh, add `--debug` after `index`:
+
+```sh
+opentab conversations index --harness all --allow-raw-content --debug
+```
+
+It prints flushed stages to stderr (including catalog loading, index opening,
+source preparation and each root's manifest/read/write) while JSON results stay
+on stdout. The first stderr line gives the private JSONL log path under the XDG
+state directory. `tail -f FILE` shows nested timings, CPU and process RSS; an
+unpaired `.start` identifies the in-progress step. `--debug-log FILE` writes to
+a new file of your choice. Roots are identified only by run-local hashes; no
+prompts, source paths or query text appear in diagnostics. Search also accepts
+these flags and reports live verification stages. Debugging never indexes by
+itself: only an explicit `index` invocation refreshes text.
+
 The first command writes sensitive plaintext locally; search requires an existing
 index and never refreshes it automatically. `SESSION_KEY` and `ANCHOR` are
 placeholders from a search result. For a child hit, also pass its exact

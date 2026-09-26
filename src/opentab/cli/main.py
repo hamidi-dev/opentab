@@ -2104,7 +2104,11 @@ def main() -> int:
     args = parse_args()
     from opentab import diagnostics
 
-    with diagnostics.session(getattr(args, "debug", False), getattr(args, "debug_log", None)):
+    with diagnostics.session(
+        getattr(args, "debug", False),
+        getattr(args, "debug_log", None),
+        stderr_progress=getattr(args, "command", None) == "conversations",
+    ):
         return _run(args)
 
 
