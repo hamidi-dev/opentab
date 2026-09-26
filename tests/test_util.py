@@ -339,14 +339,57 @@ def test_tmux_launch_argv_builds_window_split_popup():
 
 
 def test_ssh_command_quotes_the_remote_side_as_one_argument():
-    # The whole remote half is ONE quoted argument: passed as two, ssh joins them with a
-    # space and the local shell evaluates the "&&" instead -- which resumes on the remote
-    # box but in the wrong directory (and, with a path holding a space, not at all).
-    cmd = ot.ssh_command("root@giant", "/srv/app", "claude --resume abc123")
-    assert cmd == "ssh -t root@giant 'cd /srv/app && claude --resume abc123'"
-    assert cmd.startswith("ssh -t ")  # a tty: these CLIs are interactive
-    spaced = ot.ssh_command("mo@box", "/srv/my app", "codex resume 'x y'")
-    assert spaced == """ssh -t mo@box 'cd '"'"'/srv/my app'"'"' && codex resume '"'"'x y'"'"''"""
+    # Both quoting layers preserve authored paths/IDs, including shell syntax.
+    for directory in ("", "/srv/app", "/srv/my app's $(whoami); $HOME"):
+        sid = "x y'; $(whoami); $HOME"
+        command = shlex.join(["claude", "--resume", sid])
+        argv = shlex.split(ot.ssh_command("mo@box", directory, command))
+        assert argv[:3] == ["ssh", "-t", "mo@box"]
+        assert len(argv) == 4
+        shell = shlex.split(argv[3])
+        assert shell[:3] == ["exec", "${SHELL:-/bin/sh}", "-lic"]
+        assert len(shell) == 4
+        assert shlex.split(shell[3]) == (
+            ["cd", directory, "&&", "claude", "--resume", sid]
+            if directory
+            else ["cd", "&&", "claude", "--resume", sid]
+        )
+
+
+def test_ssh_launch_loads_zshrc_path_and_preserves_resume_arguments():
+    import shutil
+
+    zsh = shutil.which("zsh")
+    if not zsh or sys.platform == "win32":
+        print("skip: remote shell integration needs zsh and POSIX")
+        return
+    with tempfile.TemporaryDirectory() as home:
+        bindir = os.path.join(home, "user bin")
+        os.mkdir(bindir)
+        with open(os.path.join(home, ".zshrc"), "w") as fh:
+            fh.write(f"export PATH={shlex.quote(bindir)}:$PATH\n")
+        harness = os.path.join(bindir, "opentab-test-harness")
+        with open(harness, "w") as fh:
+            fh.write('#!/bin/sh\nprintf "%s\\n" "$PWD" "$@"\n')
+        os.chmod(harness, 0o700)
+        directory = os.path.join(home, "project's $(touch WRONG)")
+        os.mkdir(directory)
+        sid = "id'; $(touch WRONG); $HOME"
+        command = shlex.join(["opentab-test-harness", "--resume", sid])
+        env = {**os.environ, "HOME": home, "ZDOTDIR": home, "SHELL": zsh}
+        for cwd in (directory, ""):
+            remote = shlex.split(ot.ssh_command("unused-host", cwd, command))[3]
+            # sshd executes its single command argument through the user's shell -c.
+            result = subprocess.run(
+                [zsh, "-c", remote], env=env, capture_output=True, text=True, timeout=10
+            )
+            assert result.returncode == 0, result.stderr
+            expected_cwd = os.path.realpath(cwd or home)
+            lines = result.stdout.splitlines()
+            assert len(lines) == 3, result.stdout
+            assert os.path.realpath(lines[0]) == expected_cwd
+            assert lines[1:] == ["--resume", sid]
+            assert not os.path.exists(os.path.join(expected_cwd, "WRONG"))
 
 
 def test_launcher_hook_detected_via_env_then_config():

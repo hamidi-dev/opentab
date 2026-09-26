@@ -927,11 +927,14 @@ def local_machine_name() -> str:
 
 
 def ssh_command(target: str, directory: str, command: str) -> str:
-    # Agent CLIs need a tty. Quote the remote command as one argument so `&&` runs in the
-    # remote shell rather than changing the local shell's directory.
+    # A tty alone does not make ssh's command shell interactive: zsh skips .zshrc,
+    # hiding user-installed harnesses. Start the remote user's normal login shell
+    # interactively, with the resume script kept as one quoted -c argument. SHELL
+    # and home must expand on the remote host, never on the launching machine.
     cd = f"cd {shlex.quote(directory)}" if directory else "cd"
     inner = f"{cd} && {command}"
-    return f"ssh -t {shlex.quote(target)} {shlex.quote(inner)}"
+    remote = f'exec "${{SHELL:-/bin/sh}}" -lic {shlex.quote(inner)}'
+    return f"ssh -t {shlex.quote(target)} {shlex.quote(remote)}"
 
 
 def tmux_launch_argv(kind: str, directory: str, command: str) -> list[str]:

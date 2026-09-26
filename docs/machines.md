@@ -55,11 +55,17 @@ of that machine's harnesses.
   a machine saved only by URL has no SSH resume target.
 - Hermes sessions without a recorded working directory resume from the remote
   user's home directory. Hermes looks up the session by ID; no project path is
-  required. The remote shell must have `hermes` on its `PATH`.
+  required.
 - **`opentab forget <machine>`** removes a saved machine and its cached summary.
 
 Saved connections live in `~/.config/opentab/remotes.json`; cached summaries live
 under `~/.cache/opentab/remotes/`. Both honor their corresponding XDG overrides.
+
+Remote launches (including copied commands) request a terminal and run the resume
+command through the remote user's `$SHELL` in interactive login mode. This loads
+the shell's normal startup files (including `.zshrc` for zsh), so user-installed
+harness commands are found just as in a normal terminal. The harness must be
+installed for the saved SSH user. Shell startup files run on each launch.
 
 ### Saved connections
 

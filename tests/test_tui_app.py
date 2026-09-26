@@ -3015,7 +3015,7 @@ def test_launch_reopens_a_pulled_session_on_its_own_machine_over_ssh():
         # -t (the agent CLIs are interactive) and ONE quoted remote argument, so the cd
         # and the resume happen in the same remote shell.
         assert kind == "window"
-        assert command == "ssh -t root@giant 'cd /srv/app && claude --resume ses_there'"
+        assert command == ot.util.ssh_command("root@giant", "/srv/app", "claude --resume ses_there")
         # started from HOME: tmux -c would refuse /srv/app, which is not a path here
         assert directory == os.path.expanduser("~")
         _launch(app, "ses_there", ord("y"))
@@ -3089,7 +3089,7 @@ def test_remote_hermes_without_cwd_launches_and_copies_from_remote_home():
         session = next(row for row in app.loaded if row.id == "ses_there")
         session.source = "Hermes"
         session.directory = "(unknown)"
-        command = "ssh -t mo@giant 'cd && hermes --resume ses_there'"
+        command = ot.util.ssh_command("mo@giant", "", "hermes --resume ses_there")
         with patch.object(ot.util, "launch_backend", return_value=backend), patch.object(
             ot.util, "launch_command", return_value=None
         ) as launch, patch.object(ot.util, "copy_to_clipboard", return_value=True) as copy:
