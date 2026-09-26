@@ -1,6 +1,28 @@
 {
   "releases": [
     {
+      "version": "1.27.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Review recorded OpenCode changes in syntax-colored unified or side-by-side diffs, with highlighted replacements and a remembered layout.", "availability": "tui", "hint": {"text": "Session > Changes; toggle layout", "binding": {"context": "main", "action": "diff_layout"}}},
+            {"text": "Copy a session's retained user and assistant messages as Markdown.", "availability": "tui", "hint": {"text": "Select or open a session, then copy its conversation", "binding": {"context": "main", "action": "copy_conversation"}}},
+            {"text": "Read and search past conversations from Hermes, pi and omp, alongside OpenCode, Claude Code and Codex. Refresh the index explicitly to include them."}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Load OpenCode accounting and recorded changes faster, avoid unnecessary cache rebuilds, and inspect more detailed performance logs."},
+            {"text": "Navigate with contextual Space/Shift-Space paging, clearer footer shortcuts and pinned Help. First-use search guidance explains indexing.", "availability": "tui"},
+            {"text": "Find commands through concise, example-first CLI help; use --help-all for the complete reference."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.27.0"
+    },
+    {
       "version": "1.26.0",
       "sections": [
         {
