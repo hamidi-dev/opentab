@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import opentab as ot
+from opentab.tui import app as app_module
+from opentab.tui import bindings
 from opentab.tui.search_workspace import SearchWorkspace
 
 from tests._support import (
@@ -169,6 +171,108 @@ def test_startup_warnings_queue_so_a_second_harness_is_never_hidden():
     later.offer_startup_warning(first)
     later.offer_startup_warning(second)
     assert later.startup_warnings() == [first]
+
+
+def test_star_prompt_actions_remapping_resize_and_browser_failure():
+    app = app_with([])
+    app.allow_star_request = app.star_prompt = True
+    with patch.object(app_module, "open_path", return_value=False) as opener, patch.object(
+        app_module, "update_star_request", return_value=(False, "")
+    ) as update:
+        app.handle_key(None, ot.curses.KEY_RESIZE)
+        app.handle_key(None, ord("x"))
+        assert app.star_prompt
+        assert not app.handle_key(None, 3)
+        update.assert_not_called()
+        opener.assert_not_called()
+        app.handle_key(None, ord("o"))
+        opener.assert_called_once_with("https://github.com/hamidi-dev/opentab")
+        assert app.star_prompt and "Could not open" in app.notice
+        update.assert_not_called()
+        opener.return_value = True
+        app.handle_key(None, ord("o"))
+        assert not app.star_prompt
+        update.assert_called_once_with("dismiss")
+
+        for key, action in (("r", "remind"), (27, "remind"), ("d", "dismiss")):
+            app.star_prompt = True
+            app.handle_key(None, ord(key) if isinstance(key, str) else key)
+            assert not app.star_prompt
+            update.assert_called_with(action)
+        app.keymap = bindings.Keymap({("prompt.star", "dismiss"): ["z"]})
+        app.star_prompt = True
+        app.handle_key(None, ord("d"))
+        assert app.star_prompt
+        app.handle_key(None, ord("z"))
+        assert not app.star_prompt
+
+        app.star_prompt = True
+        update.return_value = (False, "unwritable state")
+        app.handle_key(None, ord("z"))
+        assert not app.star_prompt and "Could not save" in app.notice
+
+
+def test_star_prompt_renders_choices_at_minimum_size_and_blocks_mouse_clickthrough():
+    app = app_with([])
+    app.allow_star_request = app.star_prompt = True
+    app.keymap = bindings.Keymap({("prompt.star", "dismiss"): ["z"]})
+    screen = FakeScreen(20, 80)
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        app.renderer.draw_star_prompt(screen, 20, 80)
+    text = screen_text(screen)
+    for line in (
+        "Support OpenTab",
+        "A GitHub star helps",
+        "Watch > Custom > Releases",
+        "o   open repository",
+        "remind me in 30 days",
+        "z   dismiss permanently",
+    ):
+        assert line in text
+    with patch.object(ot.curses, "getmouse", return_value=(0, 5, 5, 0, ot.curses.BUTTON1_CLICKED)):
+        assert app.handle_mouse()
+    assert app.star_prompt and app.view == "browse"
+
+
+def test_star_request_waits_for_first_paint_warnings_and_prices_and_counts_once():
+    class LoopScreen(FakeScreen):
+        def keypad(self, _enabled):
+            pass
+
+        def timeout(self, _milliseconds):
+            pass
+
+    for enabled, demo in ((True, False), (False, False), (True, True)):
+        app = app_with([])
+        app.allow_star_request = enabled
+        app.store.demo = demo
+        app.offer_startup_warning({"id": "test"})
+        app._whats_new_hint_pending = True
+        events = []
+        app.renderer.draw = lambda _screen, app=app, events=events: events.append(
+            ("draw", app.star_prompt)
+        )
+        app.renderer.init_theme_colors = lambda: None
+        app._ensure_models = lambda events=events: events.append(("models", False))
+        app.maybe_prompt_prices = lambda app=app: setattr(app, "price_prompt", True)
+        keys = iter((10, 27, 3))  # warning, price prompt, exit the request
+        app._read_key = lambda *_args, keys=keys: next(keys)
+
+        def update(action, app=app, events=events):
+            events.append((action, app.star_prompt))
+            return True, ""
+
+        with patch.object(app_module, "update_star_request", side_effect=update) as write:
+            app._run(LoopScreen())
+        assert events[0] == ("draw", False)
+        if enabled and not demo:
+            write.assert_called_once_with("launch")
+            assert events.index(("launch", False)) < events.index(("models", False))
+            assert events[-1] == ("draw", True)
+            assert app._whats_new_hint_pending  # release hint waits for the star prompt
+        else:
+            write.assert_not_called()
+            assert not app.star_prompt
 
 
 def test_frame_draws_the_heavy_box_without_hline():

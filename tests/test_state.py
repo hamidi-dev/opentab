@@ -36,6 +36,66 @@ def test_read_state_distinguishes_missing_valid_and_malformed_files():
         assert ot.load_state(path) == {}
 
 
+def test_star_request_counts_launches_and_snoozes_for_thirty_days():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        update = state_module.update_star_request
+        for due in (False, False, True):
+            assert update("launch", path, now=100) == (due, "")
+        assert update("remind", path, now=100) == (False, "")
+        deadline = 100 + 30 * 24 * 60 * 60
+        assert update("launch", path, now=deadline - 1) == (False, "")
+        assert update("launch", path, now=deadline) == (True, "")
+        assert ot.load_state(path)["star_request"]["launches"] == 3
+
+
+def test_star_request_choices_preserve_other_state_and_survive_stale_windows():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        initial = {"future": [1, 2], "star_request": {"future": "keep"}}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(initial, fh)
+        older_window = app_with([])
+        ot.apply_state(older_window, older_window.args, initial)
+        update = state_module.update_star_request
+        update("remind", path, now=200)
+        update("remind", path, now=100)  # a stale clock cannot shorten the snooze
+        assert ot.load_state(path)["star_request"]["remind_after"] == 200 + 30 * 86400
+        assert update("dismiss", path) == (False, "")
+        update("remind", path, now=300)  # another open window cannot undo dismissal
+        with patch.object(state_module, "state_path", return_value=path):
+            ot.save_state(older_window)
+        saved = ot.load_state(path)
+        assert saved["future"] == [1, 2]
+        assert saved["star_request"]["future"] == "keep"
+        assert saved["star_request"]["dismissed"] is True
+        assert update("launch", path, now=10**10) == (False, "")
+
+
+def test_star_request_fails_quietly_without_overwriting_invalid_or_unwritable_state():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        for raw in (
+            "{broken",
+            "[]",
+            '{"star_request": null}',
+            '{"star_request": {"launches": true}}',
+            '{"star_request": {"remind_after": NaN}}',
+            '{"star_request": {"dismissed": "yes"}}',
+        ):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(raw)
+            for action in ("launch", "remind", "dismiss"):
+                due, error = state_module.update_star_request(action, path)
+                assert not due and error
+            with open(path, encoding="utf-8") as fh:
+                assert fh.read() == raw
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write('{"star_request": {"launches": 2}}')
+        with patch.object(state_module, "_write_state", return_value=False):
+            assert state_module.update_star_request("launch", path) == (False, "unwritable state")
+
+
 def test_save_state_is_atomic_and_refuses_to_overwrite_malformed_state():
     app = app_with([])
     with tempfile.TemporaryDirectory() as tmp:
