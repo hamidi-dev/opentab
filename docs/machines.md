@@ -53,6 +53,9 @@ of that machine's harnesses.
 - **`L`** resumes a supported session on its original machine when its saved entry
   has an SSH target. Launches and copied commands wrap the resume command in SSH;
   a machine saved only by URL has no SSH resume target.
+- Hermes sessions without a recorded working directory resume from the remote
+  user's home directory. Hermes looks up the session by ID; no project path is
+  required. The remote shell must have `hermes` on its `PATH`.
 - **`opentab forget <machine>`** removes a saved machine and its cached summary.
 
 Saved connections live in `~/.config/opentab/remotes.json`; cached summaries live

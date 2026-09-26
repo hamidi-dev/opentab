@@ -205,6 +205,21 @@ def test_resume_command_cds_to_the_project_first():
     assert app.resume_command(a) is None
 
 
+def test_hermes_home_fallback_copy_and_local_launch():
+    from unittest.mock import patch
+
+    row = workflow("hermes-id", "2026-06-01", directory="(unknown)")
+    row.source = "Hermes"
+    app = app_with([row])
+    assert app.launch_parts(row) == (os.path.expanduser("~"), "hermes --resume hermes-id")
+    with patch.object(sys, "platform", "linux"):
+        assert app.resume_command(row) == "cd && hermes --resume hermes-id"
+    with patch.object(sys, "platform", "win32"):
+        assert app.resume_command(row) == (
+            "Set-Location -LiteralPath $HOME; if ($?) { & 'hermes' '--resume' 'hermes-id' }"
+        )
+
+
 def test_copy_to_clipboard_backends_per_platform():
     real_which = ot.util.shutil.which
     real_run = ot.util.subprocess.run

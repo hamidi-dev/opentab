@@ -3083,6 +3083,32 @@ def test_launch_on_a_machine_with_no_ssh_target_offers_only_the_yank():
             os.environ["TMUX"] = old_tmux
 
 
+def test_remote_hermes_without_cwd_launches_and_copies_from_remote_home():
+    for backend in ("tmux", "herdr", None):
+        app = _remote_launch_app({"giant": "mo@giant"})
+        session = next(row for row in app.loaded if row.id == "ses_there")
+        session.source = "Hermes"
+        session.directory = "(unknown)"
+        command = "ssh -t mo@giant 'cd && hermes --resume ses_there'"
+        with patch.object(ot.util, "launch_backend", return_value=backend), patch.object(
+            ot.util, "launch_command", return_value=None
+        ) as launch, patch.object(ot.util, "copy_to_clipboard", return_value=True) as copy:
+            app.drill_into_session(session.id)
+            app.handle_key(None, ord("L"))
+            assert app.launch_menu is session
+            if backend:
+                app.handle_key(None, ord("w"))
+                launch.assert_called_once_with("window", os.path.expanduser("~"), command, backend)
+            else:
+                assert [kind for _key, kind, _label in app.launch_targets()] == ["copy"]
+                app.handle_key(None, ord("w"))
+                launch.assert_not_called()
+                app.handle_key(None, 27)
+            _launch(app, session.id, ord("y"))
+            copy.assert_called_once_with(command)
+            assert session.directory == "(unknown)"
+
+
 def test_launch_only_works_on_session_contexts():
     a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
     a.source = "OpenCode"
