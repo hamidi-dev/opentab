@@ -126,6 +126,11 @@ suffixes folded together), with:
 - The four raw list rates (input / output / cache-read / cache-write), heat-shaded
   green→red per column.
 
+The table's usage, token mix and model-session drill exclude ignored sessions and
+projects. Press `I` to show them again (including their costs in the browse totals
+and Prices); press `I` again to hide them. The table remains all-time regardless
+of the selected date range.
+
 `p` (or `h`/`l`, or a tab click) cycles four views:
 
 1. **flat** — one ungrouped list (cheapest-for-your-mix is a cross-vendor question).

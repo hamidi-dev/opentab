@@ -636,18 +636,23 @@ class App:
             self.range_months,
             tuple(sorted(self.ignored_projects)),
             tuple(sorted(self.ignored_sessions)),
+            self.show_ignored_projects,
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
             self.machine_filter,
             self.harness_filter,
         )
         if getattr(self, "_aw_key", None) == key:
             return self._aw_cache
-        rows = [
-            w
-            for w in self.ranged_workflows
-            if self.project_root(w.directory) not in self.ignored_projects
-            and w.id not in self.ignored_sessions
-        ]
+        rows = (
+            self.ranged_workflows
+            if self.show_ignored_projects
+            else [
+                w
+                for w in self.ranged_workflows
+                if self.project_root(w.directory) not in self.ignored_projects
+                and w.id not in self.ignored_sessions
+            ]
+        )
         self._aw_key = key
         self._aw_cache = list(rows)
         return self._aw_cache
@@ -4340,14 +4345,20 @@ class App:
     _PRICE_COLUMN_INDEX = {"input": 0, "output": 1, "cache_read": 2, "cache_write": 3}
 
     def _priced_model_roots(self) -> dict[str, list[dict]]:
-        # Prices ignore time ranges but honor global machine/harness identity filters.
-        if self.machine_filter is None and self.harness_filter is None:
-            return self._model_by_root
+        # Prices ignore time ranges, but respect identity and ignore visibility.
+        # Use loaded roots rather than ranged_workflows: P is an all-time comparison.
         visible = {
             w.id
             for w in self.loaded
             if (self.machine_filter is None or self.machine_of(w) == self.machine_filter)
             and (self.harness_filter is None or (w.source or "unknown") == self.harness_filter)
+            and (
+                self.show_ignored_projects
+                or (
+                    w.id not in self.ignored_sessions
+                    and self.project_root(w.directory) not in self.ignored_projects
+                )
+            )
         }
         return {rid: rows for rid, rows in self._model_by_root.items() if rid in visible}
 
