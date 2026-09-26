@@ -2195,6 +2195,7 @@ def _run(args: argparse.Namespace) -> int:
         app._refresh_backend = _make_refresh_fn(args)
         app._ssh_targets = _make_ssh_targets_fn()
     app.allow_price_prompt = use_state
+    app.allow_star_request = use_state
     app.allow_init_color = _resolve_init_color()
     # Notes are authored state: --no-state disables them, while App rechecks live demo mode.
     app.notes_enabled = not args.no_state

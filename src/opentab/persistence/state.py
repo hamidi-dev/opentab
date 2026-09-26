@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import tempfile
+import time
 from typing import TYPE_CHECKING
 
 from opentab.persistence import paths
@@ -79,6 +81,52 @@ def read_state(path: str | None = None) -> tuple[dict, bool]:
 
 def load_state(path: str | None = None) -> dict:
     return read_state(path)[0]
+
+
+def update_star_request(
+    action: str, path: str | None = None, *, now: float | None = None
+) -> tuple[bool, str]:
+    """Record a TUI launch or choice; return (offer_due, error).
+
+    This field is updated immediately, independently of App's exit-time save, so
+    an older window cannot undo a dismissal or shorten another window's snooze.
+    """
+    if action not in ("launch", "remind", "dismiss"):
+        return False, "invalid action"
+    now = time.time() if now is None else now
+    path = path or state_path()
+    with _locked(path):
+        data, readable = read_state(path)
+        if not readable:
+            return False, "unreadable state"
+        request = data.get("star_request", {})
+        if not isinstance(request, dict):
+            return False, "invalid star request state"
+        launches = request.get("launches", 0)
+        remind_after = request.get("remind_after", 0)
+        dismissed = request.get("dismissed", False)
+        if (
+            not isinstance(launches, int)
+            or isinstance(launches, bool)
+            or launches < 0
+            or type(remind_after) not in (int, float)
+            or (isinstance(remind_after, float) and not math.isfinite(remind_after))
+            or remind_after < 0
+            or not isinstance(dismissed, bool)
+        ):
+            return False, "invalid star request state"
+        if dismissed:
+            return False, ""
+        if action == "launch":
+            request["launches"] = min(3, launches + 1)
+        elif action == "remind":
+            request["remind_after"] = max(remind_after, now + 30 * 24 * 60 * 60)
+        else:
+            request["dismissed"] = True
+        data["star_request"] = request
+        if not _write_state(data, path):
+            return False, "unwritable state"
+        return action == "launch" and request["launches"] >= 3 and now >= remind_after, ""
 
 
 def _write_state(data: dict, path: str) -> bool:

@@ -66,6 +66,7 @@ from opentab.demo import (
     demo_turn_content,
 )
 from opentab.persistence.notes import notes_path, read_notes, update_note
+from opentab.persistence.state import update_star_request
 from opentab.presentation import themes
 from opentab.presentation.formatting import clip, clip_tail, display_width, short_path, shorten
 from opentab.presentation.heatmap import (
@@ -408,6 +409,9 @@ class App:
         self.price_prompt = False
         self._price_prompt_done = False
         self.prices_prompt_dismissed = False
+        self.allow_star_request = False  # enabled only by the interactive CLI
+        self.star_prompt = False
+        self._star_request_pending = False
         self.allow_price_prompt = True
         self.startup_warning: dict | None = None
         # Warnings queue rather than overwrite: two harnesses can expire history at
@@ -3808,6 +3812,32 @@ class App:
             self.notice = f"skipped — {self.price_fetch_hint()}"
         return True
 
+    def handle_star_prompt_key(self, key: int | str) -> bool:
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if not self.allow_star_request or self.store.demo:
+            self.star_prompt = False
+            return True
+        action = self.keymap.action("prompt.star", key)
+        if action not in ("open", "remind", "dismiss"):
+            return True
+        if action == "open":
+            url = RELEASES_URL.removesuffix("/releases")
+            if not open_path(url):
+                self.notify(f"Could not open {url} — try again or choose remind/dismiss.", "error")
+                return True
+        _, error = update_star_request("remind" if action == "remind" else "dismiss")
+        self.star_prompt = False
+        if error:
+            self.notify("Could not save your choice — the star request may appear again.", "error")
+        elif action == "remind":
+            self.notify("Star request snoozed for 30 days.")
+        else:
+            self.notify(
+                "Repository opened — won't ask again." if action == "open" else "Won't ask again."
+            )
+        return True
+
     def price_fetch_hint(self) -> str:
         return (
             "fetch anytime with --refresh-models or "
@@ -6779,6 +6809,7 @@ class App:
             pass  # a terminal without mouse support just keeps the keyboard
 
         first = True
+        launch_recorded = False
         while True:
             self.poll_remote_trace()
             self.poll_conversation_search()
@@ -6786,6 +6817,10 @@ class App:
             self.active_toasts()  # expire toasts before painting
             self.renderer.draw(stdscr)
             self._mark_toasts_shown()
+            if not launch_recorded:
+                launch_recorded = True
+                if self.allow_star_request and not self.store.demo:
+                    self._star_request_pending, _error = update_star_request("launch")
             if first and self.startup_warning is None:
                 # First frame is up off the fast session rollup; now do the one
                 # heavy message scan, then repaint so model_count / Models tabs are
@@ -6833,6 +6868,17 @@ class App:
                 continue
             if (
                 not first
+                and self._star_request_pending
+                and self.startup_warning is None
+                and not self.price_prompt
+            ):
+                self._star_request_pending = False
+                self.star_prompt = self.allow_star_request and not self.store.demo
+                if self.star_prompt:
+                    continue
+            if (
+                not first
+                and not self.star_prompt
                 and self._whats_new_hint_pending
                 and not getattr(self.store, "demo", False)
                 and self.startup_warning is None
@@ -7586,6 +7632,8 @@ class App:
             return self.handle_startup_warning_key(key)
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
+        if self.star_prompt:
+            return self.handle_star_prompt_key(key)
         if self.conversation_search is not None and self.conversation_search.active:
             ws = self.conversation_search
             if key == 3:
@@ -8327,6 +8375,8 @@ class App:
 
         if self.startup_warning is not None:
             return True  # a click cannot accidentally dismiss a data-loss warning
+        if self.star_prompt:
+            return True  # no click-through to the view underneath the request
         if self.price_prompt:
             if click or double:
                 self.price_prompt = False  # click = not now

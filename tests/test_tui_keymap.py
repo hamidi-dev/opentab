@@ -354,6 +354,7 @@ def test_every_registry_action_is_discoverable():
         "filter",
         "input",
         "prompt.warning",
+        "prompt.star",
         "prompt.prices",
     }
     missing = []

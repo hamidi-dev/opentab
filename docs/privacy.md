@@ -40,7 +40,8 @@ are ignored, and the defaults are shown):
   (the saved machine list for `--pull`/`--remote`), and an optional `launcher` hook.
 - **State** — `~/.local/state/opentab/state.json`: a small preferences file (your last
   harness, sort, diff layout, bookmarks, ignores, pins, search introduction acknowledgement,
-  and last announced OpenTab version;
+   last announced OpenTab version, and the star request's launch count (capped at
+   three), reminder date and permanent dismissal;
   disable with `--no-state`),
   plus the `state.json.lock` sidecar used to coordinate writers.
 - **Explicit debug logs** — only with `--debug` or `--debug-log FILE`: a new JSONL
@@ -105,6 +106,8 @@ No outbound requests by default. Network activity is explicitly requested:
 
 Release highlights are bundled with OpenTab and perform no update check. Opening
 **What's New** is offline; only its explicit full-release link opens GitHub.
+The optional star request is also entirely local; only choosing `o` opens the
+repository in your browser. OpenTab never checks whether you have starred it.
 
 - Price refresh (`--refresh-models`, or `r` in the `P` overlay) fetches models.dev
   list prices into the local cache. Otherwise the bundled snapshot suffices. See

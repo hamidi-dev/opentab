@@ -1969,6 +1969,8 @@ def test_tui_startup_configures_release_markers_for_state_and_privacy_modes():
                 app = captured[-1]
                 assert app._whats_new_hint_pending is pending
                 assert app.whats_new_marker_to_save == candidate
+                assert app.allow_star_request is (not extra)
+                assert not app.star_prompt  # no counting or prompting before a TUI paint
         finally:
             sys.argv = real["argv"]
             cli.curses = real["curses"]

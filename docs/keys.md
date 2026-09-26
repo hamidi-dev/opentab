@@ -463,3 +463,19 @@ case $kind in
   *)      exec zellij run --cwd "$dir" -- sh -c "$cmd" ;;
 esac
 ```
+
+## Supporting OpenTab
+
+After your third interactive TUI launch, a small optional prompt explains how
+GitHub stars help others discover OpenTab. For release notifications, use
+**Watch → Custom → Releases** on GitHub; starring alone does not subscribe you.
+
+- `o`: open the repository. Once the browser launch succeeds, OpenTab stops asking.
+- `r` or `Esc`: remind me on a launch at least **30 days** later.
+- `d`: dismiss permanently.
+
+Choices are saved immediately in OpenTab's local state. Startup warnings and the
+model-pricing prompt take priority. Demo, `--no-state`, web reports, and headless
+commands neither show this prompt nor count as launches. Existing installations
+start counting from their first TUI launch with this feature. Keys can be remapped
+in the `prompt.star` section of `keymap.conf`.

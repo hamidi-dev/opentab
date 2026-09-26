@@ -936,6 +936,8 @@ class Renderer:
             self.draw_startup_warning(stdscr, height, width)
         elif self.price_prompt:
             self.draw_price_prompt(stdscr, height, width)
+        elif self.star_prompt:
+            self.draw_star_prompt(stdscr, height, width)
         elif self.theme_menu:
             self.draw_theme_menu(stdscr, height, width)
         elif self.demo_menu:
@@ -5949,6 +5951,21 @@ class Renderer:
             ),
         ]
         self.draw_modal(stdscr, scr_h, scr_w, "Unpriced models found", lines)
+
+    def draw_star_prompt(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        accent = curses.color_pair(6) | curses.A_BOLD
+        lines = [
+            ("Finding OpenTab useful?", accent),
+            ("A GitHub star helps others discover the project.", curses.A_NORMAL),
+            ("", 0),
+            ("For new releases, choose on GitHub:", curses.A_NORMAL),
+            ("Watch > Custom > Releases", curses.A_NORMAL),
+            ("", 0),
+            (f" {self._key('prompt.star', 'open')}   open repository", accent),
+            (f" {self._keys('prompt.star', 'remind')}   remind me in 30 days", accent),
+            (f" {self._key('prompt.star', 'dismiss')}   dismiss permanently", accent),
+        ]
+        self.draw_modal(stdscr, scr_h, scr_w, "Support OpenTab", lines)
 
     def draw_startup_warning(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         warning = self.startup_warning or {}

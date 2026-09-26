@@ -560,6 +560,16 @@ REGISTRY: tuple[Context, ...] = (
         ),
     ),
     Context(
+        "prompt.star",
+        "Optional GitHub star request after three TUI launches (other keys are swallowed).",
+        None,
+        (
+            Action("open", ("o",), "open the repository and stop asking"),
+            Action("remind", ("r", "esc"), "remind me in 30 days"),
+            Action("dismiss", ("d",), "dismiss permanently"),
+        ),
+    ),
+    Context(
         "prompt.prices",
         "The one-time 'fetch model prices?' prompt (any other key = not now).",
         None,
