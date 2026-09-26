@@ -50,9 +50,12 @@ stay there; move them to `_support.py` when a second module needs them.
 
 `tests/__init__.py` isolates all four XDG roots before importing OpenTab, so tests
 use the bundled price catalog rather than a developer's refreshed cache. It also
-clears ambient multiplexer markers. Keep this setup on every import path, not in
-a runner-only fixture. The runner treats import failures and modules contributing
-zero tests as errors; neither should silently reduce coverage while reporting success.
+clears ambient multiplexer markers and fixes help width and color policy so a
+terminal push and a captured CI run assert the same text. Color isolation sets
+both `NO_COLOR=1` and `PYTHON_COLORS=0` (Python's setting takes precedence).
+Keep this setup on every import path, not in a runner-only fixture. The runner treats
+import failures and modules contributing zero tests as errors; neither should silently
+reduce coverage while reporting success.
 
 The pre-push hook (and CI) run:
 
