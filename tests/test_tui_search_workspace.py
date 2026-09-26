@@ -1127,6 +1127,28 @@ def test_index_worker_error_becomes_a_partial_report():
     assert "partial" in ws.notice and "1 error" in ws.notice
 
 
+def test_index_manifest_reuse_keeps_oversize_coverage_visible_without_errors():
+    ws, _clock, made = workspace()
+    start(ws, made)
+    ws.editing = False
+    ws.handle_key(ord("I"), bindings.DEFAULT)
+    ws.handle_key(10, bindings.DEFAULT)
+    index_id = made[0].submitted[-1][0]
+    report = {
+        "complete": False,
+        "updated": 0,
+        "unchanged": 3,
+        "errors": [],
+        "skipped_messages": 0,
+        "skipped_parts": 0,
+        "limited_roots": 1,
+    }
+    made[0].results.append((index_id, "index", report, None))
+    ws.poll()
+    assert "partial" in ws.notice and "0 errors" in ws.notice
+    assert "Oversized content omitted in 1 session." in ws.notice
+
+
 def test_tab_and_escape_leave_query_editing_without_opening_or_closing():
     ws, _clock, made = workspace()
     start(ws, made)

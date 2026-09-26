@@ -143,10 +143,70 @@ def _key(store, sid="root"):
     return ot.SessionRef(store._machine, harness, sid).encode()
 
 
+def test_index_reports_partial_oversize_coverage_even_on_manifest_reuse():
+    with _isolated():
+        store = ManifestConversationStore()
+        store.sources["root", "root"]["limitations"].append("oversized_messages_skipped")
+        store.sources["root", "root"]["skipped_messages"] = 2
+        service = _service(store)
+        assert service.session_conversation("root")["skipped_messages"] == 2
+        first = service.index_conversations()
+        assert first["skipped_messages"] == 2 and first["limited_roots"] == 1
+        assert not first["complete"]
+        second = service.index_conversations()
+        assert second["unchanged"] == 1 and second["skipped_messages"] == 0
+        assert second["limited_roots"] == 1 and not second["complete"]
+
+
+def test_real_service_index_catalog_persists_then_refreshes_changed_opencode_source():
+    import argparse
+
+    from tests.test_stores_opencode_v2 import _message, _populate_v2, _session, _v2_db
+
+    with _isolated(), _v2_db() as (writer, raw):
+        _populate_v2(writer)
+        args = argparse.Namespace(demo=False, no_state=True)
+        cid = "opencode|" + raw.db
+        first = ot.CachedStore(raw, cid, args)
+        with patch.object(raw, "workflows", wraps=raw.workflows) as parse, patch.object(
+            raw, "model_breakdown", wraps=raw.model_breakdown
+        ) as models:
+            service = ot.OpenTabService(first, args, allow_raw_content=True)
+            assert parse.call_count == 1 and models.call_count == 0
+            service.index_conversations()
+            assert parse.call_count == 1 and models.call_count == 1
+        assert os.path.isfile(first._path + ".usage.sqlite3")
+        second_store = ot.Store(raw.db, args)
+        try:
+            second = ot.CachedStore(second_store, cid, args)
+            with patch.object(second_store, "workflows", wraps=second_store.workflows) as parse:
+                service = ot.OpenTabService(second, args, allow_raw_content=True)
+                service.index_conversations()
+                assert parse.call_count == 0
+            writer.execute(
+                "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("new-root")
+            )
+            writer.execute(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                _message("new-message", "new-root", "user", 1, {"text": "new root text"}),
+            )
+            writer.commit()
+            refreshed = service.index_conversations()
+            assert second.served_from_cache is False
+            assert refreshed["updated"] >= 1
+            assert any(item.workflow.id == "new-root" for item in service._sessions)
+        finally:
+            second_store.conn.close()
+
+
 def test_debug_index_progress_flushes_safe_root_stages_and_timings():
     with _isolated() as path:
         store = ConversationStore(ids=("private-session-id",))
         store.put("private-session-id", "private prompt marker")
+        store.sources["private-session-id", "private-session-id"]["limitations"].append(
+            "oversized_messages_skipped"
+        )
+        store.sources["private-session-id", "private-session-id"]["skipped_messages"] = 1
         service = _service(store)
         output = io.StringIO()
         log = path.parent / "debug.jsonl"
@@ -154,12 +214,20 @@ def test_debug_index_progress_flushes_safe_root_stages_and_timings():
         with redirect_stderr(output), diagnostics.session(True, str(log), stderr_progress=True):
             result = service.index_conversations()
         assert result["updated"] == 1
+        assert result["skipped_messages"] == 1 and result["limited_roots"] == 1
         text = output.getvalue()
         records = [json.loads(line) for line in log.read_text().splitlines()]
         assert "conversations.root.read.start" in text
         assert "conversations.root.write.start" in text
         assert any(
             row["event"] == "conversations.root.read.end" and "duration_ms" in row
+            for row in records
+        )
+        assert any(
+            row["event"] == "conversations.index.ready"
+            and row["skipped_messages"] == 1
+            and row["limited_roots"] == 1
+            and row["complete"] is False
             for row in records
         )
         assert "private-session-id" not in text + log.read_text()
@@ -903,6 +971,8 @@ def test_manifest_mutation_during_read_fails_closed_and_is_not_blessed():
         service = _service(store)
         service.index_conversations()
         store.manifests["root"] = "before"
+        store.sources["root", "root"]["limitations"].append("oversized_messages_skipped")
+        store.sources["root", "root"]["skipped_messages"] = 3
 
         def mutate(_root, _selected):
             store.manifests["root"] = "after"
@@ -912,6 +982,7 @@ def test_manifest_mutation_during_read_fails_closed_and_is_not_blessed():
         result = service.index_conversations()
         assert not result["complete"]
         assert result["errors"] == [{"session_key": _key(store), "code": "source_changed"}]
+        assert result["skipped_messages"] == 0 and result["limited_roots"] == 0
         assert result["index"]["roots"] == 0
         store.reads.clear()
         assert service.index_conversations()["updated"] == 1

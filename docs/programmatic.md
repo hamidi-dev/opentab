@@ -344,7 +344,11 @@ beginning. `history_completeness` remains `unknown`, even at the end of a page
 sequence: missing/deleted history and omitted nontext are not reconstructed.
 
 Reads are fresh and bounded at source as well as output. SQLite readers permit up
-to 256 MiB of selected text; JSONL readers permit up to 256 MiB of selected file
+to 256 MiB of selected text. OpenCode additionally omits individual raw message
+or legacy part cells over 8 MiB before extraction; the response reports
+`skipped_messages`/`skipped_parts` and corresponding `limitations`. Remaining text
+still reads normally; a small answer embedded in an oversized message is omitted.
+JSONL readers permit up to 256 MiB of selected file
 data and 8 MiB per physical line. An oversized **excluded tool-result line** can
 therefore make a JSONL source unavailable with `conversation_too_large`. JSONL parse errors
 are surfaced as a skipped-record limitation, not repaired or silently considered

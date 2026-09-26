@@ -8,6 +8,60 @@ import opentab as ot
 from tests._support import workflow
 
 
+def test_headless_catalog_persists_scalars_and_reuses_after_source_change():
+    import argparse
+    from unittest.mock import patch
+
+    from opentab.stores.opencode_usage import UsageCache
+
+    from tests.test_stores_opencode_v2 import _message, _populate_v2, _v2_db
+
+    with _v2_db() as (writer, store), tempfile.TemporaryDirectory() as cache:
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": cache}):
+            _populate_v2(writer)
+            args = argparse.Namespace(demo=False, no_cache=False)
+            cache_id = "opencode|" + store.db
+            wrapped = ot.CachedStore(store, cache_id, args)
+            from opentab import diagnostics as debug
+
+            log = os.path.join(cache, "memory-hit.jsonl")
+            with debug.session(filename=log), patch.object(
+                UsageCache, "prepare", wraps=store._usage_cache.prepare
+            ) as prepare:
+                first = wrapped.workflows()
+                assert wrapped.workflows() == first
+                assert prepare.call_count == 1
+                assert wrapped.served_from_cache is False
+                assert wrapped.served_incrementally is False
+            with open(log, encoding="utf-8") as stream:
+                assert any(row.get("result") == "memory_hit" for row in map(json.loads, stream))
+            wrapped.persist_accounting()
+            assert os.path.isfile(wrapped._path + ".usage.sqlite3")
+            store.conn.close()
+            resumed = ot.Store(store.db, args)
+            try:
+                cached = ot.CachedStore(resumed, cache_id, args)
+                assert cached.workflows() == first
+                writer.execute(
+                    "insert into session_message values (?,?,?,?,?,?,?)",
+                    _message("new", "root", "assistant", 999, {"tokens": {"input": 7}}, updated=1),
+                )
+                writer.execute("update session_v2 set title='fresh' where id='root'")
+                writer.commit()
+                changed = cached.workflows()
+                assert resumed._usage_cache.reused > 0
+                assert next(w for w in changed if w.id == "root").title == "fresh"
+                assert any(row["input"] >= 7 for row in cached.model_breakdown())
+                cached.persist_accounting()
+                final_store = ot.Store(store.db, args)
+                try:
+                    assert ot.CachedStore(final_store, cache_id, args).workflows() == changed
+                finally:
+                    final_store.conn.close()
+            finally:
+                resumed.conn.close()
+
+
 def test_opencode_cache_invalidates_replaced_database_with_preserved_size_and_mtime():
     import argparse
     from pathlib import Path

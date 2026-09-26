@@ -26,6 +26,9 @@ Events cover:
 - Fingerprint hits/misses, changed input kinds (DB/WAL/SHM/file), size/mtime changes,
   splice rejection reasons and affected-file/session counts. Input lists are capped
   at 20 changes per decision, with the omitted count recorded.
+- A repeated catalog read before persistence emits `cache.decision: memory_hit` and
+  avoids duplicate decoding. Explicit conversation-index completion logs counts of
+  skipped oversized messages/parts, limited roots and its `complete` verdict.
 - OpenCode scalar-cache restoration, in-memory reuse, revision refreshes and counts
   of reused/decoded native messages and reread legacy messages. `usage.native_summary`
   separates payload fetching, decoding, projection and insertion; metadata/legacy
@@ -140,10 +143,10 @@ Small messages use the standard JSON decoder one at a time; messages over 8 MiB
 use a validating scanner that skips inline content without decoding it into an
 object tree. Only accounting fields reach the temporary table or persistent cache.
 On Python 3.11+, oversized TEXT cells stream through SQLite's read-only Blob API
-in 64 KiB byte chunks. This avoids allocating the entire source message as a Python
-string. Python 3.9/3.10 retain the full-string input fallback, with bounded-batch
-escape validation in C instead of a Python loop for each escaped quote. The source
-cell's JSON is validated even when most of its content is discarded.
+in 64 KiB byte chunks. Python 3.9/3.10 lack that API and still fetch a whole
+oversized source cell as a Python string before bounded-batch validation; this
+older-runtime allocation is unresolved. Neither runtime discards accounting fields.
+The source cell's JSON is validated even when most of its content is discarded.
 SQLite's source mapping and page cache are bounded to 64 MiB and 16 MiB per reader.
 
 ## Lazy session reads
@@ -234,6 +237,10 @@ separate sensitive-text store, not part of this warm accounting cache. Normal
 startup/reload never creates it. Its refresh uses strong, reader-versioned source
 manifests to avoid full conversation reads for unchanged roots, then re-reads and
 pre/post-verifies changed roots. Search still verifies candidate snapshots live.
+An explicit headless refresh persists a complete accounting rollup after its catalog
+reload, without changing the TUI's deferred model scan. A repeated read of the same
+source fingerprint reuses the in-process parsed catalog; changed inputs still reload.
+Rejected disk scalar payloads cannot clear a fresher in-memory projection.
 These manifests and their additive SQLite migration are independent of the weaker
 rollup-cache fingerprint and source-parser splicing below.
 
