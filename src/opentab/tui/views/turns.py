@@ -183,6 +183,8 @@ def _token_box(
     colored: bool,
     notes: Sequence[str],
 ) -> tuple[list[str], TokenRuns]:
+    if usage.get("event_kind") and not usage.get("tokens_total"):
+        return [], {}
     card = token_breakdown_card(
         title=title,
         inner_width=max(1, width - BOX_CHROME),
@@ -247,6 +249,13 @@ def build_turn_trace(
     head = f"{prefix} · {shorten(prompt, room)}"
     model = str(row.get("model_name") or "-").split("/", 1)[-1]
     meta = f"{model} · {human_tokens(row['tokens_total'])} tokens · {money(cost)} · {(row.get('time') or '--')[5:19]}"
+    if row.get("event_kind") and not row.get("tokens_total"):
+        usage = (
+            f"{row['duration_seconds']:g}s · {row.get('usage_status') or 'reported'}"
+            if row.get("duration_seconds") is not None
+            else "recorded event · tokens not reported"
+        )
+        meta = f"{model} · {usage} · {money(cost)} · {(row.get('time') or '--')[5:19]}"
     if row.get("depth"):
         meta += f" · {turn_agent(row)}"
     if remote_machine:

@@ -1232,8 +1232,10 @@ def _fleet_estimated_costs(backends: list) -> dict[str, float]:
             real = m.get("cost", 0) or 0
             # Old pure-$0 rows lack the unpriced split, so their whole token row is unpriced.
             keys = whole if (real == 0 and "unpriced_input" not in m) else unpriced
-            delta[rid] = delta.get(rid, 0.0) + api_equivalent_cost(
-                m["model_name"], *(m.get(k, 0) for k in keys)
+            delta[rid] = (
+                delta.get(rid, 0.0)
+                + m.get("estimated_cost", 0.0)
+                + api_equivalent_cost(m["model_name"], *(m.get(k, 0) for k in keys))
             )
     return delta
 

@@ -146,3 +146,31 @@ def test_trace_shell_returns_event_geometry_separately_from_lines():
     assert "Output · preview · Enter expand" in "\n".join(layout.lines)
     assert layout.tool_lines and layout.output_ends == sorted(layout.output_ends)
     assert layout.token_runs
+
+
+def test_voice_event_trace_puts_speech_first_without_a_fictitious_token_breakdown():
+    row = dict(_rows()[0], tokens_total=0, event_kind="speech")
+    layout = build_turn_trace(
+        rows=[row],
+        index=0,
+        siblings=[0],
+        events=[{"kind": "text", "text": "Hello there"}],
+        width=90,
+        cost=0,
+        glyphs=TABLE_GLYPHS,
+        colored=False,
+        scoped=False,
+        remote_machine=None,
+        loading=False,
+        expanded=False,
+        open_outputs=frozenset(),
+        full_events=None,
+        select_key="Enter",
+        supports_trace=True,
+        unavailable_reason=None,
+        remote_error=None,
+        records_reasoning=False,
+    )
+    text = "\n".join(layout.lines)
+    assert "tokens not reported" in text and "Hello there" in text
+    assert "token breakdown" not in text and not layout.token_runs

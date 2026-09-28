@@ -79,6 +79,14 @@ names. Context curves need a per-request prompt size; cumulative turn deltas can
 honestly substitute for one. Content-based composition is an estimate, not a token
 ledger, and cannot recover system prompts or tool schemas absent from the records.
 
+JSONL duration records carry an additional `estimated_cost` (and per-model
+`root_estimated_cost`) outside token arithmetic. Frontends, the service and fleet
+estimates add it only in API-equivalent mode. `usage_seconds`/`usage_status` on a
+workflow describe provider usage, never inferred working time. JSONL event rows can
+have no tokens or dollars; cumulative snapshots replace previous snapshots before
+rollup. Local `response`/`details` content is discarded during accounting parsing
+and reread only through a source-row-hash-bound trace key.
+
 Timeline metadata remains separate from token arithmetic. Optional `tools` lists
 preserve call order and repeated names; `depth` and `agent` identify delegated
 steps. `effort` records reasoning configuration, not reasoning token counts:

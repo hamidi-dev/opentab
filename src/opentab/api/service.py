@@ -218,14 +218,18 @@ class OpenTabService:
         real = float(row.get("cost") or 0)
         whole = real == 0 and "unpriced_input" not in row
         prefix = "" if whole else "unpriced_"
-        return real + api_equivalent_cost(
-            str(row.get("model_name") or ""),
-            row.get(prefix + "input", 0),
-            row.get(prefix + "output", 0),
-            row.get(prefix + "reasoning", 0),
-            row.get(prefix + "cache_read", 0),
-            row.get(prefix + "cache_write", 0),
-            row.get("cache_write_1h", 0) if whole else row.get("unpriced_cache_write_1h", 0),
+        return (
+            real
+            + float(row.get("estimated_cost") or 0)
+            + api_equivalent_cost(
+                str(row.get("model_name") or ""),
+                row.get(prefix + "input", 0),
+                row.get(prefix + "output", 0),
+                row.get(prefix + "reasoning", 0),
+                row.get(prefix + "cache_read", 0),
+                row.get(prefix + "cache_write", 0),
+                row.get("cache_write_1h", 0) if whole else row.get("unpriced_cache_write_1h", 0),
+            )
         )
 
     @staticmethod
@@ -253,8 +257,12 @@ class OpenTabService:
             # returning the recorded dollars would silently understate the hybrid view.
             return None
         else:
-            return recorded
-        return recorded + api_equivalent_cost(str(row.get("model_name") or ""), *tokens)
+            return recorded + float(row.get("estimated_cost") or 0)
+        return (
+            recorded
+            + float(row.get("estimated_cost") or 0)
+            + api_equivalent_cost(str(row.get("model_name") or ""), *tokens)
+        )
 
     def _costs(self, item: _Session) -> tuple[float, float, float, float, int]:
         workflow = item.workflow
@@ -267,7 +275,8 @@ class OpenTabService:
         has_root_split = any("root_unpriced_input" in row for row in models)
         if has_root_split:
             delta = sum(
-                api_equivalent_cost(
+                float(row.get("root_estimated_cost") or 0)
+                + api_equivalent_cost(
                     str(row.get("model_name") or ""),
                     row.get("root_unpriced_input", 0),
                     row.get("root_unpriced_output", 0),
@@ -426,6 +435,8 @@ class OpenTabService:
             "created_at": workflow.created_at,
             "last_activity_at": workflow.ended_at or workflow.created_at,
             "worked_seconds": workflow.worked_seconds,
+            "usage_seconds": workflow.usage_seconds,
+            "usage_status": workflow.usage_status,
             "recorded_cost_usd": recorded,
             "api_equivalent_cost_usd": api,
             "recorded_root_cost_usd": recorded_root,
@@ -614,6 +625,9 @@ class OpenTabService:
                 "depth": int(row.get("depth") or 0),
                 "model": str(row.get("model_name") or "unknown"),
                 "effort": str(row.get("effort") or ""),
+                "duration_seconds": row.get("duration_seconds"),
+                "usage_status": str(row.get("usage_status") or ""),
+                "event_kind": str(row.get("event_kind") or ""),
                 "recorded_cost_usd": recorded,
                 "api_equivalent_cost_usd": api,
                 "api_equivalent_cost_complete": api is not None,

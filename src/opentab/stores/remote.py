@@ -19,7 +19,7 @@ from opentab import remote_content
 from opentab.accounting.models import Workflow
 from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scramble_workflow
 from opentab.persistence import paths
-from opentab.util import tool_names
+from opentab.util import safe_float, tool_names
 
 # Portable exports evolve independently from the local warm-start cache.
 EXPORT_VERSION = 2  # v2 adds the per-session Turns/Tools/Context extras (see build_export)
@@ -85,6 +85,7 @@ def _clean_turn(row: dict) -> dict:
         "prompt_title": str(row.get("prompt_title") or ""),
         "prompt_full": str(row.get("prompt_full") or row.get("prompt_title") or ""),
         "cost": _coerce_float(row.get("cost")),
+        "estimated_cost": max(0.0, safe_float(row.get("estimated_cost"))),
         # Apply the same sanitizer as local turn rows.
         "tools": tool_names(row.get("tools")),
     }
@@ -125,6 +126,7 @@ def _clean_node(row: dict) -> dict:
         node["cost"] = float(row.get("cost") or 0.0)
     except (TypeError, ValueError):
         node["cost"] = 0.0
+    node["estimated_cost"] = max(0.0, safe_float(row.get("estimated_cost")))
     for field in _NODE_INT_FIELDS:
         node[field] = _coerce_int(row.get(field))
     return node
@@ -396,6 +398,11 @@ class RemoteStore:
                 # Keep only fields this opentab knows: a newer export with extra
                 # fields must load, not crash (forward compatibility).
                 clean = {k: v for k, v in row.items() if k in _WF_FIELDS}
+                if clean.get("usage_seconds") is not None:
+                    seconds = safe_float(clean["usage_seconds"], -1)
+                    clean["usage_seconds"] = seconds if seconds >= 0 else None
+                if clean.get("usage_status") not in ("running", "unconfirmed", "confirmed"):
+                    clean["usage_status"] = ""
                 # A session id must be a real string: it's the key for dedup, for the
                 # per-file `kept` set, and for the App's model attribution. A missing or
                 # non-string id (a corrupt/crafted summary) is dropped, not carried.
@@ -424,7 +431,11 @@ class RemoteStore:
                 # `[]`) would raise on the membership test.
                 rid = row.get("root_id")
                 if isinstance(rid, str) and rid in kept:
-                    models.append(dict(row))
+                    model = dict(row)
+                    for field in ("estimated_cost", "root_estimated_cost"):
+                        if field in model:
+                            model[field] = max(0.0, safe_float(model[field]))
+                    models.append(model)
             nd = data.get("nodes")
             for sid, rows in nd.items() if isinstance(nd, dict) else ():
                 # Only for a session we kept from THIS file (same dedup as model rows), and

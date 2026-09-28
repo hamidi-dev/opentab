@@ -21,6 +21,12 @@ subscription/credit usage *would have cost* at published API list prices. It's a
 toggle — press `$` again for the recorded numbers — and your choice is remembered
 between runs.
 
+Duration-based JSONL usage also contributes to this estimate: provider-reported
+seconds multiplied by the producer's logged per-minute USD rate. These charges have
+no fabricated token count and remain separate from recorded dollars. Overview shows
+the reported duration and whether it is running, unconfirmed or finalized; the rate
+and raw usage can be retained in the local trace. See [JSONL duration records](sources.md#duration-usage-events-and-traces-jsonl).
+
 The estimate uses a **models.dev snapshot bundled with each release** — every
 provider, so open models on paid routes (Kimi, DeepSeek, Qwen, … via
 OpenRouter/Together/etc.) price out of the box — with family fallbacks for version

@@ -66,6 +66,8 @@ def scramble_workflow(
     w.total_cost = round(w.total_cost * scale, 4)
     w.root_cost = round(w.root_cost * scale, 4)
     w.total_tokens = int(round(w.total_tokens * scale))
+    w.usage_seconds = None
+    w.usage_status = ""
     return w
 
 
@@ -90,6 +92,7 @@ def scramble_node(n: dict, scale: float, cats: frozenset, *, seed: str | None = 
     if float(n.get("cost") or 0.0) == 0 and "spend" in cats:
         n["cost"] = demo_cost(n.get("tokens_total") or 0, key)
     n["cost"] = round(float(n.get("cost") or 0.0) * scale, 4)
+    n.pop("estimated_cost", None)
     for f in _NODE_TOKEN_FIELDS:
         if f in n:
             n[f] = int(round((n.get(f) or 0) * scale))
