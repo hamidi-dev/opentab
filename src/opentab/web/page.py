@@ -1050,6 +1050,7 @@ function tokenEconomics(ws, model) {
 // both read this function, independent of the `$` mode.
 function whatifTotals(id) {
   if (!WHATIF.model) return null;
+  if (ALL_W.some(w => w.id === id && w.usageSeconds != null)) return null;
   const rows = DATA.models[id];
   if (!rows || !rows.length) return null;
   // Carry the 1h subset on both sides so same-model substitution is exactly zero.
@@ -2762,10 +2763,12 @@ function renderSessionOverview(root, sc) {
     h('dt', null, 'project'), h('dd', null, h('a', { href: '#/p/' + encodeURIComponent(w.project) }, shortPath(w.project))),
     h('dt', null, 'date'), h('dd', null, dt(w.date)),
     w.dur != null ? [h('dt', null, 'worked'), h('dd', null, hDur(w.dur))] : null,
+    w.usageSeconds != null ? [h('dt', null, 'voice/API duration'), h('dd', null, w.usageSeconds + 's · ' + (w.usageStatus || 'reported'))] : null,
     META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
     META.machines && w.machine ? [h('dt', null, 'machine'), h('dd', null, w.machine)] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));
   root.appendChild(moneyCard(w, whatifTotals(sc.id)));
+  if (w.usageSeconds != null) root.appendChild(h('div', { class: 'hint' }, 'Duration charges are estimates at the logged rate ($ view); recorded dollars remain separate.'));
   const econ = tokenEconomicsPane([w], 'this session');
   if (econ) root.appendChild(econ);
   if (EXTRAS.id === sc.id && EXTRAS.loading)

@@ -247,6 +247,8 @@ def test_web_session_extras_reports_turns_with_both_costs():
         "depth",
         "model",
         "effort",
+        "durationSeconds",
+        "usageStatus",
         "real",
         "api",
         "tokens",

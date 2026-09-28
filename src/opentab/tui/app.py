@@ -1714,7 +1714,7 @@ class App:
                 merged[key] = m
         return list(merged.values())
 
-    _DEMO_MONEY_FIELDS = ("cost", "root_cost")
+    _DEMO_MONEY_FIELDS = ("cost", "root_cost", "estimated_cost", "root_estimated_cost")
     _DEMO_TOKEN_FIELDS = (
         "tokens_total",
         "input",
@@ -3247,19 +3247,25 @@ class App:
                 real = m["real_cost"] = m.get("real_cost", m["cost"])
                 # Legacy in-memory rows may expose only aggregate tokens.
                 all_unpriced = real == 0 and "unpriced_input" not in m
-                m["api_cost"] = real + api_equivalent_cost(
-                    m["model_name"],
-                    m.get("input", 0) if all_unpriced else m.get("unpriced_input", 0),
-                    m.get("output", 0) if all_unpriced else m.get("unpriced_output", 0),
-                    m.get("reasoning", 0) if all_unpriced else m.get("unpriced_reasoning", 0),
-                    m.get("cache_read", 0) if all_unpriced else m.get("unpriced_cache_read", 0),
-                    m.get("cache_write", 0) if all_unpriced else m.get("unpriced_cache_write", 0),
-                    m.get("cache_write_1h", 0)
-                    if all_unpriced
-                    else m.get("unpriced_cache_write_1h", 0),
+                m["api_cost"] = (
+                    real
+                    + m.get("estimated_cost", 0.0)
+                    + api_equivalent_cost(
+                        m["model_name"],
+                        m.get("input", 0) if all_unpriced else m.get("unpriced_input", 0),
+                        m.get("output", 0) if all_unpriced else m.get("unpriced_output", 0),
+                        m.get("reasoning", 0) if all_unpriced else m.get("unpriced_reasoning", 0),
+                        m.get("cache_read", 0) if all_unpriced else m.get("unpriced_cache_read", 0),
+                        m.get("cache_write", 0)
+                        if all_unpriced
+                        else m.get("unpriced_cache_write", 0),
+                        m.get("cache_write_1h", 0)
+                        if all_unpriced
+                        else m.get("unpriced_cache_write_1h", 0),
+                    )
                 )
                 if has_root_split:
-                    root_delta += api_equivalent_cost(
+                    root_delta += m.get("root_estimated_cost", 0.0) + api_equivalent_cost(
                         m["model_name"],
                         m.get("root_unpriced_input", 0),
                         m.get("root_unpriced_output", 0),
@@ -3343,7 +3349,7 @@ class App:
         targeting a single-model session's own model produces exactly zero change.
         """
         target = self.whatif_model
-        if not target:
+        if not target or workflow.usage_seconds is not None:
             return None
         rows = self._model_by_root.get(workflow.id) or []
         if not rows:
@@ -4642,6 +4648,8 @@ class App:
                     r["cache_write"],
                     r.get("cache_write_1h", 0),
                 )
+            if api:
+                row["cost"] += r.get("estimated_cost", 0.0)
             rows.append(row)
         return exporting.turns_dataset(rows)
 
@@ -9124,6 +9132,8 @@ class App:
                     d["tokens_cache_write"],
                     node_1h_write(d),
                 )
+            if api:
+                d["cost"] += d.get("estimated_cost", 0.0)
             out.append(d)
         return out
 

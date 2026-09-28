@@ -1411,7 +1411,7 @@ class Renderer:
                 tag = " WHAT-IF — would-have-paid at API prices "
             else:
                 # With no recorded dollars, list-price spend is an estimate, not a delta.
-                tag = " ESTIMATED — tokens × API list prices "
+                tag = " ESTIMATED — usage × API list prices "
         elif not getattr(self.store, "records_cost", True):
             tag = f" $0 = no recorded cost · press {self._key('main', 'api_prices')} to estimate "
         else:
@@ -4128,6 +4128,16 @@ class Renderer:
         ]
         title = "# Money card"
         notes: list[str] = []
+        if workflow.usage_seconds is not None:
+            money_rows.append(
+                kv(
+                    "Voice/API duration",
+                    f"{workflow.usage_seconds:g}s · {workflow.usage_status or 'reported'}",
+                )
+            )
+            notes.append(
+                "! Duration charges are estimates at the logged rate ($ view); recorded dollars remain separate."
+            )
         # Session-level what-if must also cover solo sessions with no Subagents table.
         whatif_rows: list[str] = []
         totals = self.whatif_session_totals(workflow)
@@ -4565,6 +4575,8 @@ class Renderer:
                     row["cache_write"],
                     row.get("cache_write_1h", 0),
                 )
+            if api:
+                cost += row.get("estimated_cost", 0.0)
             out.append(cost)
         return out
 

@@ -34,6 +34,9 @@ class Workflow:
     ended_at: str = ""
     # Agent working bursts excluding idle gaps; None when the backend lacks boundaries.
     worked_seconds: float | None = None
+    # Provider-reported duration; separate from inferred agent working time.
+    usage_seconds: float | None = None
+    usage_status: str = ""
 
 
 @dataclass(frozen=True)

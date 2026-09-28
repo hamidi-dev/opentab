@@ -61,8 +61,8 @@ def _node_api_cost(d: dict) -> float:
     # Match App._priced_nodes: a zero-cost node is wholly repriced at list rates.
     real = float(d.get("cost") or 0)
     if real:
-        return real
-    return api_equivalent_cost(
+        return real + float(d.get("estimated_cost") or 0)
+    return float(d.get("estimated_cost") or 0) + api_equivalent_cost(
         d.get("model_name") or "",
         d.get("tokens_input") or 0,
         d.get("tokens_output") or 0,
@@ -226,6 +226,8 @@ def build_payload(app: App) -> dict:
                 "date": w.created_at,
                 # Active work only; null means the backend cannot separate idle time.
                 "dur": w.worked_seconds,
+                "usageSeconds": w.usage_seconds,
+                "usageStatus": w.usage_status,
                 "real": _money6(w.real_total_cost),
                 "api": _money6(w.api_total_cost),
                 "realRoot": _money6(w.real_root_cost),
@@ -330,8 +332,10 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "depth": int(r.get("depth") or 0),
                     "model": r.get("model_name") or "",
                     "effort": str(r.get("effort") or ""),
+                    "durationSeconds": r.get("duration_seconds"),
+                    "usageStatus": str(r.get("usage_status") or ""),
                     "real": _money6(real),
-                    "api": _money6(api),
+                    "api": _money6(api + float(r.get("estimated_cost") or 0)),
                     "tokens": int(r.get("tokens_total") or 0),
                     # Five additive categories plus the long-TTL cache-write subset.
                     "tok": [

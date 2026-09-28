@@ -404,15 +404,16 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 
 ### Schema
 
-Headers (CSV) / keys (JSONL) are matched case-insensitively, with aliases. Required
-are a timestamp, a model, and input/output token counts; everything else is optional:
+Headers (CSV) / keys (JSONL) are matched case-insensitively, with aliases. Ordinary
+requests carry a timestamp, model and token counts; cost-only rows may omit tokens.
+JSONL additionally supports duration usage and zero-cost events below:
 
 | Field | Accepted names | Notes |
 |-------|----------------|-------|
 | timestamp | `timestamp` `time` `ts` `date` `created_at` `datetime` | ISO-8601 or epoch (s/ms/µs) — **required** |
 | model | `model` `model_id` `model_name` | e.g. `gpt-4o`, `claude-sonnet-4` — **required** |
-| input | `input_tokens` `input` `prompt_tokens` | as logged (may include cache reads and writes) — **required** |
-| output | `output_tokens` `output` `completion_tokens` | includes reasoning (priced once) — **required** |
+| input | `input_tokens` `input` `prompt_tokens` | as logged (may include cache reads and writes); defaults to 0 |
+| output | `output_tokens` `output` `completion_tokens` | includes reasoning (priced once); defaults to 0 |
 | cached | `cached_tokens` `cached` `cache_read` `cache_read_tokens` | cached portion of input (default 0) |
 | cache write | `cache_write_tokens` `cache_write_input_tokens` `cache_write` | cache-written portion of input (default 0) |
 | session | `session_id` `session` `conversation_id` `conversation` | groups requests into one session |
@@ -427,6 +428,47 @@ are a timestamp, a model, and input/output token counts; everything else is opti
 Models are provider-prefixed by inferred family (`claude-*` → `anthropic/`, `gpt-*`/
 `o3` → `openai/`, `gemini-*` → `google/`) so they price and group like every other
 harness's.
+
+### Duration usage, events and traces (JSONL)
+
+Voice APIs can bill seconds rather than tokens. Use the same JSONL source:
+
+```json
+{"record_type":"usage_snapshot","timestamp":"2026-09-27T08:01:34Z","model":"gpt-live-1","session_id":"voice-123","request_id":"voice-123:usage","project":"Iris Live","title":"Voice conversation","prompt":"Voice usage · 94s · confirmed","duration_seconds":94,"rate_per_minute":0.05,"usage_status":"confirmed"}
+```
+
+- `duration_seconds × rate_per_minute / 60` is an **estimated USD charge** in the
+  `$` view. It is separate from `cost_usd`, which means recorded dollars. A positive
+  `cost_usd` takes precedence over the duration estimate for that row. Tokens stay
+  zero when the provider does not report them; seconds are never converted to tokens.
+- `usage_snapshot` requires timestamp, model, session ID, request ID, nonnegative
+  finite seconds/rate, and `usage_status` (`running`, `unconfirmed`, `confirmed`).
+  Repeated snapshots with the same `(session_id, request_id)` **replace**, rather
+  than add to, earlier totals. A confirmed snapshot wins over later non-final
+  snapshots. Ordinary request IDs retain first-occurrence deduplication; do not mix
+  ordinary requests and snapshots under one request ID.
+- `record_type: "event"` retains a zero-cost, zero-token Turns row. Supply timestamp,
+  model, session ID and a stable request ID; `event_kind`, `role`, `prompt` (display
+  label), `prompt_id` and `tools` describe the event. Events do not increment model
+  invocation counts. This supports speech groups, delegation, errors and lifecycle
+  records without inventing model calls or attributing connected-time cost to speech.
+- `response` (text) and `details` (JSON) are optional **local trace content**. Open a
+  Turns row's trace to read them; full expansion retains the original text. They are
+  loaded on demand, bound to the owning session and exact source row, and excluded
+  from rollup caches, web reports and fleet payloads. Use `prompt` for a concise
+  display label, not a duplicate of private trace content.
+- Overview shows provider duration and finalization status. A missing final event
+  leaves usage running/unconfirmed, not a zero-dollar confirmed session. Duration
+  sessions disable token context curves and session model-rate substitution (`w`).
+  A duration total is not agent active working time.
+
+For GPT-Live, persist the cumulative `session.usage.updated` snapshots and the final
+`session.closed` usage. Retain intermediate updates as zero-cost events if desired.
+Full-duplex transcript fragments have no official turn boundaries: a producer may
+group nearby fragments independently per speaker, labeling that grouping and keeping
+the original offsets in `details`. Backend delegation costs belong to their existing
+OpenCode/other source; a related session ID in trace details links the evidence without
+copying its spend into the voice ledger.
 
 ## The merged view (`--harness all`)
 

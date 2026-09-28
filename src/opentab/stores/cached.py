@@ -19,7 +19,7 @@ from opentab import diagnostics as debug
 from opentab.accounting.models import Workflow
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 13  # bump when the cached payload shape or meaning changes
+CACHE_VERSION = 14  # duration estimates and JSONL event/snapshot semantics
 
 
 # Required because cache readers index these fields directly.
