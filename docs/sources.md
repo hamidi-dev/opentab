@@ -50,7 +50,7 @@ trends. What each tool's records support on top:
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | — ³ |
 | Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | ✓ ⁵ | ✓ ⁵ ⁶ | ✓ ⁵ |
-| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | — | ✓ |
+| GitHub Copilot CLI | tokens only — `$` estimates | ✓ ¹ | ✓ | ✓ ¹ | ✓ ¹ | ✓ |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
 | omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -66,7 +66,7 @@ narration, readable reasoning and exact calls/results, loaded locally in the TUI
 **Tools** — token attribution per tool call and MCP server · **Context** — the context-window growth curve, measured
 from recorded usage (it rides on Turns); Claude Code and zaly log full message content,
 so they add the estimated breakdown of what filled it ·
-¹ headerless: the OTEL export captures no prompt text · ² with the optional `tool`
+¹ when matching saved session events are retained; OTEL-only Turns are headerless · ² with the optional `tool`
 column · ³ Codex records per-turn deltas of a cumulative total, not per-request prompt
 sizes, so an honest curve isn't derivable · ⁴ only with a real `session_id` column — a
 synthetic per-day session interleaves unrelated conversations · ⁵ Hermes stores no
@@ -191,20 +191,28 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 *OpenTelemetry export · opt-in · tokens only, `$` estimates*
 
 - **Reads** `~/.copilot/otel/**/*.jsonl` (`--copilot-dir`), plus the file named by
-  `$COPILOT_OTEL_FILE_EXPORTER_PATH`.
-- **Enable it**: the CLI records usage **only** when its OpenTelemetry export is on. Set
+  `$COPILOT_OTEL_FILE_EXPORTER_PATH`. The sibling `session-store.db` supplies titles
+  and projects; `session-state/<id>/events.jsonl` supplies retained session details.
+- **Enable it**: OpenTab's per-call usage ledger needs the OpenTelemetry export. Set
   the env var before launching/resuming a session — sessions after that show up:
 
   ```sh
   export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl
   ```
 
-- **Cost**: the export carries tokens but no cost — `$0` recorded, estimated under `$`.
+- **Cost**: the export carries tokens but no USD cost — `$0` recorded, estimated under `$`.
+  Copilot premium requests and AI credits are not treated as dollars.
 - **Notes**: OTEL logs one call up to four ways across spans and logs; OpenTab
-  deduplicates them and keeps the highest-fidelity record. The export has no working
-  directory, so each session's project and title are enriched (read-only, best effort)
-  from the CLI's own session store. Turns are headerless (the export captures no
-  prompt text by default).
+  deduplicates them and keeps the highest-fidelity record. Saved assistant events
+  join by exact response ID to provide prompt-grouped Turns, ordered Tools/MCP
+  attribution, reasoning effort and readable text/reasoning/tool traces. Subagents
+  with explicit identities and parentage have their own nodes, instructions, Turns
+  and traces. Context adds the recorded system/tool-definition/conversation snapshot
+  when available. A first cold request can be almost entirely cache writes; those
+  writes are part of input, not extra input tokens.
+- **Fallback**: without matching saved events, Turns remain headerless and the
+  measured Context curve still works. Event logs alone do not add sessions without
+  OTEL usage. Raw traces are local TUI detail reads and are disabled in demo.
 
 ## [Copilot Chat in VS Code](https://code.visualstudio.com/docs/copilot/chat/copilot-chat)
 

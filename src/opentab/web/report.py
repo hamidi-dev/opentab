@@ -480,6 +480,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
                         "kind": r["kind"],
                         "count": r["count"],
                         "est": r["est_tokens"],
+                        **({"snapshot": True} if r.get("basis") == "reported_snapshot" else {}),
                     }
                     for r in app.session_context_rows(workflow_id)
                 ]

@@ -2786,6 +2786,40 @@ def test_context_tab_charts_measured_growth_and_marks_compaction():
     assert "What filled it" not in joined
 
 
+def test_context_reported_snapshot_is_distinct_from_content_estimates_and_first_turn():
+    class Snapshot(_ContextStore):
+        def supports_context(self, wid):
+            return True
+
+        def context_breakdown(self, wid):
+            return [
+                {
+                    "category": "System",
+                    "kind": "instructions",
+                    "count": 1,
+                    "est_tokens": 8351,
+                    "basis": "reported_snapshot",
+                },
+                {
+                    "category": "Tools",
+                    "kind": "definitions",
+                    "count": 1,
+                    "est_tokens": 11327,
+                    "basis": "reported_snapshot",
+                },
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(Snapshot([workflow("s", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    joined = "\n".join(app.renderer.detail_context(app.current_session(), 110))
+    assert "Reported context snapshot — 19.7k tokens" in joined
+    assert "Tools" in joined and "definitions" in joined
+    assert "Snapshot sizes reported by the harness at shutdown" in joined
+    assert "~chars/4" not in joined and "fixed overhead" not in joined
+    assert "160.0k" in joined and "6 turns" in joined  # curve still measures requests
+
+
 def test_context_tab_no_usage_message():
     args = type("Args", (), {"since": None, "until": None, "days": None})()
 

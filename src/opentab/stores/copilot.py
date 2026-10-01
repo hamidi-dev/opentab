@@ -9,8 +9,10 @@ import sqlite3
 from datetime import datetime, timezone
 
 from opentab.accounting.models import Workflow
+from opentab.accounting.pricing import canonical_model
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.util import git_root, read_files_parallel
+from opentab.stores.copilot_events import CopilotEvents, call_key, local_time, node_id
+from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
 
 
 class CopilotStore:
@@ -23,6 +25,7 @@ class CopilotStore:
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
+    records_reasoning = True  # readable reasoningText/blocks when the model records them
     combined = False
     source_name = "Copilot"
 
@@ -51,6 +54,7 @@ class CopilotStore:
         self._db_path = os.path.join(
             os.path.dirname(os.path.normpath(root_dir)), "session-store.db"
         )
+        self._events = CopilotEvents(os.path.dirname(os.path.normpath(root_dir)))
 
     @staticmethod
     def _infer_provider(model: str) -> str:
@@ -276,6 +280,7 @@ class CopilotStore:
         files = self._files()
         if os.path.isfile(self._db_path):
             files.append(self._db_path)
+        files.extend(glob.glob(os.path.join(self._events.root, "*", "events.jsonl")))
         return files
 
     def _files(self) -> list[str]:
@@ -465,6 +470,7 @@ class CopilotStore:
             "output": out + reasoning,  # fold reasoning into output (priced once at output)
             "cache_read": cache_read,
             "cache_write": cache_write,
+            "effort": self._attr_str(attrs, "gen_ai.request.reasoning.level") or "",
             "dedup_key": self._dedup_key(source, rec, attrs, tid, sid, ts_ms, idx),
         }
 
@@ -490,8 +496,12 @@ class CopilotStore:
         s["turns"].append(
             {
                 "ts": ts if ts is not None else 0,  # epoch ms; sorts numerically
-                "depth": 0,  # Copilot has no subagent tree
+                "depth": 0,
                 "agent": "-",
+                "content_key": call_key(c["session_id"], c["response_id"])
+                if c["response_id"]
+                else "",
+                "effort": c["effort"],
                 "model_name": c["model"],
                 "cost": 0.0,
                 "input": c["input"],
@@ -509,10 +519,41 @@ class CopilotStore:
         s["directory"] = self._git_root(cwd) if cwd else "(unknown)"
         s["created_at"] = self._ms_to_local(s["ts_min"]) if s["ts_min"] is not None else ""
         s["ended_at"] = self._ms_to_local(s["ts_max"]) if s["ts_max"] is not None else ""
+        # Only response/execution identities are retained here. Bodies and tools
+        # remain lazy session-detail reads, never part of cached model/workflow rows.
+        agents, ownership = self._events.metadata(sid)
+        s["agents"] = agents
+        s["event_backed"] = False
+        root_models = {}
+        for turn in s["turns"]:
+            identity = ownership.get(turn["content_key"])
+            aid = ""
+            if identity is not None:
+                candidate, model = identity
+                if not model or model == canonical_model(turn["model_name"]):
+                    aid = candidate
+                    s["event_backed"] = True
+            turn["execution_id"] = node_id(sid, aid)
+            if aid:
+                turn["depth"] = agents[aid]["depth"]
+                turn["agent"] = agents[aid]["name"]
+            else:
+                acc = root_models.setdefault(turn["model_name"], self._new_acc())
+                acc["runs"] += 1
+                for field in (
+                    "input",
+                    "output",
+                    "reasoning",
+                    "cache_read",
+                    "cache_write",
+                    "tokens_total",
+                ):
+                    acc[field] += turn[field]
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # Recorded cost is $0 (OTEL logs none); every token is "unpriced", so the
-            # unpriced_* splits carry the full counts. No subagents, so root == total.
+            # unpriced_* carries full counts; root shares exclude identified children.
+            root = root_models.get(model_name, self._new_acc())
             rows.append(
                 {
                     "root_id": sid,
@@ -531,11 +572,17 @@ class CopilotStore:
                     "unpriced_cache_read": acc["cache_read"],
                     "unpriced_cache_write": acc["cache_write"],
                     "unpriced_output": acc["output"],
-                    "root_unpriced_input": acc["input"],
-                    "root_unpriced_reasoning": acc["reasoning"],
-                    "root_unpriced_cache_read": acc["cache_read"],
-                    "root_unpriced_cache_write": acc["cache_write"],
-                    "root_unpriced_output": acc["output"],
+                    "root_tokens_total": root["tokens_total"],
+                    "root_input": root["input"],
+                    "root_output": root["output"],
+                    "root_reasoning": root["reasoning"],
+                    "root_cache_read": root["cache_read"],
+                    "root_cache_write": root["cache_write"],
+                    "root_unpriced_input": root["input"],
+                    "root_unpriced_reasoning": root["reasoning"],
+                    "root_unpriced_cache_read": root["cache_read"],
+                    "root_unpriced_cache_write": root["cache_write"],
+                    "root_unpriced_output": root["output"],
                 }
             )
         s["model_rows"] = rows
@@ -584,7 +631,7 @@ class CopilotStore:
                     created_at=s["created_at"],
                     root_cost=0.0,  # recorded cost is $0; "$" reprices the tokens
                     total_cost=0.0,
-                    subagents=0,  # Copilot CLI has no subagent tree
+                    subagents=len(s["agents"]),
                     model_count=0,  # filled by App._load_model_cache
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
                     unpriced_tokens=s["unpriced_tokens"],
@@ -622,15 +669,44 @@ class CopilotStore:
         s = self._parse().get(workflow_id)
         if not s:
             return []
-        root = self._new_acc()
-        best, best_runs = "unknown (not recorded)", -1
-        for model_name, acc in s["models"].items():
-            for k in root:
-                root[k] += acc[k]
-            if acc["runs"] > best_runs:
-                best_runs, best = acc["runs"], model_name
-        # cost 0 (recorded); _priced_nodes reprices from the token columns under "$".
-        nodes = [self._node(workflow_id, 0, "-", s["title"], s["created_at"], best, 0.0, root)]
+        executions = [(workflow_id, 0, "-", s["title"], s["created_at"])]
+
+        # Pre-order rather than flattening concurrently running or nested children.
+        def children(parent):
+            for aid, agent in s["agents"].items():
+                if agent["parent"] == parent:
+                    executions.append(
+                        (
+                            agent["id"],
+                            agent["depth"],
+                            agent["name"],
+                            agent["name"],
+                            local_time(agent["created"]),
+                        )
+                    )
+                    children(aid)
+
+        children("")
+        nodes = []
+        for execution, depth, agent, title, created in executions:
+            acc = self._new_acc()
+            models = {}
+            for turn in s["turns"]:
+                if turn["execution_id"] != execution:
+                    continue
+                acc["runs"] += 1
+                models[turn["model_name"]] = models.get(turn["model_name"], 0) + 1
+                for field in (
+                    "input",
+                    "output",
+                    "reasoning",
+                    "cache_read",
+                    "cache_write",
+                    "tokens_total",
+                ):
+                    acc[field] += turn[field]
+            best = max(models, key=models.get) if models else "unknown (not recorded)"
+            nodes.append(self._node(execution, depth, agent, title, created, best, 0.0, acc))
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes
@@ -639,22 +715,86 @@ class CopilotStore:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
     def message_timeline(self, workflow_id: str) -> list[dict]:
-        # Chronological per-turn rows (one per kept OTEL call). The GenAI conventions
-        # carry no prompt content unless content capture is explicitly enabled, so
-        # every row is headerless: empty prompt_* fields land the turns under the
-        # single "(no preceding prompt)" group -- still a per-call cost/time line.
+        return self._timeline(workflow_id)
+
+    def _timeline(self, workflow_id: str, execution: str | None = None) -> list[dict]:
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        turns = sorted(s["turns"], key=lambda r: r["ts"])
+        if execution is not None:
+            turns = [t for t in turns if t["execution_id"] == execution]
+        if not self.demo:
+            turns, _trace = self._events.details(workflow_id, turns, execution=execution)
         out = []
-        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+        for t in turns:
             r = dict(t)
             r["time"] = self._ms_to_local(r.pop("ts"))
-            r["prompt_id"] = ""
-            r["prompt_title"] = ""
-            r["prompt_full"] = ""
+            for field in ("prompt_id", "prompt_title", "prompt_full"):
+                r.setdefault(field, "")
+            if execution is not None:
+                r["depth"] = 0
             out.append(r)
         return out
 
     def supports_turns(self, workflow_id: str) -> bool:
         return True
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        return not self.demo and bool(self._parse().get(workflow_id, {}).get("event_backed"))
+
+    def turn_content(self, workflow_id: str, content_key: str | None = None) -> dict:
+        if self.demo:
+            return {}
+        s = self._parse().get(workflow_id)
+        if not s:
+            return {}
+        _rows, trace = self._events.details(
+            workflow_id, s["turns"], content_key=content_key, trace=True
+        )
+        return trace
+
+    def tool_breakdown(self, workflow_id: str) -> list[dict]:
+        return tool_rows_from_turns(self.message_timeline(workflow_id))
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        return self.supports_turn_content(workflow_id)
+
+    def context_breakdown(self, workflow_id: str) -> list[dict]:
+        if self.demo or workflow_id not in self._parse():
+            return []
+        return self._events.context(workflow_id)
+
+    def supports_context(self, workflow_id: str) -> bool:
+        # Capability checks run while painting; composition itself stays lazy.
+        return self.supports_turn_content(workflow_id)
+
+    def node_prompt(self, root_id: str, execution: str) -> str | None:
+        if self.demo or root_id not in self._parse() or root_id == execution:
+            return None
+        return self._events.prompt(root_id, execution)
+
+    def node_timeline(self, root_id: str, execution: str) -> list[dict] | None:
+        s = self._parse().get(root_id)
+        if (
+            self.demo
+            or not s
+            or execution not in {root_id} | {a["id"] for a in s["agents"].values()}
+        ):
+            return None
+        return self._timeline(root_id, execution)
+
+    def node_turn_content(
+        self, root_id: str, execution: str, content_key: str | None = None
+    ) -> dict:
+        rows = self.node_timeline(root_id, execution)
+        if rows is None:
+            return {}
+        keys = {r["content_key"] for r in rows if r.get("content_key")}
+        if content_key is not None and content_key not in keys:
+            return {}
+        return {
+            key: events
+            for key, events in self.turn_content(root_id, content_key).items()
+            if key in keys
+        }

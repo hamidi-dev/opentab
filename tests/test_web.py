@@ -387,6 +387,63 @@ def test_web_turn_tools_are_sanitized_at_the_boundary_not_by_the_page():
     assert shipped(("Read", "Bash")) == ["Read", "Bash"]
 
 
+def test_web_context_preserves_reported_snapshot_basis_without_trace_content():
+    class Snapshot(TurnsFakeStore):
+        def supports_context(self, wid):
+            return True
+
+        def context_breakdown(self, wid):
+            return [
+                {
+                    "category": "System",
+                    "kind": "instructions",
+                    "count": 1,
+                    "est_tokens": 8351,
+                    "basis": "reported_snapshot",
+                }
+            ]
+
+    w = workflow("w1", "2026-05-01 10:00:00")
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(Snapshot([w]), args)
+    comp = ot.session_extras(app, "w1")["context"]["comp"]
+    assert comp == [
+        {"cat": "System", "kind": "instructions", "count": 1, "est": 8351, "snapshot": True}
+    ]
+    # Exercise the shipped table builder so numeric snapshots cannot inherit the
+    # chars/4 label used for estimated transcript composition.
+    if shutil.which("node") is None:
+        print("  (skipped JS snapshot rendering — node not on PATH)")
+        return
+    js = _js_source()
+    fn = js[js.index("function contextCompTable(") :].split("\nfunction ", 1)[0]
+    script = (
+        """
+const assert = require('assert');
+const hTok = n => String(n);
+function h(tag, props, ...children) {
+  return {tag, children, appendChild(child) { this.children.push(child); }};
+}
+function text(node) {
+  return node && typeof node === 'object' ? (Array.isArray(node) ? node : node.children).map(text).join(' ') : String(node);
+}
+"""
+        + fn
+        + "\nconst comp = "
+        + json.dumps(comp)
+        + ";"
+        + """
+const snapshot = text(contextCompTable(comp));
+assert.ok(snapshot.includes('8351'));
+assert.ok(snapshot.includes('Snapshot sizes reported by the harness at shutdown'));
+assert.ok(!snapshot.includes('~8351') && !snapshot.includes('chars/4'));
+const estimated = text(contextCompTable(comp.map(({snapshot, ...r}) => r)));
+assert.ok(estimated.includes('~8351') && estimated.includes('chars/4'));
+"""
+    )
+    subprocess.run([shutil.which("node"), "-e", script], check=True, capture_output=True, text=True)
+
+
 def test_web_turns_carry_the_context_size_and_mark_compactions():
     class Compacting(TurnsFakeStore):
         def message_timeline(self, workflow_id):

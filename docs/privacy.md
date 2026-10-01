@@ -11,7 +11,7 @@ Your tools' own records, read-only:
 - OpenCode's SQLite database
 - the JSONL transcripts of Claude Code / Codex / pi-agent / omp / OpenClaw / zaly
 - Hermes' SQLite database and rotating agent logs
-- the Copilot CLI's OpenTelemetry export
+- the Copilot CLI's OpenTelemetry export, session metadata database and saved session events
 - VS Code's Copilot Chat session store
 - Gemini CLI's chat records and project mappings, and Antigravity's conversation records
 - a CSV/JSONL of logged API requests (`--csv`/`--jsonl`)

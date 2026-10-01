@@ -263,7 +263,8 @@ no corresponding assistant message in SQLite.
 
 ## GitHub Copilot CLI
 
-Reader: [`stores/copilot.py`](../src/opentab/stores/copilot.py)
+Reader: [`stores/copilot.py`](../src/opentab/stores/copilot.py), with
+[`copilot_events.py`](../src/opentab/stores/copilot_events.py) for saved-event enrichment.
 
 The opt-in OpenTelemetry export is the usage ledger; the CLI's session database
 only enriches titles and projects. Export records carry tokens but no dollars.
@@ -279,8 +280,40 @@ can share a trace. A higher-fidelity record with **no response id** still covers
 trace conservatively, which can undercount named calls that cannot be disambiguated.
 
 The parser also shares model/session context across a trace, preferring an actual
-conversation id over a per-response fallback. Turns are headerless, and there is no
-subagent tree, per-step Tools view or content trace from this reader.
+conversation id over a per-response fallback. A sibling
+`session-state/<session-id>/events.jsonl` enriches sessions whose `session.start`
+header matches their exact native ID. Accounting retains only response/execution
+identities from these events; prompts and traces stay lazy. Event files join the
+rollup fingerprint so execution ownership updates invalidate cached root shares.
+
+- `gen_ai.response.id` joins `assistant.message.data.apiCallId`, with model and
+  execution checks. Multiple recorded chunks contribute to that call's content,
+  not additional usage. Unmatched or ambiguous events supply no borrowed content.
+  Internal `model.*` events, including title-generation calls, are not conversation
+  answers and do not become additional billed turns.
+- Turns group by recorded originating user-message IDs, falling back to the latest
+  execution-local user event when the ID is absent. Child calls group under their
+  parent's originating prompt in the session timeline; the nested execution reader
+  instead shows the child's own instructions. Reasoning effort comes from OTEL or
+  recorded model changes.
+- Tools uses ordered `toolRequests`, including repeated names and MCP namespaces.
+  Traces show assistant text, readable reasoning and exact arguments/results.
+  Execution-scoped tool IDs join results causally; reused IDs invalidate older
+  pending calls even outside the selected trace. Previews are capped, expansion
+  rereads one exact call, and encrypted reasoning is never displayed.
+- Explicit `agentId` and subagent parent IDs form the recursive execution tree.
+  Older `parentToolCallId` records resolve only through an unambiguous recorded
+  spawn. Nodes count their own matched OTEL calls; workflows include the subtree,
+  while root-only model shares exclude identified child calls. Missing/cyclic
+  ownership remains unassigned to children rather than guessed from agent names.
+- Context combines the measured per-request curve with the latest shutdown's
+  system, tool-definition and conversation sizes, when recorded. That composition
+  is a context snapshot, not a replacement token ledger or inferred invoice.
+
+Without matching saved events, OTEL-only sessions retain headerless Turns and the
+measured Context curve. Event enrichment does not create usage for sessions lacking
+an OTEL ledger. Raw traces never enter caches, web reports or fleet summaries; demo
+blocks event content and execution-detail reads.
 
 ## Copilot Chat in VS Code
 

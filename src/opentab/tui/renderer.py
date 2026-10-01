@@ -4977,6 +4977,8 @@ class Renderer:
             else []
         )
         if comp_rows:
+            snapshot = all(cr.get("basis") == "reported_snapshot" for cr in comp_rows)
+            approx = "" if snapshot else "~"
             by_cat: dict[str, list[dict]] = {}
             for cr in comp_rows:
                 by_cat.setdefault(cr["category"], []).append(cr)
@@ -4988,13 +4990,15 @@ class Renderer:
             # Keep category width three cells wider than its indented kind rows.
             kw = max(19, min(34, width - 62))
             cw = kw + 3
-            lines += ["", f"# What filled it — ~{human_tokens(total_est)} of content sent"]
+            heading = "Reported context snapshot" if snapshot else "What filled it"
+            suffix = "tokens" if snapshot else "of content sent"
+            lines += ["", f"# {heading} — {approx}{human_tokens(total_est)} {suffix}"]
             for cat, crs in cats:
                 ctot = sum(x["est_tokens"] for x in crs)
                 ccount = sum(x["count"] for x in crs)
                 cbar = cost_bar(ctot, top, 12)
                 lines.append(
-                    f"  {pad(cat, cw)} {ccount:>6}× {'~' + human_tokens(ctot):>8}  "
+                    f"  {pad(cat, cw)} {ccount:>6}× {approx + human_tokens(ctot):>8}  "
                     f"▕{cbar}▏ {pct(ctot, total_est):>4}"
                 )
                 kinds = sorted(
@@ -5003,18 +5007,19 @@ class Renderer:
                 for x in kinds[:6]:
                     lines.append(
                         f"    · {pad(shorten(x['kind'], kw), kw)} {x['count']:>5}× "
-                        f"{'~' + human_tokens(x['est_tokens']):>8}  {pct(x['est_tokens'], total_est):>17}"
+                        f"{approx + human_tokens(x['est_tokens']):>8}  {pct(x['est_tokens'], total_est):>17}"
                     )
                 if len(kinds) > 6:
                     rest = sum(x["est_tokens"] for x in kinds[6:])
                     lines.append(
                         f"    · {pad(f'… {len(kinds) - 6} more', kw)} {'':>5}  "
-                        f"{'~' + human_tokens(rest):>8}  {pct(rest, total_est):>17}"
+                        f"{approx + human_tokens(rest):>8}  {pct(rest, total_est):>17}"
                     )
-            lines.append(
-                f"  {pad('fixed overhead', cw)} {'':>6}  {human_tokens(start):>8}  "
-                "measured at turn 1 (system prompt + tools + first prompt)"
-            )
+            if not snapshot:
+                lines.append(
+                    f"  {pad('fixed overhead', cw)} {'':>6}  {human_tokens(start):>8}  "
+                    "measured at turn 1 (system prompt + tools + first prompt)"
+                )
 
         lines += [
             "",
@@ -5022,7 +5027,9 @@ class Renderer:
         ]
         if comp_rows:
             lines.append(
-                "· What-filled-it is a ~chars/4 estimate of everything sent, compacted or not."
+                "· Snapshot sizes reported by the harness at shutdown; separate from per-call usage."
+                if snapshot
+                else "· What-filled-it is a ~chars/4 estimate of everything sent, compacted or not."
             )
         return lines
 
