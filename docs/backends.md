@@ -267,8 +267,10 @@ Reader: [`stores/copilot.py`](../src/opentab/stores/copilot.py)
 
 The opt-in OpenTelemetry export is the usage ledger; the CLI's session database
 only enriches titles and projects. Export records carry tokens but no dollars.
-Input includes cache reads, cache creation is separate, and reasoning folds into
-output. Total-only records need back-filling rather than being discarded.
+Input includes both cache reads and cache writes: subtract both to obtain uncached
+input, keeping their sum within the recorded input budget. Copilot's shutdown
+`tokenDetails` uses this same disjoint split. Reasoning folds into output.
+Total-only records need back-filling rather than being discarded.
 
 One call can appear across several files as a chat span, inference log, agent-turn
 log and agent-summary span, in that fidelity order. Deduplication spans the entire

@@ -17,7 +17,7 @@ class CopilotStore:
     """Read GitHub Copilot CLI's opt-in OpenTelemetry file export.
 
     A call may appear as chat, inference, agent-turn, and summary records; retain that
-    fidelity order and deduplicate by response/trace identity. Input includes cache reads
+    fidelity order and deduplicate by response/trace identity. Input includes cache reads/writes
     and reasoning remains inside output. OTEL records no cost or prompt text. Session cwd
     and title are enriched read-only from the sibling ``session-store.db``.
     """
@@ -82,7 +82,7 @@ class CopilotStore:
     def _new_acc() -> dict:
         return {
             "runs": 0,
-            "input": 0,  # uncached input (OTEL input_tokens minus the cached read)
+            "input": 0,  # uncached input (OTEL input_tokens minus cache reads/writes)
             "output": 0,  # reasoning folded in so it is priced once, never twice
             "reasoning": 0,  # kept 0 (folded into output)
             "cache_read": 0,
@@ -422,7 +422,12 @@ class CopilotStore:
             attrs, "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"
         )
         total = self._attr_num(attrs, "gen_ai.usage.total_tokens", "gen_ai.usage.total.token_count")
-        uncached = max(0, inp - min(inp, cache_read))  # input_tokens includes the cached read
+        # Copilot's input_tokens includes BOTH cache reads and writes. Its shutdown
+        # tokenDetails confirms the disjoint split (17984 input, 17981 writes -> 3
+        # uncached); adding writes on top almost doubled a cold request's usage.
+        cache_read = min(inp, cache_read)
+        cache_write = min(inp - cache_read, cache_write)
+        uncached = inp - cache_read - cache_write
         # Some exporters log only a grand total; back-fill the gap (as output, else reasoning).
         missing = max(0, total - (uncached + out + cache_write + cache_read + reasoning))
         if missing:
