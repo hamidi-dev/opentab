@@ -75,12 +75,12 @@ overview and turns inside a prompt, then scroll the trace. `g`/`G` select the
 first/last prompt in the overview, the first/last turn inside a prompt, and scroll
 to the top/bottom inside a trace; `[`/`]` step between sibling turns of the same
 prompt, and `z` toggles full content.
-Local OpenCode, Claude Code, Codex, OMP and Hermes support this drill when exact
+Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support this drill when exact
 records survive. Gemini, Antigravity and Remote do not; demo blocks it. Missing or
 ambiguous ownership is unavailable, while a valid execution with no turns is empty.
 
 **Received prompt** reads the selected child's first recorded user message, separately
-from its generated title. OpenCode, Claude Code, Codex, OMP and Hermes support this
+from its generated title. OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support this
 when the message and exact child identity are retained. It is not the complete
 system instructions or inherited context. Missing/ambiguous records and unsupported
 harnesses are labeled explicitly; demo hides real prompts. The read happens only

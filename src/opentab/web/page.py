@@ -2383,6 +2383,8 @@ function contextPane(ctx) {
   return wrap;
 }
 function contextCompTable(comp) {
+  const snapshot = comp.every(r => r.snapshot);
+  const approx = snapshot ? '' : '~';
   const byCat = new Map();
   for (const r of comp) {
     let c = byCat.get(r.cat);
@@ -2396,7 +2398,7 @@ function contextCompTable(comp) {
   const cells = (label, count, est, dim) => h('tr', null,
     h('td', { class: 'grow' + (dim ? ' dim' : '') }, label),
     h('td', { class: 'r' + (dim ? ' dim' : '') }, count.toLocaleString('en-US') + '×'),
-    h('td', { class: 'r' + (dim ? ' dim' : '') }, '~' + hTok(est)),
+    h('td', { class: 'r' + (dim ? ' dim' : '') }, approx + hTok(est)),
     h('td', { class: 'r' + (dim ? ' dim' : '') }, Math.round(100 * est / total) + '%'));
   for (const c of cats) {
     rows.push(cells(c.cat, c.count, c.est, false));
@@ -2405,9 +2407,11 @@ function contextCompTable(comp) {
   const wrap = h('div', null, h('table', null,
     h('thead', null, h('tr', null,
       h('th', null, 'Category'), h('th', { class: 'r' }, 'Count'),
-      h('th', { class: 'r' }, '~Tokens'), h('th', { class: 'r' }, 'Share'))),
+      h('th', { class: 'r' }, approx + 'Tokens'), h('th', { class: 'r' }, 'Share'))),
     h('tbody', null, rows)));
-  wrap.appendChild(h('div', { class: 'hint' }, 'a ~chars/4 estimate of everything sent, compacted or not — the system prompt and tool schemas live only in the measured session-start baseline'));
+  wrap.appendChild(h('div', { class: 'hint' }, snapshot
+    ? 'Snapshot sizes reported by the harness at shutdown; separate from per-call usage.'
+    : 'a ~chars/4 estimate of everything sent, compacted or not — the system prompt and tool schemas live only in the measured session-start baseline'));
   return wrap;
   return wrap;
 }
@@ -2826,7 +2830,10 @@ function renderDetail(sc, ws) {
     const c = EXTRAS.context;
     if (!EXTRAS.loading && c && c.comp && c.comp.length) {
       const total = c.comp.reduce((a, r) => a + r.est, 0);
-      root.appendChild(pane('What filled it — ~' + hTok(total) + ' of content sent', contextCompTable(c.comp)));
+      const title = c.comp.every(r => r.snapshot)
+        ? 'Reported context snapshot — ' + hTok(total) + ' tokens'
+        : 'What filled it — ~' + hTok(total) + ' of content sent';
+      root.appendChild(pane(title, contextCompTable(c.comp)));
     }
   }
 }

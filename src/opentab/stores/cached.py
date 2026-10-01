@@ -19,7 +19,7 @@ from opentab import diagnostics as debug
 from opentab.accounting.models import Workflow
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 15  # Copilot input includes cache writes; discard inflated rollups
+CACHE_VERSION = 16  # Copilot execution ownership and root-only model shares
 
 
 # Required because cache readers index these fields directly.

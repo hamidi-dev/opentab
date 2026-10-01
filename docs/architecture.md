@@ -33,7 +33,7 @@ package and installed command are both `opentab`.
 | `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `accounting/models.py` | Workflow, qualified session identity and summary records |
 | `accounting/tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
-| `stores/` | Harness readers, combined views, portable summaries and warm caches |
+| `stores/` | Harness readers, combined views, portable summaries and warm caches; `copilot_events.py` supplies session-bound Copilot execution metadata and lazy event details |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |
 | `tui/renderer.py`, `tui/components/` | Screen composition and painting; reusable stateless layouts |
@@ -92,7 +92,7 @@ The optional session interface extends this without making the UI format-aware:
 The node readers resolve exact root/node IDs within the owning leaf store, never
 by agent name or sibling matches; ambiguous ownership fails closed. Execution
 timelines contain only the node's own rows and prompts, with `depth=0` and original
-content keys unchanged. Local OpenCode, Claude Code, Codex, OMP and Hermes implement
+content keys unchanged. Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes implement
 them; Gemini, Antigravity and Remote do not, and demo blocks the nested drill.
 
 The measured Context curve uses turn token counts rather than another store
