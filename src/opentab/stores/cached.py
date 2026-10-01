@@ -19,7 +19,7 @@ from opentab import diagnostics as debug
 from opentab.accounting.models import Workflow
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 14  # duration estimates and JSONL event/snapshot semantics
+CACHE_VERSION = 15  # Copilot input includes cache writes; discard inflated rollups
 
 
 # Required because cache readers index these fields directly.

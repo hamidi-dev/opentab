@@ -32,7 +32,7 @@ def _otel_chat(
         "gen_ai.request.model": model,
         "gen_ai.response.model": model,
         "gen_ai.conversation.id": session,
-        "gen_ai.usage.input_tokens": inp,  # OpenAI-style: includes the cached read
+        "gen_ai.usage.input_tokens": inp,  # includes cache reads and writes
         "gen_ai.usage.output_tokens": out,
     }
     if cache_read:
@@ -61,7 +61,7 @@ def _write_otel(dirpath, rows, name="otel.jsonl"):
 def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
-        # input_tokens (19452) includes the 123-token cached read -> uncached 19329;
+        # input_tokens (19452) includes 123 reads and 25 writes -> uncached 19304;
         # reasoning (128) folds into output for pricing; cache_creation -> cache_write.
         _write_otel(
             otel,
@@ -87,19 +87,19 @@ def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():
         assert w.source == "Copilot"
         assert w.subagents == 0  # no subagent tree
         assert w.total_cost == 0.0 and w.root_cost == 0.0
-        # tokens_total = uncached(19329) + cache_read(123) + cache_write(25) + output(281+128)
-        assert w.total_tokens == w.unpriced_tokens == 19329 + 123 + 25 + 409
+        # tokens_total = uncached(19304) + cache_read(123) + cache_write(25) + output(281+128)
+        assert w.total_tokens == w.unpriced_tokens == 19304 + 123 + 25 + 409
 
         row = next(r for r in store.model_breakdown() if r["root_id"] == COPILOT_SID)
         assert row["model_name"] == "anthropic/claude-sonnet-4"  # mixed-provider prefix
-        assert row["unpriced_input"] == 19329
+        assert row["unpriced_input"] == 19304
         assert row["unpriced_cache_read"] == 123
         assert row["unpriced_cache_write"] == 25
         assert row["unpriced_output"] == 409  # reasoning folded in, priced once
         assert row["reasoning"] == 0  # folded, never double-counted
 
         # the (all-unpriced) usage reprices to a positive list-price estimate under "$"
-        est = ot.api_equivalent_cost("anthropic/claude-sonnet-4", 19329, 409, 0, 123, 25)
+        est = ot.api_equivalent_cost("anthropic/claude-sonnet-4", 19304, 409, 0, 123, 25)
         assert est > 0
 
         nodes = store.workflow_nodes(COPILOT_SID)
@@ -127,6 +127,70 @@ def test_copilot_ended_at_reflects_the_latest_call_not_the_first():
         assert w.created_at == store._ms_to_local(1775934264 * 1000)
         assert w.ended_at == store._ms_to_local(1775934500 * 1000)
         assert w.ended_at != w.created_at
+
+
+def test_copilot_cache_writes_match_shutdown_token_details_across_views():
+    # Copilot CLI's real GPT-5.6 Terra export and session.shutdown.tokenDetails:
+    # input_tokens=17984 includes 17981 writes; only 3 tokens are uncached.
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        chat = _otel_chat(COPILOT_SID, "gpt-5.6-terra", 17984, 8)
+        chat["attributes"]["gen_ai.usage.cache_write.input_tokens"] = 17981
+        _write_otel(otel, [chat])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        (workflow,) = store.workflows()
+        (model,) = store.model_breakdown()
+        (node,) = store.workflow_nodes(COPILOT_SID)
+        (turn,) = store.message_timeline(COPILOT_SID)
+        assert workflow.total_tokens == workflow.unpriced_tokens == 17992
+        assert store.summary([workflow])["tokens"] == 17992
+        assert model["runs"] == 1 and model["input"] == model["unpriced_input"] == 3
+        assert model["root_unpriced_input"] == 3
+        assert node["tokens_input"] == 3 and node["tokens_cache_write"] == 17981
+        assert node["tokens_total"] == model["tokens_total"] == turn["tokens_total"] == 17992
+        assert turn["input"] == 3 and turn["cache_write"] == 17981
+        assert (
+            abs(
+                ot.api_equivalent_cost(
+                    model["model_name"],
+                    model["input"],
+                    model["output"],
+                    model["reasoning"],
+                    model["cache_read"],
+                    model["cache_write"],
+                )
+                - 0.0450545
+            )
+            < 1e-10
+        )
+        assert workflow.total_cost == model["cost"] == turn["cost"] == 0
+
+
+def test_copilot_cache_reads_and_writes_share_the_input_budget():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(
+            otel,
+            [
+                _otel_chat("mixed", "gpt-5.6-terra", 1000, 10, cache_read=700, cache_create=200),
+                _otel_chat(
+                    "oversized",
+                    "gpt-5.6-terra",
+                    1000,
+                    10,
+                    cache_read=700,
+                    cache_create=500,
+                    trace="t2",
+                    span="s2",
+                ),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        rows = {r["root_id"]: r for r in store.model_breakdown()}
+        assert rows["mixed"]["input"] == 100
+        assert rows["mixed"]["cache_read"] == 700 and rows["mixed"]["cache_write"] == 200
+        assert rows["oversized"]["input"] == 0 and rows["oversized"]["cache_write"] == 300
+        assert all(r["tokens_total"] == 1010 for r in rows.values())
 
 
 def test_copilot_store_dedupes_redundant_records_keeping_chat_span():
