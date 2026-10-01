@@ -438,6 +438,7 @@ _STATUS_SOURCES = (
     "claude",
     "codex",
     "hermes",
+    "copilot",
     "pi",
     "omp",
     "openclaw",
@@ -619,6 +620,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "claude_dir",
             "codex_dir",
             "hermes_db",
+            "copilot_dir",
             "pi_dir",
             "omp_dir",
             "openclaw_dir",
@@ -629,7 +631,7 @@ def _build_parser() -> argparse.ArgumentParser:
         },
         source_choices=_STATUS_SOURCE_CHOICES,
         source_help="local harness to price: auto (default), all, opencode, claude, codex, "
-        "hermes, pi, omp, openclaw, zaly, gemini, antigravity; auto/all check every present one",
+        "hermes, copilot, pi, omp, openclaw, zaly, gemini, antigravity; auto/all check every present one",
     )
     status.add_argument(
         "targets",

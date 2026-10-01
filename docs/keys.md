@@ -32,7 +32,7 @@ sessions that used it, with the cost and tokens *it* accounts for) — see
 that records per-step usage), **Tools** (per-tool / MCP spend) and **Context** (the
 context window's growth curve, % of the model's window, compaction markers, and —
 on harnesses whose logs carry content — an estimated breakdown of what filled it)
-when its harness supports them. Local OpenCode sessions also add **Changes** after
+when its harness supports them. Local OpenCode/Copilot sessions also add **Changes** after
 Tools, and **Harnesses** joins in the merged `all` view.
 The Context tab also overlays how the session evolved: what it spent (with a
 per-turn and per-hour burn rate), its wall-clock span with clock times pinned to
@@ -144,10 +144,13 @@ the harness records cumulative-total deltas rather than per-request prompts
 
 ### Session changes
 
-On **Changes**, the file list groups OpenCode's recorded edits across the root
-and subagents by path. Completed `apply_patch`, `edit`, and `write`
-metadata and per-prompt snapshots are both retained: a snapshot can also contain
-shell or formatter changes missing from the tool patch. `j`/`k` and `g`/`G` select files,
+On **Changes**, the file list groups recorded edits across the root and subagents
+by path. OpenCode retains completed `apply_patch`, `edit`, and `write` metadata and
+per-prompt snapshots: a snapshot can also contain shell or formatter changes missing
+from the tool patch. Copilot retains successful built-in `edit`, `create`,
+`str_replace_editor`, and `apply_patch` calls, with native diffs matched to recorded
+paths. Its read-only `view` results are excluded even when they look like diffs.
+`j`/`k` and `g`/`G` select files,
 `Enter` opens a syntax-colored diff in your last selected layout (Unified by default);
 `v` toggles **side-by-side** (Before / After),
 `[`/`]` step through that file's recorded occurrences, and `Esc` returns to the
@@ -179,7 +182,7 @@ Files and selected patches load in the background, so you can navigate away whil
 they load. Loaded file lists and patches remain in memory across tabs and sessions
 until you quit, reload (`r`), change the harness, or enter demo. Revisiting does not
 read them again; reload explicitly to pick up new edits. This is an in-memory
-cache, not a disk history archive. Changes is local OpenCode TUI-only and disabled
+cache, not a disk history archive. Changes is local OpenCode/Copilot TUI-only and disabled
 in demo; source contents are not added to web, fleet, CSV, CLI, or MCP output.
 
 #### External diff viewer
@@ -215,7 +218,7 @@ the query. In the project picker, type to find a project and use arrow keys to s
 | `J` / `K` | Scroll only the preview, without changing focus or selection |
 | `S` | Scope picker: All sessions / This session |
 | `s` / `a` | Selected session / all sessions; keep other filters |
-| `H` | Harness picker: OpenCode / Claude Code / Codex / Hermes / pi / omp / all |
+| `H` | Harness picker: OpenCode / Claude Code / Codex / Hermes / Copilot / pi / omp / all |
 | `p` | Search known projects and choose one; All projects clears |
 | `d` | UTC message dates: Today, Last 7/30 days, or custom `YYYY-MM-DD..YYYY-MM-DD` |
 | `R` | Clear project, harness and dates; keep session scope and query |
@@ -299,7 +302,7 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window/tab · `s` right split · `v` lower split · `p` popup · `y` copy the command. tmux offers all spawn targets. Herdr offers a tab and both splits only when it provides a valid `HERDR_PANE_ID` for the current pane; otherwise it offers only the tab and copy. A [launcher hook](#custom-launchers) may offer all four. `y` copies anywhere. If tmux and Herdr are nested, OpenTab uses the innermost multiplexer. A session **pulled from another machine** reopens *there* only when its `remotes.json` entry has an SSH target: every available target uses `ssh -t` and the remote user's interactive login shell to load its PATH and run `cd … && …`; `y` yanks that same line. A box reached by `url` (no SSH target) offers only the yank |
 | `e` | Export the current list to a CSV in the working directory — whatever the pane is showing, including a model scope's attributed columns |
-| `y` | Copy the selected/open session's retained user and assistant messages as Markdown (`## User` / `## Assistant`), including intermediate replies and code blocks. Available in the focused Sessions list and every session tab for local OpenCode, Claude Code, Codex, Hermes, pi and omp. Copies the root conversation, even inside Subagents; excludes tool calls/results, thinking, system messages and attachments. Disabled in demo |
+| `y` | Copy the selected/open session's retained user and assistant messages as Markdown (`## User` / `## Assistant`), including intermediate replies and code blocks. Available in the focused Sessions list and every session tab for local OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp. Copies the root conversation, even inside Subagents; excludes tool calls/results, thinking, system messages and attachments. Disabled in demo |
 
 Conversation copy reads the source freshly on each press and preserves its message
 order and full retained text, rather than copying truncated Turns previews. It does

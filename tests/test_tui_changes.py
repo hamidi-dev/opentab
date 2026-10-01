@@ -1,10 +1,71 @@
+import json
+import os
+import tempfile
 import threading
 from unittest.mock import patch
 
 import opentab as ot
 from opentab.tui import bindings
 
-from tests._support import AttrScreen, FakeScreen, FakeStore, screen_text, workflow
+from tests._support import (
+    AttrScreen,
+    FakeScreen,
+    FakeStore,
+    _conversation_fixture,
+    _event,
+    screen_text,
+    workflow,
+)
+
+
+def test_copilot_changes_worker_renders_retained_child_patch_without_working_tree():
+    from opentab.stores.copilot_events import node_id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        flags, sid, child = _conversation_fixture(tmp, "copilot")
+        args = ot.parse_args(flags)
+        store = ot.CopilotStore(args.copilot_dir, args)
+        raw_child = "019fa4fd-aaaa-7000-a6e9-c9e0c7ce25fc"
+        assert node_id(sid, raw_child) == child
+        path = os.path.join(tmp, "session-state", sid, "events.jsonl")
+        file = os.path.join(tmp, "recorded.py").lstrip("/")
+        diff = (
+            f"\ndiff --git a/{file} b/{file}\n--- a/{file}\n+++ b/{file}\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        with open(path, "a", encoding="utf-8") as stream:
+            for event in [
+                _event(
+                    "tool.execution_start",
+                    {
+                        "toolCallId": "edit",
+                        "toolName": "apply_patch",
+                        "arguments": "*** Begin Patch\n*** Update File: recorded.py\n@@\n-old\n+new\n*** End Patch",
+                    },
+                    "edit-start",
+                    raw_child,
+                ),
+                _event(
+                    "tool.execution_complete",
+                    {"toolCallId": "edit", "success": True, "result": {"detailedContent": diff}},
+                    "edit-done",
+                    raw_child,
+                ),
+            ]:
+                stream.write(json.dumps(event) + "\n")
+        app = _app(store)
+        try:
+            _load_files(app)
+            data = app.changes_data()
+            assert [f["file"] for f in data["files"]] == ["recorded.py"]
+            assert data["files"][0]["edits"][0]["execution_id"] == child
+            assert not os.path.exists(os.path.join(tmp, "recorded.py"))
+            app.open_change_file()
+            _load_diff(app)
+            lines = app.renderer.detail_changes(app.current_session())
+            assert any(line.endswith("-old") for line in lines)
+            assert any(line.endswith("+new") for line in lines)
+        finally:
+            app._invalidate_changes(close=True)
 
 
 def _data():

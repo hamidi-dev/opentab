@@ -1,6 +1,6 @@
 # Conversation search
 
-Search retained OpenCode, Claude Code, Codex, Hermes, pi and omp text across the
+Search retained OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp text across the
 local sessions OpenTab can already discover. This is **lexical search**, not semantic memory:
 identifiers and shared wording work best. It does not summarize conversations,
 learn a personal profile, call an embedding model, or use the network.
@@ -77,11 +77,11 @@ opentab conversations search "retry sqlite locking" --project ~/work/my-project 
 ```
 
 CLI index and search load all present supported conversation readers by default:
-OpenCode, Claude Code, Codex, Hermes, pi and omp. `--harness` (or its deprecated
+OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp. `--harness` (or its deprecated
 `--source` alias) can select one of them or `all`; accounting-only harnesses are
 rejected rather than loaded and later reported as unindexable. `--db`,
-`--claude-dir`, `--codex-dir`, `--hermes-db`, `--pi-dir`, and `--omp-dir` override
-those readers' local paths. `--from-harness` accepts the same six harness values
+`--claude-dir`, `--codex-dir`, `--hermes-db`, `--copilot-dir`, `--pi-dir`, and `--omp-dir` override
+those readers' local paths. `--from-harness` accepts the same seven harness values
 and filters the loaded catalog. Index/search also accept `--machine`, `--project`
 (an exact normalized project path), and `--session SESSION_KEY`. Saved project/session
 ignores apply; `--no-state` disables them. `--no-cache` bypasses only the
@@ -140,6 +140,11 @@ Hermes uses a conservative manifest of the main database and nonempty `-wal` fil
 (not `-shm`). It reads no raw text and does not treat message timestamps as revisions;
 any database write invalidates all Hermes roots. Empty WAL creation by a reader is
 ignored. The same stamps also detect subtree changes between root and child reads.
+Copilot stamps the exact `session-state/<id>/events.jsonl` file, which contains both
+the execution tree and retained messages. Its reader verifies the matching session
+header and keeps each recorded root/child message occurrence, including zero-usage
+replies and response chunks; it excludes internal model events and streaming deltas.
+Only OTEL-backed catalog roots are publicly addressable.
 Pi and omp have no manifest shortcut, so every
 explicit refresh performs their full fresh reads; unchanged resulting snapshots still
 avoid rewriting indexed passages.

@@ -11,7 +11,7 @@ from pathlib import Path
 MAX_SOURCE_BYTES = 256 * 1024 * 1024
 MAX_LINE_BYTES = 8 * 1024 * 1024
 # Bump for discovery, ownership, retained-text extraction, or index chunk projection changes.
-CONVERSATION_READER_VERSION = 4
+CONVERSATION_READER_VERSION = 5
 
 
 class ConversationError(Exception):
@@ -95,7 +95,7 @@ def source_manifest(paths) -> list | None:
     return rows
 
 
-def read_jsonl(paths) -> tuple[list, str, list[str]]:
+def read_jsonl(paths, *, cancelled=None) -> tuple[list, str, list[str]]:
     """Read selected sources freshly, retaining physical line provenance, never logging bodies."""
     records, limitations = [], []
     digest = hashlib.sha256()
@@ -118,6 +118,8 @@ def read_jsonl(paths) -> tuple[list, str, list[str]]:
                     )
                 number = 0
                 while True:
+                    if cancelled is not None and cancelled.is_set():
+                        raise ConversationError("read_cancelled", "The source read was cancelled.")
                     line = stream.readline(MAX_LINE_BYTES + 1)
                     if not line:
                         break

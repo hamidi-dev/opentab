@@ -428,7 +428,7 @@ The picker uses its own fzf options instead of `FZF_DEFAULT_OPTS` or
 rollups. `--harness` limits which local tool it queries.
 
 Resolution in [cli/main.py](../src/opentab/cli/main.py) uses the interactive backends in
-`_STATUS_SOURCES`, excluding request logs, Copilot, VS Code, and pulled summaries.
+`_STATUS_SOURCES`, excluding request logs, VS Code, and pulled summaries.
 `auto`/`all` ignore the TUI's saved single-harness preference; an explicit local
 harness limits the search. ID-like targets are probed through each `root_of()`:
 never infer the owning backend from UUID shape, and never reinterpret an
@@ -436,6 +436,12 @@ unclaimed ID as a directory. Subagent IDs resolve to their root where supported.
 Paths select the newest matching project root via `recent_roots()`, with project
 paths normalized through git-root resolution. With no target, `cost` selects
 the newest root across eligible backends, not just the current directory.
+
+Copilot participates in both `cost` and `--goto`. Its OTEL exporter may put many
+sessions in one file, so membership and recency scan the shared ledger rather than
+using a cheap per-session filename probe. The scan retains scalar accounting and
+execution identities only. Cost pricing sums per-model buckets, preserving model
+switches without assigning a whole execution to its dominant model.
 
 `_price_root()` prefers `status_nodes()` over `workflow_nodes()`, sums subtree
 nodes, and adds list-price estimates for zero-cost nodes with tokens. A positive

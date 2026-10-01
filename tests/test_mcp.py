@@ -35,7 +35,7 @@ def _request(method, params=None, request_id=1):
 
 
 def test_mcp_added_conversation_readers_use_real_lazy_source_factory_and_confirmations():
-    for harness in ("hermes", "pi", "omp"):
+    for harness in ("hermes", "copilot", "pi", "omp"):
         with tempfile.TemporaryDirectory() as directory:
             flags, sid, child = _conversation_fixture(directory, harness)
             args = ot.parse_args(["mcp", *flags, "--allow-raw-content", "--no-cache", "--no-state"])

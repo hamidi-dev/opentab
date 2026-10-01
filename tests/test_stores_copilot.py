@@ -2,61 +2,22 @@ import json
 import os
 import sqlite3
 import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import opentab as ot
 
-from tests._support import _write_jsonl
+from tests._support import (
+    _copilot_args,
+    _event,
+    _otel_chat,
+    _write_events,
+    _write_jsonl,
+    _write_otel,
+)
 
 COPILOT_SID = "c623bce1-5906-429f-a517-d4fb2cee7cf7"
-
-
-def _copilot_args(copilot_dir):
-    return type("Args", (), {"demo": False, "copilot_dir": copilot_dir})()
-
-
-def _otel_chat(
-    session,
-    model,
-    inp,
-    out,
-    cache_read=0,
-    cache_create=0,
-    reasoning=0,
-    trace="t1",
-    span="sp1",
-    resp=None,
-    end=(1775934264, 0),
-):
-    # A GenAI `chat` span -- the highest-fidelity per-call OTEL record.
-    attrs = {
-        "gen_ai.operation.name": "chat",
-        "gen_ai.request.model": model,
-        "gen_ai.response.model": model,
-        "gen_ai.conversation.id": session,
-        "gen_ai.usage.input_tokens": inp,  # includes cache reads and writes
-        "gen_ai.usage.output_tokens": out,
-    }
-    if cache_read:
-        attrs["gen_ai.usage.cache_read.input_tokens"] = cache_read
-    if cache_create:
-        attrs["gen_ai.usage.cache_creation.input_tokens"] = cache_create
-    if reasoning:
-        attrs["gen_ai.usage.reasoning.output_tokens"] = reasoning
-    if resp:
-        attrs["gen_ai.response.id"] = resp
-    return {
-        "type": "span",
-        "traceId": trace,
-        "spanId": span,
-        "name": f"chat {model}",
-        "endTime": list(end),
-        "attributes": attrs,
-    }
-
-
-def _write_otel(dirpath, rows, name="otel.jsonl"):
-    os.makedirs(dirpath, exist_ok=True)
-    _write_jsonl(os.path.join(dirpath, name), rows)
 
 
 def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():
@@ -476,21 +437,6 @@ def test_copilot_cache_fingerprint_covers_the_session_store_db():
 
         sqlite3.connect(db).close()
         assert db in ot.CopilotStore(otel, _copilot_args(otel)).cache_inputs()
-
-
-def _event(kind, data, eid, agent=""):
-    event = {"type": kind, "data": data, "id": eid, "timestamp": "2026-10-02T06:43:22Z"}
-    if agent:
-        event["agentId"] = agent
-    return event
-
-
-def _write_events(otel, session, events):
-    root = os.path.join(os.path.dirname(otel), "session-state", session)
-    os.makedirs(root, exist_ok=True)
-    path = os.path.join(root, "events.jsonl")
-    _write_jsonl(path, [_event("session.start", {"sessionId": session}, "start")] + events)
-    return path
 
 
 def test_copilot_events_join_exact_calls_prompts_tools_and_reasoning_lazily():
@@ -913,3 +859,482 @@ def test_copilot_response_chunks_and_late_tool_results_preserve_call_boundaries(
         assert events[0]["text"] == "Plan" and events[-1]["output"] == "1"
         assert "OPAQUE" not in json.dumps(events) and "STALE" not in json.dumps(events)
         assert store.model_breakdown()[0]["runs"] == 1
+
+
+def _conversation_error(code, call):
+    from opentab.conversations.reader import ConversationError
+
+    try:
+        call()
+    except ConversationError as exc:
+        assert exc.code == code, (exc.code, code)
+    else:
+        raise AssertionError(f"expected {code}")
+
+
+def test_copilot_conversation_preserves_zero_usage_chunks_and_exact_execution_scope():
+    from opentab.conversations.reader import window
+    from opentab.stores.copilot_events import node_id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, "otel")
+        # No OTEL is needed to read retained messages through the leaf reader.
+        text = "  Hello 🚀\n```python\nprint('hello')\n```\n" + "x" * 5000
+        events = [
+            _event("user.message", {"content": text, "transformedContent": "HIDDEN SYSTEM"}, "u"),
+            _event(
+                "assistant.message",
+                {
+                    "messageId": "shared",
+                    "content": "first chunk",
+                    "apiCallId": "r",
+                    "reasoningText": "SECRET THINKING",
+                    "encryptedContent": "SECRET ENCRYPTED",
+                },
+                "a1",
+            ),
+            _event(
+                "assistant.message",
+                {"messageId": "shared", "content": "second chunk", "apiCallId": "r"},
+                "a2",
+            ),
+            _event("assistant.message", {"content": "zero-usage reply"}, "zero"),
+            _event("model.response", {"content": "SECRET INTERNAL TITLE"}, "internal"),
+            _event("assistant.message_delta", {"deltaContent": "SECRET STREAM"}, "delta"),
+            _event("tool.execution_complete", {"result": {"content": "SECRET TOOL"}}, "tool"),
+            _event(
+                "subagent.started",
+                {"toolCallId": "spawn", "agentName": "same-name"},
+                "start-child",
+                "child",
+            ),
+            _event("user.message", {"content": "child instructions"}, "cu", "child"),
+            _event("assistant.message", {"content": "child retained reply"}, "ca", "child"),
+            _event(
+                "subagent.started",
+                {"toolCallId": "nested-spawn", "parentId": "child", "agentName": "same-name"},
+                "start-nested",
+                "nested",
+            ),
+            _event(
+                "user.message",
+                {"content": "nested legacy prompt", "parentToolCallId": "nested-spawn"},
+                "nu",
+            ),
+            _event("subagent.started", {"toolCallId": "empty-spawn"}, "empty", "empty-child"),
+            _event("assistant.message", {"content": "SECRET UNOWNED"}, "foreign", "missing"),
+        ]
+        path = _write_events(otel, "s", events)
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.supports_conversation("s") and not store.supports_conversation("absent")
+        source = store.conversation_source("s")
+        assert [r["parts"][0]["text"] for r in source["records"]] == [
+            text,
+            "first chunk",
+            "second chunk",
+            "zero-usage reply",
+        ]
+        assert "SECRET" not in json.dumps(source) and "HIDDEN SYSTEM" not in json.dumps(source)
+        child, nested, empty = (node_id("s", aid) for aid in ("child", "nested", "empty-child"))
+        assert {e["id"] for e in source["executions"]} == {"s", child, nested, empty}
+        assert [
+            r["parts"][0]["text"] for r in store.conversation_source("s", child)["records"]
+        ] == ["child instructions", "child retained reply"]
+        assert (
+            store.conversation_source("s", nested)["records"][0]["parts"][0]["text"]
+            == "nested legacy prompt"
+        )
+        assert store.conversation_source("s", empty)["records"] == []
+        _conversation_error(
+            "invalid_execution", lambda: store.conversation_source("s", "same-name")
+        )
+        _conversation_error(
+            "invalid_execution", lambda: store.conversation_source("s", node_id("other", "child"))
+        )
+        _conversation_error(
+            "ambiguous_anchor", lambda: window(source, root_key="key", anchor="shared")
+        )
+        first = window(source, root_key="key", limit=1, max_chars=41)
+        parts = [first["records"][0]["parts"][0]["text"]]
+        page = first
+        while page["records"][0]["parts"][0]["text_offset"] + len(
+            page["records"][0]["parts"][0]["text"]
+        ) < len(text):
+            page = window(
+                source, root_key="key", cursor=page["next_cursor"], limit=1, max_chars=1000
+            )
+            parts.append(page["records"][0]["parts"][0]["text"])
+        assert "".join(parts) == text
+        assert source["records"][0]["source"]["line"] == 2
+        with patch.object(store, "conversation_source", side_effect=AssertionError("raw read")):
+            assert store.conversation_manifest("s")
+        events[3]["data"]["content"] = "changed reply"
+        _write_events(otel, "s", events)
+        changed = store.conversation_source("s")
+        assert changed["snapshot"] != source["snapshot"]
+        _conversation_error(
+            "stale_cursor", lambda: window(changed, root_key="key", cursor=first["next_cursor"])
+        )
+        assert Path(path).is_file()
+
+
+def test_copilot_conversation_rejects_foreign_headers_symlinks_cycles_and_demo():
+    from opentab.stores.copilot_events import node_id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, "otel")
+        events = [
+            _event("subagent.started", {"toolCallId": "a", "parentId": "b"}, "spawn-a", "a"),
+            _event("subagent.started", {"toolCallId": "b", "parentId": "a"}, "spawn-b", "b"),
+            _event("user.message", {"content": "SECRET CYCLIC"}, "bad", "a"),
+            dict(_event("user.message", {"content": "SECRET MALFORMED"}, "invalid"), agentId=4),
+            _event(
+                "subagent.started",
+                {"toolCallId": "bad-parent", "parentId": []},
+                "bad-parent-start",
+                "bad-parent",
+            ),
+            _event(
+                "user.message", {"content": "SECRET BAD PARENT"}, "bad-parent-user", "bad-parent"
+            ),
+            _event("subagent.started", {"toolCallId": "literal-question"}, "question-start", "?"),
+            _event(
+                "user.message",
+                {"content": "SECRET BAD LEGACY", "parentToolCallId": "unknown"},
+                "bad-legacy",
+            ),
+            _event("user.message", {"content": "root"}, "root"),
+        ]
+        path = _write_events(otel, "s", events)
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert "SECRET" not in json.dumps(store.conversation_source("s"))
+        _conversation_error(
+            "invalid_execution", lambda: store.conversation_source("s", node_id("s", "a"))
+        )
+        _write_events(
+            otel, "s", events + [_event("session.start", {"sessionId": "foreign"}, "foreign")]
+        )
+        _conversation_error("invalid_execution", lambda: store.conversation_source("s"))
+        foreign = Path(tmp) / "foreign.jsonl"
+        Path(path).rename(foreign)
+        Path(path).symlink_to(os.path.relpath(foreign, Path(path).parent))
+        assert not store.supports_conversation("s")
+        _conversation_error("invalid_execution", lambda: store.conversation_source("s"))
+        _conversation_error("invalid_execution", lambda: store.conversation_source("../foreign"))
+        store.demo = True
+        with patch.object(store._events, "path", side_effect=AssertionError("demo raw path")):
+            _conversation_error("conversation_unavailable", lambda: store.conversation_source("s"))
+            assert store.conversation_manifest("s") is None
+
+
+def test_copilot_fresh_source_limits_malformed_records_and_cancellation():
+    import threading
+
+    from opentab.conversations import reader
+    from opentab.stores.copilot_changes import _counts
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, "otel")
+        path = _write_events(otel, "s", [_event("user.message", {"content": "root"}, "user")])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write('invalid JSON\n{"type":"user.message","data":null}\n')
+        source = store.conversation_source("s")
+        assert len(source["records"]) == 1
+        assert "malformed_jsonl_records_skipped" in source["limitations"]
+        assert "malformed_session_events_skipped" in source["limitations"]
+        with patch.object(reader, "MAX_SOURCE_BYTES", 10):
+            _conversation_error("conversation_too_large", lambda: store.conversation_source("s"))
+        with patch.object(reader, "MAX_LINE_BYTES", 10):
+            _conversation_error("conversation_too_large", lambda: store.conversation_source("s"))
+
+        class CancelDuringRead:
+            def __init__(self):
+                self.calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls >= 3
+
+        assert store.change_request("s")(CancelDuringRead()) is None
+        cancelled = threading.Event()
+        cancelled.set()
+        _conversation_error(
+            "read_cancelled", lambda: reader.read_jsonl([path], cancelled=cancelled)
+        )
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write('{"type":"session.start","data":null}\n')
+        _conversation_error("invalid_execution", lambda: store.conversation_source("s"))
+    assert _counts("@@ -1 +1 @@\n-old\n+new\n+undeclared\n") == (None, None)
+    assert _counts("@@ -2,2 +2 @@\n-a\n-b\n+c\n") == (1, 2)
+
+
+def test_copilot_cost_and_goto_price_model_switches_and_resolve_child_roots():
+    from opentab.cli.main import _goto_target, parse_args, status_line
+    from opentab.stores.copilot_events import node_id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, "otel")
+        _write_otel(
+            otel,
+            [
+                _otel_chat("s", "gpt-4.1", 1000, 100, resp="one", end=(1775934000, 0)),
+                _otel_chat(
+                    "s",
+                    "claude-sonnet-4",
+                    2000,
+                    200,
+                    resp="two",
+                    trace="t2",
+                    span="s2",
+                    end=(1775934100, 0),
+                ),
+                _otel_chat("older", "gpt-4.1", 100, 10, trace="t3", span="s3", end=(1775933000, 0)),
+            ],
+        )
+        _write_events(
+            otel,
+            "s",
+            [
+                _event("subagent.started", {"toolCallId": "spawn"}, "spawn", "child"),
+                _event(
+                    "assistant.message",
+                    {"apiCallId": "two", "model": "claude-sonnet-4", "content": "child"},
+                    "a",
+                    "child",
+                ),
+            ],
+        )
+        con = sqlite3.connect(os.path.join(tmp, "session-store.db"))
+        con.execute("CREATE TABLE sessions (id TEXT, cwd TEXT, summary TEXT)")
+        con.executemany(
+            "INSERT INTO sessions VALUES (?, ?, ?)", [("s", tmp, "latest"), ("older", tmp, "older")]
+        )
+        con.commit()
+        con.close()
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        with patch.object(
+            store._events, "details", side_effect=AssertionError("cost read raw detail")
+        ):
+            expected = ot.money(
+                ot.api_equivalent_cost("openai/gpt-4.1", 1000, 100, 0, 0, 0)
+                + ot.api_equivalent_cost("anthropic/claude-sonnet-4", 2000, 200, 0, 0, 0)
+            )
+            assert status_line(store, "s") == "~" + expected
+            assert status_line(store, node_id("s", "child")) == "~" + expected
+            assert status_line(store, tmp) == "~" + expected
+            assert store.root_of("child") == "s" and store.root_of("absent") is None
+            assert [r["id"] for r in store.recent_roots()] == ["s", "older"]
+        args = parse_args(
+            ["--harness", "copilot", "--copilot-dir", otel, "--goto", "s", "--tab", "turns"]
+        )
+        assert _goto_target(args) == ("copilot", "s")
+        args.goto = tmp
+        assert _goto_target(args) == ("copilot", "s")
+        args.goto = "absent"
+        assert _goto_target(args) is None
+        args = parse_args(["cost", "--harness", "copilot", "--copilot-dir", otel, "s"])
+        assert args.copilot_dir == otel and args.source == "copilot"
+
+
+def _native_patch(before, after, body):
+    # The installed Copilot diffFormatGit emits these unquoted absolute-path headers.
+    old = "dev/null" if before is None else before.lstrip("/")
+    new = "dev/null" if after is None else after.lstrip("/")
+    return f"\ndiff --git a/{old} b/{new}\nindex 0000000..0000000 100644\n--- a/{old}\n+++ b/{new}\n{body}\n"
+
+
+def _edit_events(name, args, output, *, prefix="edit", agent="", success=True, turn="1", mcp=False):
+    request = {"toolCallId": prefix, "name": name, "arguments": args}
+    if mcp:
+        request.update(mcpServerName="impostor", mcpToolName="edit")
+    return [
+        _event(
+            "assistant.message",
+            {"messageId": prefix + "-message", "toolRequests": [request], "turnId": turn},
+            prefix + "-request",
+            agent,
+        ),
+        _event(
+            "tool.execution_start",
+            {"toolCallId": prefix, "toolName": name, "arguments": args, "turnId": turn},
+            prefix + "-start",
+            agent,
+        ),
+        _event(
+            "tool.execution_complete",
+            {
+                "toolCallId": prefix,
+                "success": success,
+                "result": {"content": "short", "detailedContent": output},
+                "turnId": turn,
+            },
+            prefix + "-done",
+            agent,
+        ),
+    ]
+
+
+def test_copilot_changes_show_native_diffs_moves_child_edits_and_missing_patches():
+    from opentab.stores.copilot_events import node_id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, "otel")
+        a, new, old = (os.path.join(tmp, name) for name in ("a file.py", "new.py", "old.py"))
+        patch_a = _native_patch(a, a, "@@ -1,2 +1,2 @@\n context\n-old\n+new\n")
+        patch_new = _native_patch(None, new, "@@ -0,0 +1,1 @@\n+created\n")
+        patch_move = _native_patch(old, new, "@@ -1,1 +1,1 @@\n-old\n+moved\n")
+        events = [
+            _event("session.context_changed", {"cwd": tmp}, "cwd"),
+            *_edit_events(
+                "edit", {"path": "a file.py", "old_str": "old", "new_str": "new"}, patch_a
+            ),
+            *_edit_events(
+                "create", {"path": "new.py", "file_text": "created"}, patch_new, prefix="create"
+            ),
+            _event("subagent.started", {"toolCallId": "spawn"}, "spawn", "child"),
+            *_edit_events(
+                "apply_patch",
+                "*** Begin Patch\n*** Update File: old.py\n*** Move to: new.py\n@@\n-old\n+moved\n*** Delete File: gone.py\n*** End Patch\n",
+                patch_move,
+                prefix="move",
+                agent="child",
+            ),
+            *_edit_events(
+                "edit", {"path": "missing.py"}, "only a concise result", prefix="missing"
+            ),
+            *_edit_events("edit", {"path": "failed.py"}, patch_a, prefix="failed", success=False),
+            *_edit_events("edit", {"path": "impostor.py"}, patch_a, prefix="mcp", mcp=True),
+            *_edit_events("bash", {"command": "touch shell.py"}, "done", prefix="shell"),
+            *_edit_events(
+                "str_replace_editor", {"command": "view", "path": "view.py"}, patch_a, prefix="view"
+            ),
+            # Live Copilot's read-only view output is also diff-shaped.
+            *_edit_events("view", {"path": "a file.py"}, patch_a, prefix="native-view"),
+        ]
+        _write_events(otel, "s", events)
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.supports_changes("s")
+        data = store.session_change_files("s")
+        files = {f["file"]: f for f in data["files"]}
+        assert set(files) == {"a file.py", "new.py", "gone.py", "missing.py"}
+        assert files["a file.py"]["additions"] == files["a file.py"]["deletions"] == 1
+        assert files["new.py"]["status"] == "mixed" and len(files["new.py"]["edits"]) == 2
+        edit = files["new.py"]["edits"][1]
+        assert edit["from_file"] == "old.py" and edit["execution_id"] == node_id("s", "child")
+        assert store.session_change_diff("s", edit["key"])["patch"].strip() == patch_move.strip()
+        assert (
+            files["missing.py"]["additions"] is None
+            and not files["missing.py"]["edits"][0]["available"]
+        )
+        assert store.session_change_diff("s", files["gone.py"]["edits"][0]["key"]) is None
+        assert "created" not in json.dumps(data) and "context" not in json.dumps(data)
+        assert store.session_change_diff("foreign", edit["key"]) is None
+        assert store.session_change_diff("s", "bad-key") is None
+        # Raw reads do not require opening any files in the working tree.
+        assert not Path(a).exists() and not Path(new).exists()
+        # A frozen worker owns its reader and remains independent of a demo switch.
+        import threading
+
+        request = store.change_request("s")
+        assert request(threading.Event()) == data
+        store.demo = True
+        assert store.session_change_files("s")["files"] == []
+        assert store.session_change_diff("s", edit["key"]) is None
+        assert store.change_request("s") is None
+        cancelled = threading.Event()
+        cancelled.set()
+        assert request(cancelled) is None
+
+
+def test_copilot_changes_reused_ids_stale_keys_and_output_limits():
+    from opentab.stores import copilot_changes as changes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, "otel")
+        path = os.path.join(tmp, "owned.py")
+        native = _native_patch(path, path, "@@ -1,1 +1,1 @@\n-old\n+new\n")
+        old = _edit_events("edit", {"path": path}, native, prefix="reused")
+        events = old[:2] + [
+            _event(
+                "assistant.message",
+                {
+                    "toolRequests": [
+                        {"toolCallId": "reused", "name": "bash", "arguments": {"command": "other"}}
+                    ]
+                },
+                "new-call",
+            ),
+            old[-1],
+            *_edit_events("edit", {"path": path}, native, prefix="valid"),
+            *_edit_events(
+                "edit", {"path": os.path.join(tmp, "unmatched.py")}, native, prefix="wrong-path"
+            ),
+            *_edit_events("edit", {"path": path}, native, prefix="foreign", agent="unknown"),
+        ]
+        event_path = _write_events(otel, "s", events)
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        files = store.session_change_files("s")["files"]
+        owned = next(f for f in files if f["file"] == path)
+        assert len(owned["edits"]) == 1
+        key = owned["edits"][0]["key"]
+        with patch.object(changes, "DIFF_BYTES", 50):
+            diff = store.session_change_diff("s", key)
+            assert diff["truncated"] and len(diff["patch"].encode()) <= 50
+        with patch.object(changes, "SUMMARY_LIMIT", 1):
+            data = store.session_change_files("s")
+            assert data["truncated"] and len(data["files"]) == 1
+        with open(event_path, "a", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(_event("user.message", {"content": "new activity"}, "later")) + "\n"
+            )
+        assert store.session_change_diff("s", key) is None
+        assert store.session_change_files("s")["files"][0]["edits"][0]["key"] != key
+
+
+def test_copilot_conversation_service_index_search_copy_and_permission_gates():
+    from opentab.api.service import ServiceError
+    from opentab.tui.exporting import conversation_markdown
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, "otel")
+        _write_otel(otel, [_otel_chat("s", "gpt-4.1", 10, 2, resp="r")])
+        _write_events(
+            otel,
+            "s",
+            [
+                _event("user.message", {"content": "find copilot needle"}, "u"),
+                _event("assistant.message", {"content": "zero usage retained answer"}, "a"),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        args = SimpleNamespace(source="copilot", demo=False, no_state=True)
+        env = {
+            f"XDG_{name}_HOME": os.path.join(tmp, name.lower())
+            for name in ("CACHE", "CONFIG", "DATA", "STATE")
+        }
+        with patch.dict(os.environ, env):
+            denied = ot.OpenTabService(store, args)
+            try:
+                denied.session_conversation("s")
+            except ServiceError as exc:
+                assert exc.code == "raw_content_disabled"
+            else:
+                raise AssertionError("raw content must be gated")
+            service = ot.OpenTabService(store, args, allow_raw_content=True)
+            assert service.get_session("s")["capabilities"]["conversation"]
+            source = service.session_conversation("s")
+            markdown, count = conversation_markdown(source["records"])
+            assert count == 2
+            assert "## User" in markdown and "zero usage retained answer" in markdown
+            report = service.index_conversations(harness="copilot")
+            assert report["complete"] and report["updated"] == 1
+            with patch.object(
+                store,
+                "conversation_source",
+                side_effect=AssertionError("unchanged manifest opened text"),
+            ):
+                assert service.index_conversations(harness="copilot")["unchanged"] == 1
+            hits = service.search_conversations("needle", harness="copilot")["hits"]
+            assert len(hits) == 1 and hits[0]["execution_id"] == "s"
+            assert hits[0]["match_fields"] == ["text"]

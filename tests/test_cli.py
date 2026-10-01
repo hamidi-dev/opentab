@@ -282,7 +282,7 @@ def test_conversations_parser_preserves_supported_paths_aliases_and_state_contro
 
 def test_conversations_parser_accepts_each_new_reader_for_load_and_filter():
     with tempfile.TemporaryDirectory() as directory:
-        for harness in ("hermes", "pi", "omp"):
+        for harness in ("hermes", "copilot", "pi", "omp"):
             os.makedirs(os.path.join(directory, harness))
             flags, _root_id, _child_id = _conversation_fixture(
                 os.path.join(directory, harness), harness
