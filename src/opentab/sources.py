@@ -346,7 +346,7 @@ SOURCE_LABELS = {
     "all": "all",
 }
 
-CONVERSATION_SOURCES = frozenset(("opencode", "claude", "codex", "hermes", "pi", "omp"))
+CONVERSATION_SOURCES = frozenset(("opencode", "claude", "codex", "hermes", "copilot", "pi", "omp"))
 CONVERSATION_LABELS = {
     key: label for key, label in SOURCE_LABELS.items() if key in CONVERSATION_SOURCES
 }

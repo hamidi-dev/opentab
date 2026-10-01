@@ -117,7 +117,7 @@ def test_copy_conversation_errors_and_empty_sources_leave_clipboard_untouched():
 
 def test_copy_conversation_uses_each_new_real_reader_and_keeps_zero_usage_text():
     with tempfile.TemporaryDirectory() as directory:
-        for harness in ("hermes", "pi", "omp"):
+        for harness in ("hermes", "copilot", "pi", "omp"):
             source = os.path.join(directory, harness)
             os.makedirs(source)
             flags, root_id, _child_id = _conversation_fixture(source, harness)

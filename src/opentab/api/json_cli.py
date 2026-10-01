@@ -48,7 +48,7 @@ _ACCOUNTING_DATES = (
 )
 _SESSION_HELP = "session_key from `opentab sessions list`, or a unique native root ID"
 _DOCS = "JSON contract and session keys: docs/programmatic.md\nSource setup: docs/sources.md"
-_CONVERSATION_HELP = "OpenCode, Claude Code, Codex, Hermes, Pi, or Omp"
+_CONVERSATION_HELP = "OpenCode, Claude Code, Codex, Hermes, Copilot, Pi, or Omp"
 
 
 def _parent(subs, name, text, *, example):
@@ -203,6 +203,7 @@ def _add_conversation_catalog(parser) -> None:
     )
     for name, label, kind in (
         ("hermes", "Hermes", "db"),
+        ("copilot", "Copilot OTEL export", "dir"),
         ("pi", "pi", "dir"),
         ("omp", "omp", "dir"),
     ):
@@ -410,7 +411,7 @@ def add_parsers(subs, add_globals) -> None:
     conversations.description += (
         " First index explicitly (writes sensitive plaintext locally), then search the "
         "existing index and read a hit with sessions conversation. Local OpenCode, "
-        "Claude Code, Codex, Hermes, Pi, and Omp only; saved ignores and retained-source "
+        "Claude Code, Codex, Hermes, Copilot, Pi, and Omp only; saved ignores and retained-source "
         "limits apply. "
         "Search never refreshes the index automatically."
     )
@@ -436,12 +437,12 @@ def add_parsers(subs, add_globals) -> None:
     ):
         notes = {
             "index": " Writes sensitive plaintext locally for retained OpenCode, Claude Code, Codex, "
-            "Hermes, Pi, and Omp "
+            "Hermes, Copilot, Pi, and Omp "
             "sessions. Saved ignores apply. Inspect complete, errors and unsupported: a finished "
             "refresh can be partial and never guarantees complete history.",
             "search": " Requires an existing index; never refreshes it automatically. Saved ignores "
             "apply, selected evidence is verified against local sources, and stale or missing "
-            "coverage is reported. Only retained OpenCode, Claude Code, Codex, Hermes, Pi, and Omp "
+            "coverage is reported. Only retained OpenCode, Claude Code, Codex, Hermes, Copilot, Pi, and Omp "
             "text is supported.",
             "status": " Read-only: does not create an index, discover sources, or read conversations.",
             "clear": " Clears indexed text only, leaving source records and authored notes intact. "

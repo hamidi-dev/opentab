@@ -29,11 +29,11 @@ package and installed command are both `opentab`.
 |--------|----------------|
 | `cli/main.py`, `__main__.py` | Commands, argument routing and startup |
 | `api/service.py`, `api/json_cli.py`, `api/mcp.py` | Headless accounting service, JSON commands and stdio MCP adapter |
-| `conversations/reader.py`, `conversations/pi.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors; fresh pi/omp JSONL discovery and extraction |
+| `conversations/reader.py`, `conversations/pi.py`, `conversations/copilot.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors; fresh pi/omp discovery and Copilot session-bound extraction |
 | `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `accounting/models.py` | Workflow, qualified session identity and summary records |
 | `accounting/tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
-| `stores/` | Harness readers, combined views, portable summaries and warm caches; `copilot_events.py` supplies session-bound Copilot execution metadata and lazy event details |
+| `stores/` | Harness readers, combined views, portable summaries and warm caches; `copilot_events.py` supplies session-bound Copilot execution metadata and lazy event details; `copilot_changes.py` reads recorded file-tool patches |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |
 | `tui/renderer.py`, `tui/components/` | Screen composition and painting; reusable stateless layouts |
@@ -83,11 +83,11 @@ The optional session interface extends this without making the UI format-aware:
 | Tool attribution | `tool_breakdown(id)` | `supports_tools(id)` |
 | Estimated context composition | `context_breakdown(id)` | `supports_context(id)` |
 | Recorded turn content | `turn_content(id, content_key=None)` | `supports_turn_content(id)` |
-| Conversation records | `conversation_source(root_id, execution_id=None)` | `supports_conversation(root_id)`; local OpenCode, Claude Code, Codex, Hermes, pi and omp only |
+| Conversation records | `conversation_source(root_id, execution_id=None)` | `supports_conversation(root_id)`; local OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp only |
 | Received subagent prompt | `node_prompt(root_id, node_id)` | Optional method; `None` when unavailable |
 | Execution turns | `node_timeline(root_id, node_id)` | Optional method; `None` unavailable, `[]` valid empty |
 | Execution turn content | `node_turn_content(root_id, node_id, content_key=None)` | Optional method; owned previews or keyed full content |
-| Recorded file changes | `session_change_files(id)`, `session_change_diff(id, key)` | Optional local OpenCode TUI contract; [semantics and controls](keys.md#session-changes) |
+| Recorded file changes | `session_change_files(id)`, `session_change_diff(id, key)` | Optional local OpenCode/Copilot TUI contract; [semantics and controls](keys.md#session-changes) |
 
 The node readers resolve exact root/node IDs within the owning leaf store, never
 by agent name or sibling matches; ambiguous ownership fails closed. Execution
@@ -141,7 +141,9 @@ message/part row revisions in fresh, root-scoped SQLite metadata reads, falling 
 to a global database/WAL token for older or unconstrained schemas. Codex reuses one
 refresh-local rollout-head/ownership discovery. Hermes conservatively stamps its main
 database and nonempty WAL, so any database write invalidates every Hermes root; it
-does not read raw text or trust message timestamps as revisions. Pi and omp do not
+does not read raw text or trust message timestamps as revisions. Copilot stamps its exact
+session event file, covering both messages and execution topology without reading bodies.
+Pi and omp do not
 implement this shortcut: every explicit refresh performs their full fresh conversation
 reads, although an unchanged resulting snapshot avoids rewriting indexed passages.
 Missing hooks or uncertain stamps fall back to `conversation_source`; they never

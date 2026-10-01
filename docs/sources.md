@@ -87,12 +87,12 @@ including activity from its subagent subtree where tracked. This timestamp
 to sorting by when a session started, offered everywhere except the Time overview's
 Days pane (see [`docs/keys.md`](keys.md#scope--filter)).
 
-OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, zaly and Gemini also let the TUI
+OpenCode, Claude Code, Codex, Hermes, Copilot, pi, omp, OpenClaw, zaly and Gemini also let the TUI
 open one timeline row into its recorded narration, readable reasoning and exact tool
 calls/results. Those traces are loaded only when opened and never embedded in web reports
 or remote summaries.
 
-OpenCode, Claude Code, Codex, Hermes, pi and omp additionally support fresh text-only
+OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp additionally support fresh text-only
 conversation reads, `Ctrl-F` search/indexing, and `y` clipboard copy. These preserve
 retained user/assistant messages independently of per-turn usage, including zero-usage
 messages, but do not add text-only roots to the usage-derived session catalog.
@@ -213,6 +213,15 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Fallback**: without matching saved events, Turns remain headerless and the
   measured Context curve still works. Event logs alone do not add sessions without
   OTEL usage. Raw traces are local TUI detail reads and are disabled in demo.
+- **Conversation**: retained user/assistant events also support `Ctrl-F` indexing/search,
+  `y` Markdown copy and gated CLI/MCP reads, including zero-usage messages and exact
+  child executions. Indexing requires explicit confirmation; it never runs at startup.
+- **Direct entry**: `opentab cost --harness copilot SESSION_ID` and
+  `opentab --harness copilot --goto SESSION_ID --tab turns` work for root sessions;
+  child IDs resolve to their owning root. Directory targets select the latest usage.
+- **Changes**: the local TUI lists successful recorded file-tool edits, creates,
+  moves and deletions with retained unified diffs. It does not use today's Git diff
+  or infer edits from shell commands. See [Changes](keys.md#session-changes).
 
 ## [Copilot Chat in VS Code](https://code.visualstudio.com/docs/copilot/chat/copilot-chat)
 

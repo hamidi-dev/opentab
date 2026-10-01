@@ -259,7 +259,7 @@ prompts is separate from requesting keys.
 
 `sessions conversation` is a public **record-reading API, not conversation search**.
 It reads retained user/assistant text from local OpenCode, Claude Code, Codex,
-Hermes, pi, and omp records, independently of usage-bearing turns. Zero-usage
+Hermes, Copilot, pi, and omp records, independently of usage-bearing turns. Zero-usage
 messages inside an accessible session are preserved. Tools, reasoning, and
 attachments are not part of this text-only view; use the separately gated
 turn-content API for raw traces.

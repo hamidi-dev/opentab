@@ -355,9 +355,9 @@ def test_search_harness_picker_shows_all_conversation_readers_at_minimum_size():
     ws.open_filter("harness")
     ws.filter_menu_index = 4
     text = screen_text(_paint(app, 20, 80))
-    for label in ("OpenCode", "Claude Code", "Codex", "Hermes", "Pi", "Omp"):
+    for label in ("OpenCode", "Claude Code", "Codex", "Hermes", "Copilot", "Pi", "Omp"):
         assert label in text
-    assert len([r for r in app.renderer.regions if r[0] == "searchfilter-option"]) == 7
+    assert len([r for r in app.renderer.regions if r[0] == "searchfilter-option"]) == 8
     app.handle_key(None, ord("v"))
     assert ws.scope["harness"] == "hermes" and ws.filter_menu == ""
 

@@ -665,6 +665,80 @@ class CopilotStore:
             out.extend(s["model_rows"])
         return out
 
+    def recent_roots(self) -> list[dict]:
+        # Unlike one-file-per-session harnesses, Copilot can share a single OTEL
+        # exporter across all sessions. Membership/recency require its ledger scan.
+        return sorted(
+            [
+                {"id": sid, "directory": s["directory"], "last_active": s["ts_max"] or 0}
+                for sid, s in self._parse().items()
+            ],
+            key=lambda row: row["last_active"],
+            reverse=True,
+        )
+
+    def root_of(self, session_id: str) -> str | None:
+        sessions = self._parse()
+        if session_id in sessions:
+            return session_id
+        roots = [
+            sid
+            for sid, s in sessions.items()
+            if any(session_id in (aid, agent["id"]) for aid, agent in s["agents"].items())
+        ]
+        return roots[0] if len(roots) == 1 else None
+
+    def status_nodes(self, workflow_id: str) -> list[dict]:
+        # The cost path must price every recorded model, not each execution's
+        # dominant-model label; model switches otherwise price the whole node wrong.
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        return [
+            self._node(workflow_id, 0, "-", s["title"], s["created_at"], model, 0.0, acc)
+            for model, acc in s["models"].items()
+        ]
+
+    def supports_conversation(self, workflow_id: str) -> bool:
+        if self.demo:
+            return False
+        path = self._events.path(workflow_id)
+        return path is not None and os.path.isfile(path)
+
+    def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
+        from opentab.conversations.copilot import read_source
+
+        return read_source(self, root_id, execution_id)
+
+    def conversation_manifest(self, root_id: str):
+        from opentab.conversations.copilot import manifest
+
+        return manifest(self, root_id)
+
+    def supports_changes(self, root_id: str) -> bool:
+        return self.supports_conversation(root_id)
+
+    def change_request(self, root_id: str, change_key: str | None = None):
+        if not self.supports_changes(root_id):
+            return None
+        from opentab.stores.copilot_changes import ChangeRequest
+
+        return ChangeRequest(self.root_dir, root_id, change_key)
+
+    def session_change_files(self, root_id: str) -> dict:
+        from opentab.stores.copilot_changes import read_changes
+
+        return read_changes(self, root_id)
+
+    def session_change_diff(self, root_id: str, change_key: str) -> dict | None:
+        from opentab.conversations.reader import ConversationError
+        from opentab.stores.copilot_changes import read_changes
+
+        try:
+            return read_changes(self, root_id, change_key)
+        except ConversationError:
+            return None
+
     def workflow_nodes(self, workflow_id: str) -> list[dict]:
         s = self._parse().get(workflow_id)
         if not s:

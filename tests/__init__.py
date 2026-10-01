@@ -17,6 +17,10 @@ for _var, _sub in (
 ):
     os.environ[_var] = os.path.join(_ISOLATED_HOME.name, _sub)
 
+# The exporter override otherwise imports real Copilot usage into every synthetic
+# backend fixture. Tests that exercise the override set their own temporary file.
+os.environ.pop("COPILOT_OTEL_FILE_EXPORTER_PATH", None)
+
 # Ambient multiplexer markers would make terminal tests host-dependent.
 for _var in (
     "TMUX",

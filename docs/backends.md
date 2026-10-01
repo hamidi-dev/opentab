@@ -37,7 +37,7 @@ The optional execution readers support the TUI's nested Subagents drill:
 
 Both resolve exact root/node IDs through the root's owning leaf store and verify
 membership there. Never join by sibling or agent name; missing or ambiguous
-ownership fails closed. Local OpenCode, Claude Code, Codex, OMP and Hermes support
+ownership fails closed. Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support
 these methods; Gemini, Antigravity and Remote do not. Demo blocks the drill before
 reads. Prompt/trace content stays lazy and its scoped cache is released on leaving.
 Existing root timelines and accounting are unchanged. Session Turns/Context, web
@@ -314,6 +314,34 @@ Without matching saved events, OTEL-only sessions retain headerless Turns and th
 measured Context curve. Event enrichment does not create usage for sessions lacking
 an OTEL ledger. Raw traces never enter caches, web reports or fleet summaries; demo
 blocks event content and execution-detail reads.
+
+The fresh conversation reader is independent of the OTEL join: it retains all saved
+`user.message` and `assistant.message` occurrences, including zero-usage replies and
+multiple response chunks. Each read validates the exact session header and resolves
+the selected root/child against the same file snapshot. Internal model events,
+streaming deltas, transformed prompts, reasoning, tools and attachments are excluded.
+Unknown/cyclic execution ownership is not assigned to the root. A cheap file manifest
+covers text and topology for explicit index refreshes; reads/search still verify the
+fresh source. This enables `Ctrl-F`, `y` conversation copy and gated CLI/MCP reads.
+Usage-less roots remain outside the public catalog.
+
+`cost` and `--goto` resolve roots and exact child identities through the OTEL-backed
+catalog. Recency uses the latest retained usage timestamp. Since one export can
+contain many sessions, these lookups scan the shared ledger; they do not read raw
+conversation details. Cost pricing uses every model bucket, not a node's dominant
+model label, so model switches and delegated usage are priced once.
+
+The local Changes reader joins execution-scoped requests/start/completion events for
+successful built-in `edit`, `create`, `str_replace_editor` and `apply_patch` calls.
+Recorded paths come from the executed arguments, and native unified patches must
+match those paths, including moves and additions/deletions. Read-only `view` results
+can also look like diffs; they are never change evidence. Shell, formatter, MCP and
+failed/partial calls are not inferred as successful edits. Missing patches retain
+path-only occurrences with unknown counts. The worker owns bounded fresh file reads;
+keys bind the exact session, file snapshot, execution and occurrence. Appending or
+rewriting events invalidates old keys. File lists are limited to 2,000 occurrences /
+1 MiB metadata; selected patches have a 1 MiB output cap. Current working-tree files
+are never read. This adds no raw web/fleet/export content.
 
 ## Copilot Chat in VS Code
 

@@ -644,10 +644,104 @@ def _pi_session(sid, cwd, ts="2026-05-15T07:32:15.949Z"):
     return {"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": cwd}
 
 
+def _copilot_args(copilot_dir):
+    return type("Args", (), {"demo": False, "copilot_dir": copilot_dir})()
+
+
+def _otel_chat(
+    session,
+    model,
+    inp,
+    out,
+    cache_read=0,
+    cache_create=0,
+    reasoning=0,
+    trace="t1",
+    span="sp1",
+    resp=None,
+    end=(1775934264, 0),
+):
+    # A GenAI `chat` span -- the highest-fidelity per-call OTEL record.
+    attrs = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": model,
+        "gen_ai.response.model": model,
+        "gen_ai.conversation.id": session,
+        "gen_ai.usage.input_tokens": inp,  # includes cache reads and writes
+        "gen_ai.usage.output_tokens": out,
+    }
+    if cache_read:
+        attrs["gen_ai.usage.cache_read.input_tokens"] = cache_read
+    if cache_create:
+        attrs["gen_ai.usage.cache_creation.input_tokens"] = cache_create
+    if reasoning:
+        attrs["gen_ai.usage.reasoning.output_tokens"] = reasoning
+    if resp:
+        attrs["gen_ai.response.id"] = resp
+    return {
+        "type": "span",
+        "traceId": trace,
+        "spanId": span,
+        "name": f"chat {model}",
+        "endTime": list(end),
+        "attributes": attrs,
+    }
+
+
+def _write_otel(dirpath, rows, name="otel.jsonl"):
+    os.makedirs(dirpath, exist_ok=True)
+    _write_jsonl(os.path.join(dirpath, name), rows)
+
+
+def _event(kind, data, eid, agent=""):
+    event = {"type": kind, "data": data, "id": eid, "timestamp": "2026-10-02T06:43:22Z"}
+    if agent:
+        event["agentId"] = agent
+    return event
+
+
+def _write_events(otel, session, events):
+    root = os.path.join(os.path.dirname(otel), "session-state", session)
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, "events.jsonl")
+    _write_jsonl(path, [_event("session.start", {"sessionId": session}, "start")] + events)
+    return path
+
+
 def _conversation_fixture(directory, harness):
     """One catalog root plus text-only evidence for the additional conversation readers."""
     sid = PI_SID
     child = "019fa4fd-aaaa-7000-a6e9-c9e0c7ce25fc"
+    if harness == "copilot":
+        from opentab.stores.copilot_events import node_id
+
+        path = os.path.join(directory, "otel")
+        _write_otel(path, [_otel_chat(sid, "gpt-4.1", 100, 10, resp="reply")])
+        _write_events(
+            path,
+            sid,
+            [
+                _event("session.context_changed", {"cwd": directory}, "context"),
+                _event("user.message", {"content": "copilotneedle Grüße"}, "user"),
+                _event(
+                    "assistant.message",
+                    {"content": "recorded answer", "apiCallId": "reply"},
+                    "answer",
+                ),
+                _event("assistant.message", {"content": "answerwithoutusage exact reply"}, "extra"),
+                _event(
+                    "tool.execution_complete", {"result": {"content": "excludedtoolsecret"}}, "tool"
+                ),
+                _event("subagent.started", {"toolCallId": "spawn"}, "child-start", child),
+                _event(
+                    "user.message",
+                    {"content": "childneedle delegated instruction"},
+                    "child-user",
+                    child,
+                ),
+            ],
+        )
+        return ["--harness", harness, "--copilot-dir", path], sid, node_id(sid, child)
     if harness == "hermes":
         path = os.path.join(directory, "hermes.db")
         _hermes_db_full(

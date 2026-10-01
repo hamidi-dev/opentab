@@ -284,7 +284,7 @@ def test_real_worker_indexes_searches_and_reads_each_new_conversation_reader():
         return digest.hexdigest()
 
     with tempfile.TemporaryDirectory() as directory:
-        for harness in ("hermes", "pi", "omp"):
+        for harness in ("hermes", "copilot", "pi", "omp"):
             case = os.path.join(directory, harness)
             source = os.path.join(case, "source")
             os.makedirs(source)

@@ -166,7 +166,7 @@ raw trace reads require a second `confirm_raw: true` argument. See
 
 The separate `sessions conversation` / `opentab_get_session_conversation` API reads
 bounded user/assistant **text only** from one selected local OpenCode, Claude Code,
-Codex, Hermes, pi or omp execution. It requires raw-content opt-in and, for MCP,
+Codex, Hermes, Copilot, pi or omp execution. It requires raw-content opt-in and, for MCP,
 `confirm_raw: true` before lazy service creation. Demo is rejected, including when
 enabled after service construction. Permission and input validation precede
 conversation reads; checking the advertised capability does not fetch raw text.
@@ -185,7 +185,7 @@ flag. Index writes require separate confirmation and ignore date filters. Search
 has no network fallback and excludes demo/remote catalogs. Its text stays out of
 rollup caches, web/fleet payloads and ordinary exports. CLI/MCP gates are unchanged.
 
-The local OpenCode **Changes** tab reads retained paths and requested patches in
+The local OpenCode/Copilot **Changes** tab reads retained paths and requested patches in
 the background. Its in-memory cache survives tab and session
 navigation until exit, reload, harness changes, or demo; memory use grows with the
 records visited. Nothing is added to disk caches. Demo clears that cache and

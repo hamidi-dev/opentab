@@ -60,7 +60,7 @@ one serial thread; never share the App's SQLite connections. Superseded reads ar
 coalesced, but status and confirmed index jobs survive cancellation. Initial status
 reads only index metadata, without service creation or source discovery.
 The worker loads only the six local conversation-capable harnesses: OpenCode,
-Claude Code, Codex, Hermes, pi and omp. Demo and remote catalogs remain excluded.
+Claude Code, Codex, Hermes, Copilot, pi and omp. Demo and remote catalogs remain excluded.
 
 These modules do not import `App` or `Renderer`. Put reusable layouts in components
 and feature-specific builders alongside their feature, not in state-sharing mixins.
@@ -387,8 +387,8 @@ avoiding tab capability checks that might parse data. The `run()` prefetch tick
 does the blocking work and repaints. These numeric memos clear on reload and
 harness changes; backend caching details live in [Caching](caching.md).
 
-OpenCode Changes stays outside session prefetch. A serial worker runs source-owned,
-cancelable requests with its own SQLite connections; the input loop polls results
+OpenCode/Copilot Changes stays outside session prefetch. A serial worker runs source-owned,
+cancelable requests with its own SQLite connections or bounded event-file reads; the input loop polls results
 without waiting. File lists and fetched patches are cached by store-qualified
 session/occurrence for the App lifetime, including offscreen completions. Navigation
 only resets the active drill; reload, source rebuild, demo, and exit invalidate the
@@ -456,7 +456,7 @@ Enter key.
 Opening execution prompts queues optional `node_timeline(root_id, node_id)` on the
 exact owning leaf after a loading frame. Only that execution's rows and prompts
 are used, at `depth=0` with unchanged content keys; `None` is unavailable and `[]`
-is valid empty. Local OpenCode, Claude Code, Codex, OMP and Hermes support it;
+is valid empty. Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support it;
 Gemini, Antigravity and Remote do not. Exact IDs and verified ownership are required,
 never sibling/name joins; ambiguous records fail closed and demo blocks reads.
 The drill does not replace the root timeline: session Turns/Context, web views and

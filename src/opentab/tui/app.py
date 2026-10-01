@@ -8997,10 +8997,8 @@ class App:
 
     def current_tabs(self) -> tuple[str, ...]:
         if self.view == "session":
-            # The Tools tab (per-tool token attribution) rides on the part table,
-            # which only OpenCode has -- gate it on the SELECTED session's backend so
-            # in the merged view a Claude/Codex/Hermes/CSV session never shows an
-            # unsupported (empty) tab, only OpenCode sessions do.
+            # Optional tabs follow the selected session's owning backend, including
+            # when accounting rollups came from the merged view or a warm cache.
             wf = self.current_session()
             tabs = self.workflow_tabs
             if wf is not None and self.session_supports_turns(wf.id):

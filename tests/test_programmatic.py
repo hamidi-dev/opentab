@@ -227,7 +227,7 @@ def test_programmatic_help_explains_raw_gates_workflow_and_stdio():
         assert required in usage
     words = " ".join(conversation.split())
     for meaning in (
-        "OpenCode, Claude Code, Codex, Hermes, Pi, or Omp",
+        "OpenCode, Claude Code, Codex, Hermes, Copilot, Pi, or Omp",
         "root execution only",
         "exact child",
         "default 20",
@@ -266,7 +266,7 @@ def test_programmatic_quick_help_retains_consequential_semantics():
         ("models", "list"): ("--catalog", "not session filters"),
         ("sessions", "turns"): ("without fetching trace text", "requires --allow-raw-content"),
         ("sessions", "conversation"): (
-            "OpenCode, Claude Code, Codex, Hermes, Pi, or Omp",
+            "OpenCode, Claude Code, Codex, Hermes, Copilot, Pi, or Omp",
             "Root execution only",
             "exact --execution-id",
             "--allow-raw-content",
@@ -384,6 +384,7 @@ def test_programmatic_option_surface_matches_the_pre_help_baseline():
         "--claude-dir",
         "--codex-dir",
         "--hermes-db",
+        "--copilot-dir",
         "--pi-dir",
         "--omp-dir",
         "--no-state",
@@ -431,7 +432,7 @@ def test_conversation_json_cli_indexes_searches_and_reads_each_new_harness():
         return payload["data"]
 
     with tempfile.TemporaryDirectory() as directory:
-        for harness in ("hermes", "pi", "omp"):
+        for harness in ("hermes", "copilot", "pi", "omp"):
             case = os.path.join(directory, harness)
             source = os.path.join(case, "source")
             os.makedirs(source)

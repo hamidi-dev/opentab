@@ -111,6 +111,44 @@ class CopilotEvents:
             return matches[0] if len(matches) == 1 else "?"
         return aid
 
+    @staticmethod
+    def add_agent(agents: dict, event: dict) -> None:
+        data = event["data"]
+        aid = _string(event.get("agentId")) or _string(data.get("toolCallId"))
+        if not aid:
+            return
+        row = {
+            "name": _string(data.get("agentDisplayName"))
+            or _string(data.get("agentName"))
+            or "subagent",
+            "parent": _string(data.get("parentId")),
+            "tool": _string(data.get("toolCallId")),
+            "created": _string(event.get("timestamp")),
+        }
+        # Invalid identity metadata cannot be coerced into root ownership. Keep
+        # the identity invalid so its descendants fail the same ancestry check.
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in (event.get("agentId"), data.get("parentId"), data.get("toolCallId"))
+        ):
+            row["parent"] = aid
+        if aid in agents and agents[aid] != row:
+            agents[aid]["parent"] = aid  # conflicting identity fails closed
+        else:
+            agents[aid] = row
+
+    @staticmethod
+    def valid_agents(session: str, agents: dict) -> dict:
+        valid = {}
+        for aid, agent in agents.items():
+            parent, chain = aid, set()
+            while parent and parent in agents and parent not in chain:
+                chain.add(parent)
+                parent = agents[parent]["parent"]
+            if not parent:
+                valid[aid] = dict(agent, depth=len(chain), id=node_id(session, aid))
+        return valid
+
     def metadata(self, session: str) -> tuple[dict, dict]:
         """Scalar ownership only; no prompt, reasoning, argument or result retention."""
         agents = {}
@@ -118,20 +156,7 @@ class CopilotEvents:
         for event in self.records(session, {"subagent.started", "assistant.message"}):
             data = event["data"]
             if event["type"] == "subagent.started":
-                aid = _string(event.get("agentId")) or _string(data.get("toolCallId"))
-                if aid:
-                    row = {
-                        "name": _string(data.get("agentDisplayName"))
-                        or _string(data.get("agentName"))
-                        or "subagent",
-                        "parent": _string(data.get("parentId")),
-                        "tool": _string(data.get("toolCallId")),
-                        "created": _string(event.get("timestamp")),
-                    }
-                    if aid in agents and agents[aid] != row:
-                        agents[aid]["parent"] = aid  # conflicting identity fails closed
-                    else:
-                        agents[aid] = row
+                self.add_agent(agents, event)
             else:
                 response = _string(data.get("apiCallId"))
                 if response:
@@ -146,14 +171,7 @@ class CopilotEvents:
                             canonical_model(_string(data.get("model"))),
                         )
                     )
-        valid = {}
-        for aid, agent in agents.items():
-            parent, chain = aid, set()
-            while parent and parent in agents and parent not in chain:
-                chain.add(parent)
-                parent = agents[parent]["parent"]
-            if not parent:
-                valid[aid] = dict(agent, depth=len(chain), id=node_id(session, aid))
+        valid = self.valid_agents(session, agents)
         ownership = {}
         for key, event, model in messages:
             aid = self.agent(event, agents)
