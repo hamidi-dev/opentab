@@ -5,7 +5,80 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import _model_row, app_with, tier_prices, workflow
+from tests._support import (
+    CopilotEstimateStore,
+    _model_row,
+    app_with,
+    copilot_prices,
+    tier_prices,
+    workflow,
+)
+
+
+def test_copilot_app_signed_root_deltas_turn_csv_and_fleet_agree():
+    from opentab.cli.main import _fleet_estimated_costs, _price_root
+
+    with copilot_prices():
+        store = CopilotEstimateStore()
+        app = ot.App(store, type("Args", (), {"since": None, "until": None, "days": None})())
+        app._ensure_models()
+        wf = app.loaded[0]
+        assert abs(wf.total_cost - 7.17066) < 1e-9
+        assert abs(wf.root_cost - 0.00048) < 1e-9
+        assert abs(sum(app.renderer.turn_costs(store.turns)) - wf.total_cost) < 1e-9
+        assert (
+            abs(
+                sum(app.effective_tool_cost(t) for t in store.tool_breakdown("root"))
+                - wf.total_cost
+            )
+            < 1e-9
+        )
+        assert _price_root(store, "root").startswith("~")
+        delta = _fleet_estimated_costs(
+            [(None, None, None, None, None, None, store.model_breakdown())]
+        )
+        assert abs(25 + delta["root"] - wf.total_cost) < 1e-9
+        _, columns, rows = app._turns_dataset(wf)
+        cost_index = columns.index("cost")
+        assert abs(sum(float(r[cost_index]) for r in rows) - wf.total_cost) < 1e-9
+        before = wf.total_cost
+        app._compute_api_costs()
+        app._apply_price_mode()
+        assert wf.total_cost == before
+        app.toggle_api_prices()
+        assert wf.total_cost == 25 and wf.root_cost == 17
+
+
+def test_copilot_route_prices_and_tiers_override_vendor_card():
+    from opentab.accounting import pricing
+
+    with copilot_prices() as name:
+        assert pricing.model_price(name) == (2, 12, 0.2, 2.5)
+        assert pricing.model_price(name, 272000) == (2, 12, 0.2, 2.5)
+        assert pricing.model_price(name, 272001) == (4, 18, 0.4, 5)
+        assert pricing.model_price("github-copilot/gpt-5-6-terra-high") == (2, 12, 0.2, 2.5)
+        assert pricing.model_price("openai/gpt-5.6-terra") == (20, 120, 2, 25)
+
+
+def test_copilot_missing_route_and_write_rates_are_marked_as_fallbacks():
+    from opentab.accounting import pricing
+    from opentab.accounting.tiers import row_estimate_metadata
+
+    with copilot_prices() as name:
+        models = pricing._layers()[0][2]["github-copilot"]["models"]
+        models[name.split("/", 1)[1]]["cost"] = (2, 12, 0.2, 0)
+        assert pricing.model_price(name) == (2, 12, 0.2, 2.5)
+        assert (
+            "copilot_rate_fallback"
+            in row_estimate_metadata({"model_name": name})["approximation_reasons"]
+        )
+        del models[name.split("/", 1)[1]]
+        pricing.model_tiers.cache_clear()
+        assert pricing.model_price(name) == (20, 120, 2, 25)
+        assert (
+            "copilot_rate_fallback"
+            in row_estimate_metadata({"model_name": name})["approximation_reasons"]
+        )
 
 
 def test_tier_prices_apply_to_output_reasoning_long_ttl_and_cache_repurchase():
@@ -300,7 +373,7 @@ def test_api_price_toggle_prices_unpriced_usage():
     )
 
 
-def test_api_price_toggle_prices_unpriced_part_of_mixed_model_row():
+def test_api_price_toggle_reprices_all_copilot_usage_in_mixed_billing_row():
     app = _priced_app(model_count=1)
     app._model_by_root = {
         "r": [
@@ -326,8 +399,10 @@ def test_api_price_toggle_prices_unpriced_part_of_mixed_model_row():
     app._compute_api_costs()
     app.toggle_api_prices()
 
-    assert round(app.loaded[0].total_cost, 2) == 11.0
-    assert app.model_mix("r")[0]["cost"] == 11.0
+    assert round(app.loaded[0].total_cost, 2) == 2.0
+    assert app.model_mix("r")[0]["cost"] == 2.0
+    app.toggle_api_prices()
+    assert app.loaded[0].total_cost == 10.0
 
 
 def test_api_price_toggle_splits_root_and_subagent_unpriced_usage():
@@ -439,9 +514,9 @@ def test_api_price_split_uses_store_root_unpriced_columns_for_same_model():
         app = ot.App(store, type("Args", (), {"since": None, "until": None, "days": None})())
         app._ensure_models()  # the estimate view is the default
 
-        assert round(app.loaded[0].total_cost, 2) == 1.5
+        assert abs(app.loaded[0].total_cost - 1.000005) < 1e-9
         assert round(app.loaded[0].root_cost, 2) == 1.0
-        assert round(app.loaded[0].total_cost - app.loaded[0].root_cost, 2) == 0.5
+        assert abs(app.loaded[0].total_cost - app.loaded[0].root_cost - 0.000005) < 1e-9
 
 
 def test_has_known_price_asks_where_the_price_came_from_not_what_it_equals():

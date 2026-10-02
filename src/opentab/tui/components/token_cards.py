@@ -139,6 +139,7 @@ def token_economics_card(
     local_tokens: int,
     colored: bool,
     tier_context_missing: bool = False,
+    estimate_reasons: Sequence[str] = (),
 ) -> TokenCard:
     """Format token volume against list-rate spend from explicit economics data."""
     rows = sorted(categories, key=lambda row: (row.cost, row.tokens), reverse=True)
@@ -185,8 +186,16 @@ def token_economics_card(
         f"{'':>6}  {approx + money(total_cost):>{cost_w}}"
     )
     notes = []
-    if estimated:
+    if estimated and not estimate_reasons:
         notes.append("! ~ a model here has no known list rate — its tokens use a generic estimate")
+    if "cache_write_inferred" in estimate_reasons:
+        notes.append(
+            "~ Copilot GPT-5.6+ cache writes inferred from uncached input; recorded tokens unchanged"
+        )
+    if "copilot_rate_fallback" in estimate_reasons:
+        notes.append(
+            "~ Copilot route rates incomplete or unavailable; fallback list rates estimated"
+        )
     if tier_context_missing:
         notes.append(
             "! ~ request context sizes unavailable for some tiered usage — base rates estimated"

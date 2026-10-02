@@ -16,15 +16,42 @@ from opentab import remote_content
 from opentab.api import json_cli as programmatic
 
 from tests._support import (
+    CopilotEstimateStore,
     FakeStore,
     _claude_msg,
     _parse,
     _usage,
     _write_jsonl,
+    copilot_prices,
     tier_prices,
     workflow,
 )
 from tests.test_remote_content import _managed, _replies
+
+
+def test_copilot_service_reprices_paid_root_nodes_turns_and_tools_consistently():
+    with copilot_prices() as name:
+        service = ot.OpenTabService(CopilotEstimateStore(), _args())
+        result = service.get_session("root")
+        assert result["recorded_cost_usd"] == 25
+        assert result["recorded_root_cost_usd"] == 17
+        assert abs(result["api_equivalent_cost_usd"] - 7.17066) < 1e-9
+        assert abs(result["api_equivalent_root_cost_usd"] - 0.00048) < 1e-9
+        assert "cache_write_inferred" in result["estimate_reasons"]
+        for kind, fetch in (
+            ("nodes", service.session_nodes),
+            ("turns", service.session_turns),
+            ("tools", service.session_tools),
+        ):
+            rows = fetch("root")[kind]
+            assert all(r["api_equivalent_cost_complete"] for r in rows), rows
+            assert abs(sum(r["api_equivalent_cost_usd"] for r in rows) - 7.17066) < 1e-9, rows
+            assert sum(r["recorded_cost_usd"] for r in rows) == 25
+        turns = service.session_turns("root")["turns"]
+        assert sum(r["cache_write_tokens"] for r in turns) == 60
+        assert turns[0]["estimate"]["basis"] == "copilot_list_prices"
+        compare = service.compare_model("root", name)
+        assert compare["baseline_estimated"]
 
 
 def test_service_costs_and_model_comparison_price_individual_request_tiers():

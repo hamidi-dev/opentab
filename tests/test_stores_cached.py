@@ -5,7 +5,42 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import tier_prices, workflow
+from tests._support import CopilotEstimateStore, copilot_prices, tier_prices, workflow
+
+
+def test_copilot_warm_cache_preserves_inference_root_split_and_refreshable_rates():
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+    from opentab.accounting.tiers import row_api_cost
+
+    with tempfile.TemporaryDirectory() as tmp, copilot_prices(), patch.dict(
+        os.environ, {"XDG_CACHE_HOME": tmp}
+    ):
+        path = os.path.join(tmp, "usage")
+        with open(path, "w") as stream:
+            stream.write("fixture")
+        backend = CopilotEstimateStore()
+        backend.cache_inputs = lambda: [path]
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        cold = ot.CachedStore(backend, "copilot-estimate|" + path, args)
+        cold.workflows()
+        rows = cold.model_breakdown()
+        with patch.object(
+            backend, "model_breakdown", side_effect=AssertionError("warm source read")
+        ):
+            warm = ot.CachedStore(backend, "copilot-estimate|" + path, args)
+            warm.workflows()
+            restored = warm.model_breakdown()
+            assert rows == restored
+            row = next(r for r in restored if r["model_name"].startswith("github-copilot/"))
+            assert abs(row_api_cost(row, root=True) - 0.00048) < 1e-9
+            before = row_api_cost(row)
+            card = pricing._layers()[0][2]["github-copilot"]["models"]["gpt-5.6-terra"]
+            card["cost"] = (2, 12, 0.2, 3)
+            pricing.model_tiers.cache_clear()
+            assert abs(row_api_cost(row) - before - 0.00008) < 1e-9
+            assert row["cost"] == 18 and row["cache_write"] == 60
 
 
 def test_warm_cache_preserves_request_buckets_and_reprices_without_source_reads():

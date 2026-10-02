@@ -14,15 +14,20 @@ from opentab.accounting.pricing import (
     canonical_model,
     catalog_models,
     has_known_price,
+    is_copilot_model,
     is_local_provider,
     model_context_window,
     model_price,
+    price_source_meta,
 )
 from opentab.accounting.tiers import (
     node_api_cost,
+    row_api_cost,
+    row_api_delta,
+    row_estimate_metadata,
+    row_estimate_reasons,
     row_list_cost,
     unknown_tier_context,
-    unpriced_cost,
 )
 from opentab.persistence.notes import read_notes, update_note
 from opentab.persistence.state import load_state, update_state
@@ -220,8 +225,7 @@ class OpenTabService:
 
     @staticmethod
     def _api_model_cost(row: dict) -> float:
-        real = float(row.get("cost") or 0)
-        return real + float(row.get("estimated_cost") or 0) + unpriced_cost(row)
+        return row_api_cost(row)
 
     @staticmethod
     def _detail_api_cost(
@@ -233,6 +237,12 @@ class OpenTabService:
         recorded = float(row.get("cost") or 0)
         if "model_pricing" in row:
             return node_api_cost(row) + float(row.get("estimated_cost") or 0)
+        if is_copilot_model(str(row.get("model_name") or "")) and (
+            not possibly_mixed or "tokens_input" not in fields
+        ):
+            return row_api_cost(
+                {**row, **{field.removeprefix("tokens_"): row.get(field, 0) for field in fields}}
+            )
         unpriced = []
         has_split = False
         for field in fields:
@@ -285,10 +295,7 @@ class OpenTabService:
         )
         has_root_split = any("root_unpriced_input" in row for row in models)
         if has_root_split:
-            delta = sum(
-                float(row.get("root_estimated_cost") or 0) + unpriced_cost(row, root=True)
-                for row in models
-            )
+            delta = sum(row_api_delta(row, root=True) for row in models)
             api_root = recorded_root + delta
         else:
             fraction = recorded_root / recorded if recorded else 1.0
@@ -441,6 +448,10 @@ class OpenTabService:
             "usage_status": workflow.usage_status,
             "recorded_cost_usd": recorded,
             "api_equivalent_cost_usd": api,
+            "price_source": price_source_meta(),
+            "estimate_reasons": sorted(
+                {reason for row in models for reason in row_estimate_reasons(row)}
+            ),
             "recorded_root_cost_usd": recorded_root,
             "api_equivalent_root_cost_usd": api_root,
             "tokens": int(workflow.total_tokens or 0),
@@ -538,6 +549,7 @@ class OpenTabService:
                     "runs": int(row.get("runs") or 0),
                     "recorded_cost_usd": float(row.get("cost") or 0),
                     "api_equivalent_cost_usd": self._api_model_cost(row),
+                    "estimate": row_estimate_metadata(row),
                     "tokens": int(row.get("tokens_total") or sum(split)),
                     **self._token_breakdown([row], int(row.get("tokens_total") or sum(split))),
                     "known_price": has_known_price(name),
@@ -581,7 +593,14 @@ class OpenTabService:
             )
             if not int(row.get("depth") or 0) and exact_root_split and known_models:
                 api = costs[3]
-            elif (recorded == 0 or possibly_mixed) and row.get("tokens_total"):
+            elif (
+                not any(
+                    is_copilot_model(str(part.get("model_name") or ""))
+                    for part in row.get("model_pricing", [])
+                )
+                and (recorded == 0 or possibly_mixed)
+                and row.get("tokens_total")
+            ):
                 # A node's label is only its dominant model, not per-model usage.
                 # Root model rows cannot attribute a multi-model tree to its children.
                 if not single_model or not known_models:
@@ -639,6 +658,7 @@ class OpenTabService:
                 "reasoning_tokens": int(row.get("reasoning") or 0),
                 "cache_read_tokens": int(row.get("cache_read") or 0),
                 "cache_write_tokens": int(row.get("cache_write") or 0),
+                "estimate": row_estimate_metadata(row),
                 "tools": tool_names(row.get("tools")),
                 "prompt_id": str(row.get("prompt_id") or ""),
                 "prompt_title": str(row.get("prompt_title") or ""),
@@ -667,6 +687,7 @@ class OpenTabService:
             rows.append(
                 {
                     "tool": tool,
+                    "estimate": row_estimate_metadata(row),
                     "namespace": tool_namespace(tool),
                     "model": str(row.get("model_name") or "unknown"),
                     "calls": int(row.get("calls") or 0),
@@ -1404,8 +1425,10 @@ class OpenTabService:
             "accounting": {
                 "recorded_cost_usd": "Source-attributed dollars, not a verified invoice.",
                 "api_equivalent_cost_usd": (
-                    "Recorded dollars plus list-rate estimates for unpriced usage, not "
-                    "all-token repricing or your subscription bill. Unknown models use "
+                    "Copilot usage is fully repriced at loaded models.dev Copilot list rates; "
+                    "other routes retain recorded dollars plus estimates for unpriced usage. "
+                    "Copilot GPT-5.6+ zero-write requests infer writes from uncached input. "
+                    "This is not your subscription bill. Unknown models use "
                     "fallback rates; recognized local providers price to zero."
                 ),
                 "unpriced_tokens": (
@@ -1613,7 +1636,12 @@ class OpenTabService:
             name = str(row.get("model_name") or "")
             if not is_local_provider(name):
                 baseline += row_list_cost(row)
-                estimated = estimated or not has_known_price(name) or unknown_tier_context(row)
+                estimated = (
+                    estimated
+                    or not has_known_price(name)
+                    or unknown_tier_context(row)
+                    or bool(row_estimate_reasons(row))
+                )
             target += row_list_cost(row, target_model)
             estimated = estimated or unknown_tier_context(row, target_model)
         return {

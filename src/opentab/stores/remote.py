@@ -94,6 +94,10 @@ def _clean_turn(row: dict) -> dict:
     }
     for field in _TURN_INT_FIELDS:
         turn[field] = _coerce_int(row.get(field))
+    if "inferred_cache_write" in row:
+        turn["inferred_cache_write"] = min(
+            turn["input"], max(0.0, safe_float(row["inferred_cache_write"]))
+        )
     return turn
 
 
@@ -159,7 +163,13 @@ def _clean_model_pricing(rows) -> list[dict] | None:
         if not isinstance(row, dict) or not isinstance(row.get("model_name"), str):
             return None
         model = {"model_name": row["model_name"]}
-        for prefix in ("", "unpriced_", "root_unpriced_"):
+        for key in ("cost", "root_cost"):
+            if key in row:
+                model[key] = _coerce_float(row[key])
+        prefixes = ["", "unpriced_", "root_unpriced_"]
+        if "root_input" in row:
+            prefixes.append("root_")
+        for prefix in prefixes:
             for field in fields:
                 value = row.get(prefix + field, 0)
                 if (

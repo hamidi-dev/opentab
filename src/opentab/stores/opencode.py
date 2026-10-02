@@ -17,6 +17,8 @@ from urllib.parse import quote
 
 from opentab import diagnostics as debug
 from opentab.accounting.models import Workflow
+from opentab.accounting.pricing import copilot_cache_write_model
+from opentab.accounting.tiers import inferred_cache_write
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import WORKED_BURST_GAP_SECONDS, _clean_prompt
 from opentab.stores.opencode_usage import UsageCache
@@ -110,6 +112,7 @@ def _process_timeline(
         d["prompt_full"] = cur_full
         d["tools"] = message_tools
         d["context_tokens"] = d["input"] + d["cache_read"] + d["cache_write"]
+        d["inferred_cache_write"] = inferred_cache_write(d)
         # The message id is what the part table joins on, so it is also the turn's
         # identity for the trace. Set before mid is dropped below.
         d["content_key"] = d["mid"] or ""
@@ -685,6 +688,15 @@ class Store:
           sum(cache_read) as cache_read,
           sum(cache_write) as cache_write,
           sum(output) as output,
+          sum(case when depth = 0 then input else 0 end) as root_input,
+          sum(case when depth = 0 then output else 0 end) as root_output,
+          sum(case when depth = 0 then reasoning else 0 end) as root_reasoning,
+          sum(case when depth = 0 then cache_read else 0 end) as root_cache_read,
+          sum(case when depth = 0 then cache_write else 0 end) as root_cache_write,
+          sum(case when cache_write = 0 then input else 0 end) as zero_write_input,
+          sum(case when depth = 0 and cache_write = 0 then input else 0 end) as root_zero_write_input,
+          sum(case when cost = 0 and cache_write = 0 then input else 0 end) as unpriced_zero_write_input,
+          sum(case when depth = 0 and cost = 0 and cache_write = 0 then input else 0 end) as root_unpriced_zero_write_input,
           sum(case when cost = 0 then input else 0 end) as unpriced_input,
           sum(case when cost = 0 then reasoning else 0 end) as unpriced_reasoning,
           sum(case when cost = 0 then cache_read else 0 end) as unpriced_cache_read,
@@ -706,14 +718,23 @@ class Store:
         fields = ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
         for result in self.conn.execute(sql, [workflow_id] if workflow_id else []):
             part = dict(result)
+            infer = copilot_cache_write_model(part["model_name"])
+            for prefix in ("", "root_", "unpriced_", "root_unpriced_"):
+                value = part.pop(prefix + "zero_write_input")
+                part[prefix + "inferred_cache_write"] = value if infer else 0
             key = (part["root_id"], part["model_name"])
             row = models.setdefault(key, {"root_id": key[0], "model_name": key[1], "pricing": []})
             row["pricing"].append(
                 {
                     "context": part["context_tokens"],
                     "tok": [part.get(k, 0) for k in fields],
+                    "root_tok": [part.get("root_" + k, 0) for k in fields],
                     "unpriced": [part.get("unpriced_" + k, 0) for k in fields],
                     "root_unpriced": [part.get("root_unpriced_" + k, 0) for k in fields],
+                    **{
+                        prefix + "inferred_cache_write": part[prefix + "inferred_cache_write"]
+                        for prefix in ("", "root_", "unpriced_", "root_unpriced_")
+                    },
                 }
             )
             for name, value in part.items():

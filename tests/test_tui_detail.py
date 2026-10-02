@@ -3160,7 +3160,7 @@ def test_turns_price_refresh_invalidates_layout_without_reloading_rows():
         app.refresh_prices_action()
     assert app.renderer._turn_layout_cache is None
     assert app.session_turn_rows(wf.id) is rows
-    with patch("opentab.tui.renderer.row_list_cost", return_value=123):
+    with patch("opentab.accounting.tiers.row_list_cost", return_value=123):
         after = app.renderer.detail_turns(wf, 116)
     assert after != before and "$123.50" in "\n".join(after)
 

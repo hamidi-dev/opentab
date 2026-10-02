@@ -11,7 +11,8 @@ import sys
 import time
 from datetime import datetime
 
-from opentab.accounting.tiers import node_api_cost, unpriced_cost
+from opentab.accounting.pricing import is_copilot_model
+from opentab.accounting.tiers import node_api_cost, row_api_delta
 
 try:
     import curses
@@ -1227,7 +1228,7 @@ def _fleet_estimated_costs(backends: list) -> dict[str, float]:
             rid = m.get("root_id")
             if not rid:
                 continue
-            delta[rid] = delta.get(rid, 0.0) + m.get("estimated_cost", 0.0) + unpriced_cost(m)
+            delta[rid] = delta.get(rid, 0.0) + row_api_delta(m)
     return delta
 
 
@@ -1467,12 +1468,17 @@ def _price_root(store, workflow_id: str) -> str:
     # Prefix list-price estimates for $0 nodes with `~`; never present them as spend.
     # status_nodes is the cheap single-session path where a backend provides one.
     total = estimated = 0.0
+    copilot = False
     nodes_of = getattr(store, "status_nodes", store.workflow_nodes)
     for node in nodes_of(workflow_id):
         total += node["cost"]
         estimated += node_api_cost(dict(node)) - node["cost"]
+        copilot = copilot or any(
+            is_copilot_model(str(m.get("model_name") or ""))
+            for m in dict(node).get("model_pricing", [dict(node)])
+        )
     text = money(total + estimated)
-    return "~" + text if estimated > 0 else text
+    return "~" + text if estimated != 0 or copilot else text
 
 
 # Compatibility alias; doctor and the renderer share util's single decision rule.

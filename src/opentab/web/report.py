@@ -28,8 +28,14 @@ from opentab.accounting.pricing import (
     model_context_window,
     model_price,
     model_tiers,
+    price_source_meta,
 )
-from opentab.accounting.tiers import node_api_cost, pricing_samples, row_list_cost
+from opentab.accounting.tiers import (
+    detail_api_cost,
+    node_api_cost,
+    pricing_samples,
+    row_estimate_reasons,
+)
 from opentab.accounting.tools import tool_calls_from_turns
 from opentab.presentation.themes import DEFAULT_THEME
 from opentab.presentation.whats_new import public_payload
@@ -80,6 +86,7 @@ def _model_row(r: dict) -> dict:
         # Per-model rows are the only exact baseline for sessions that switched models.
         "tok": [int(inp), int(out), int(reasoning), int(cr), int(cw), int(model_row_1h_write(r))],
         "pricing": [{"context": context, "tok": tok} for context, tok in pricing_samples(r)],
+        "estimateReasons": row_estimate_reasons(r),
     }
 
 
@@ -261,6 +268,7 @@ def build_payload(app: App) -> dict:
         "version": __version__,
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": getattr(store, "source_name", "") or app.source_key or "data",
+        "priceSource": price_source_meta(),
         "combined": bool(getattr(store, "combined", False)),
         # Breakdown tabs need a fleet; Machines browse mode does not.
         "machines": bool(app.machines_present),
@@ -321,7 +329,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         turn_rows = app.session_turn_rows(workflow_id)
         for r in turn_rows:
             real = float(r.get("cost") or 0)
-            api = real or row_list_cost(r)
+            api = detail_api_cost(r)
             turns.append(
                 {
                     "time": r.get("time") or "",
@@ -332,7 +340,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "durationSeconds": r.get("duration_seconds"),
                     "usageStatus": str(r.get("usage_status") or ""),
                     "real": _money6(real),
-                    "api": _money6(api + float(r.get("estimated_cost") or 0)),
+                    "api": _money6(api),
                     "tokens": int(r.get("tokens_total") or 0),
                     # Five additive categories plus the long-TTL cache-write subset.
                     "tok": [
@@ -375,7 +383,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
     if supports_tools:
         for r in app.session_tool_rows(workflow_id):
             real = float(r.get("cost") or 0)
-            api = real or row_list_cost(r)
+            api = detail_api_cost(r)
             tools.append(
                 {
                     "tool": r.get("tool") or "?",
@@ -405,8 +413,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         turn_index = int(call.get("turn_index") or 0)
         source = turn_rows[turn_index]
         count = calls_per_turn[turn_index]
-        turn_real = float(source.get("cost") or 0)
-        turn_api = turn_real or row_list_cost(source)
+        turn_api = detail_api_cost(source)
         tool_calls.append(
             {
                 "index": int(call.get("index") or 0),

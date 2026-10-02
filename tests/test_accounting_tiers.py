@@ -12,7 +12,94 @@ from opentab.accounting.tiers import (
 )
 from opentab.util import tool_rows_from_turns
 
-from tests._support import tier_prices
+from tests._support import copilot_prices, tier_prices
+
+
+def test_copilot_estimate_reprices_positive_cost_and_preserves_wire_fixture_tokens():
+    from opentab.accounting.tiers import row_api_cost
+
+    with copilot_prices() as name:
+        turns = [
+            _turn(name, 2815, output=9, cost=0.005738),
+            _turn(name, 49, read=2812, output=9, cost=0.0007684),
+            _turn(name, 49, read=2858, output=9, cost=0.0007776),
+            _turn(name, 49, read=2904, output=9, cost=0.0007868),
+        ]
+        row = _row(name, turns)
+        assert abs(row_api_cost(row) - 0.0095518) < 1e-12
+        assert abs(row["cost"] - 0.0080708) < 1e-12
+        assert row["input"] == 2962 and row["cache_write"] == 0
+        assert row_list_cost(row, name) == row_list_cost(row)
+        assert valid_pricing(row)
+
+
+def test_copilot_inference_is_per_request_with_full_paid_root_split():
+    from opentab.accounting.tiers import row_api_cost
+
+    with copilot_prices() as name:
+        turns = [
+            _turn(name, 100, write=0, output=0, cost=9),
+            _turn(name, 40, write=60, output=0, cost=8, depth=1),
+        ]
+        row = _row(name, turns)
+        # Both requests have the same context and coalesce, but only the first is inferred.
+        assert len(row["pricing"]) == 1
+        assert abs(row_api_cost(row) - 0.00048) < 1e-12
+        assert abs(row_api_cost(row, root=True) - 0.00025) < 1e-12
+        assert row["input"] == 140 and row["cache_write"] == 60
+        assert valid_pricing(row)
+
+
+def test_copilot_inference_excludes_older_gpt_and_other_routes():
+    from opentab.accounting.tiers import row_api_cost
+
+    with copilot_prices():
+        older = _row(
+            "github-copilot/gpt-5.4", [_turn("github-copilot/gpt-5.4", 1000, output=0, cost=5)]
+        )
+        direct = _row(
+            "openai/gpt-5.6-terra", [_turn("openai/gpt-5.6-terra", 1000, output=0, cost=5)]
+        )
+        assert row_api_cost(older) == 0.002
+        assert row_cost_parts(older)[4] == 0
+        assert row_api_cost(direct) == 5
+        assert row_cost_parts(direct)[4] == 0
+
+
+def test_copilot_cache_write_generation_gate_includes_newer_gpt_families_only():
+    from opentab.accounting.tiers import inferred_cache_write
+
+    for name, expected in (
+        ("github-copilot/gpt-5.5", 0),
+        ("github-copilot/gpt-5-mini", 0),
+        ("github-copilot/claude-sonnet-4.6", 0),
+        ("openai/gpt-6.1-sol", 0),
+        ("github-copilot/gpt-5.6-terra", 100),
+        ("github-copilot/gpt-5-6-sol", 100),
+        ("github-copilot/gpt-6-astra", 100),
+        ("github-copilot/gpt-6.1-sol", 100),
+    ):
+        row = {"model_name": name, "input": 100, "context_tokens": 100, "cache_write": 0}
+        assert inferred_cache_write(row) == expected, name
+        row["cache_write"] = 1
+        assert inferred_cache_write(row) == 0, name
+
+
+def test_copilot_portable_metadata_rejects_inconsistent_root_and_inference_splits():
+    import copy
+
+    with copilot_prices() as name:
+        row = _row(name, [_turn(name, 100, output=0, cost=1)])
+        bad = copy.deepcopy(row)
+        bad["pricing"][0]["root_tok"][0] = 99
+        bad["pricing"][0]["root_inferred_cache_write"] = 99
+        assert not valid_pricing(bad)
+        for value in (-1, 101, float("nan"), True):
+            bad = copy.deepcopy(row)
+            bad["pricing"][0]["inferred_cache_write"] = value
+            assert not valid_pricing(bad)
+        # Targeting another model retains the producing model's inferred allocation.
+        assert row_cost_parts(row, "openai/gpt-5.6-terra")[0] == 0
 
 
 def _turn(name, inp, *, read=0, write=0, output=1000, cost=0, depth=0):

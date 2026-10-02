@@ -3,10 +3,58 @@ from __future__ import annotations
 
 import math
 
-from opentab.accounting.pricing import cache_write_1h_price, model_price, model_tiers
+from opentab.accounting.pricing import (
+    cache_write_1h_price,
+    copilot_cache_write_model,
+    copilot_price_estimated,
+    is_copilot_model,
+    model_price,
+    model_price_source,
+    model_tiers,
+)
 from opentab.util import model_row_1h_write, model_row_split
 
 FIELDS = ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
+
+
+def inferred_cache_write(row: dict) -> float:
+    """Rate-independent estimate; only individual requests can supply a missing split.
+
+    OpenCode's Copilot Responses adapter loses GPT-5.6+ writes. The deliberately
+    approximate estimate treats its remaining input as writes, never changes records,
+    and never applies the zero-write test after differently classified calls coalesce.
+    """
+    if not copilot_cache_write_model(str(row.get("model_name") or "")):
+        return 0.0
+    if "inferred_cache_write" in row:
+        return min(float(row.get("input") or 0), max(0.0, float(row["inferred_cache_write"])))
+    if request_context(row) is not None and not row.get("cache_write"):
+        return float(row.get("input") or 0)
+    return 0.0
+
+
+def row_estimate_reasons(row: dict) -> list[str]:
+    reasons = []
+    if copilot_price_estimated(str(row.get("model_name") or "")):
+        reasons.append("copilot_rate_fallback")
+    buckets = row.get("pricing")
+    inferred = (
+        sum(b.get("inferred_cache_write", 0) for b in buckets)
+        if isinstance(buckets, list)
+        else inferred_cache_write(row)
+    )
+    if inferred:
+        reasons.append("cache_write_inferred")
+    return reasons
+
+
+def row_estimate_metadata(row: dict) -> dict:
+    name = str(row.get("model_name") or "")
+    return {
+        "basis": "copilot_list_prices" if is_copilot_model(name) else "recorded_plus_unpriced",
+        "price_source": model_price_source(name),
+        "approximation_reasons": row_estimate_reasons(row),
+    }
 
 
 def valid_pricing(row: dict) -> bool:
@@ -23,6 +71,8 @@ def _valid_pricing(row: dict) -> bool:
     if not isinstance(buckets, list):
         return False
     totals = {k: [0.0] * 6 for k in ("tok", "unpriced", "root_unpriced")}
+    root_totals = [0.0] * 6
+    root_complete = True
     for bucket in buckets:
         if not isinstance(bucket, dict):
             return False
@@ -51,6 +101,41 @@ def _valid_pricing(row: dict) -> bool:
             if tok[5] > tok[4] + 1e-6:
                 return False
             totals[key] = [a + b for a, b in zip(totals[key], tok)]
+        root = bucket.get("root_tok")
+        root_complete = root_complete and root is not None
+        if root is not None and (
+            not isinstance(root, list)
+            or len(root) != 6
+            or any(
+                isinstance(v, bool)
+                or not isinstance(v, (int, float))
+                or not math.isfinite(v)
+                or v < 0
+                for v in root
+            )
+            or any(root[i] > bucket["tok"][i] + 1e-6 for i in range(6))
+            or root[5] > root[4] + 1e-6
+        ):
+            return False
+        if root is not None:
+            root_totals = [a + b for a, b in zip(root_totals, root)]
+            if any(bucket["root_unpriced"][i] > root[i] + 1e-6 for i in range(6)):
+                return False
+        for prefix, key in (
+            ("", "tok"),
+            ("root_", "root_tok"),
+            ("unpriced_", "unpriced"),
+            ("root_unpriced_", "root_unpriced"),
+        ):
+            value = bucket.get(prefix + "inferred_cache_write", 0)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+                or value > bucket.get(key, [0] * 6)[0] + 1e-6
+            ):
+                return False
         if any(
             bucket["root_unpriced"][i] > bucket["unpriced"][i] + 1e-6
             or bucket["unpriced"][i] > bucket["tok"][i] + 1e-6
@@ -68,6 +153,14 @@ def _valid_pricing(row: dict) -> bool:
             for i, field in enumerate(FIELDS)
         ):
             return False
+    if "root_input" in row and (
+        not root_complete
+        or any(
+            abs(root_totals[i] - float(row.get("root_" + field) or 0)) > 1e-6
+            for i, field in enumerate(FIELDS)
+        )
+    ):
+        return False
     return True
 
 
@@ -99,7 +192,7 @@ def attach_pricing(rows: list[dict], turns, *, per_request: bool = True) -> None
             context = sum(float(turn.get(k) or 0) for k in ("input", "cache_read", "cache_write"))
             turn["context_tokens"] = context
         tok = [*model_row_split(turn), model_row_1h_write(turn)]
-        if not any(tok):
+        if not any(tok) and not turn.get("cost"):
             continue
         bucket = by_model.setdefault(name, {}).setdefault(
             context,
@@ -108,10 +201,27 @@ def attach_pricing(rows: list[dict], turns, *, per_request: bool = True) -> None
                 "tok": [0.0] * 6,
                 "unpriced": [0.0] * 6,
                 "root_unpriced": [0.0] * 6,
+                "root_tok": [0.0] * 6,
+                "inferred_cache_write": 0.0,
+                "root_inferred_cache_write": 0.0,
+                "unpriced_inferred_cache_write": 0.0,
+                "root_unpriced_inferred_cache_write": 0.0,
+                "root_cost": 0.0,
             },
         )
+        inferred = inferred_cache_write(turn)
+        bucket["inferred_cache_write"] += inferred
+        if not turn.get("depth"):
+            bucket["root_inferred_cache_write"] += inferred
+            bucket["root_cost"] += float(turn.get("cost") or 0)
+        if not turn.get("cost"):
+            bucket["unpriced_inferred_cache_write"] += inferred
+            if not turn.get("depth"):
+                bucket["root_unpriced_inferred_cache_write"] += inferred
         for i, value in enumerate(tok):
             bucket["tok"][i] += value
+            if not turn.get("depth"):
+                bucket["root_tok"][i] += value
             if not turn.get("cost"):
                 bucket["unpriced"][i] += value
                 if not turn.get("depth"):
@@ -135,20 +245,47 @@ def attach_pricing(rows: list[dict], turns, *, per_request: bool = True) -> None
         if any(v for values in residual.values() for v in values):
             buckets.append({"context": None, **residual})
         row["pricing"] = buckets
+        if all("root_tok" in b for b in buckets):
+            for i, field in enumerate(FIELDS):
+                row["root_" + field] = sum(b["root_tok"][i] for b in buckets)
+            row["root_cost"] = sum(b["root_cost"] for b in buckets)
 
 
 def pricing_samples(row: dict, prefix: str = ""):
-    key = {"": "tok", "unpriced_": "unpriced", "root_unpriced_": "root_unpriced"}[prefix]
+    key = {
+        "": "tok",
+        "root_": "root_tok",
+        "unpriced_": "unpriced",
+        "root_unpriced_": "root_unpriced",
+    }[prefix]
     buckets = row.get("pricing")
     if isinstance(buckets, list):
+        eligible = copilot_cache_write_model(str(row.get("model_name") or ""))
         for bucket in buckets:
-            yield bucket.get("context"), bucket[key]
+            tok = list(bucket.get(key, [0.0] * 6))
+            inferred = (
+                min(tok[0], bucket.get(prefix + "inferred_cache_write", 0)) if eligible else 0
+            )
+            tok[0] -= inferred
+            tok[4] += inferred
+            yield bucket.get("context"), tok
         return
     if prefix:
         tok = [float(row.get(prefix + field) or 0) for field in FIELDS]
     else:
         tok = [*model_row_split(row), model_row_1h_write(row)]
+    if not prefix:
+        inferred = inferred_cache_write(row)
+        tok[0] -= inferred
+        tok[4] += inferred
     yield request_context(row), tok
+
+
+def estimated_token_split(row: dict) -> tuple:
+    tokens = [0.0] * 5
+    for _context, tok in pricing_samples(row):
+        tokens = [a + b for a, b in zip(tokens, tok)]
+    return tuple(tokens)
 
 
 def row_cost_parts(row: dict, model: str | None = None, prefix: str = "") -> tuple:
@@ -177,6 +314,34 @@ def unpriced_cost(row: dict, *, root: bool = False) -> float:
     return row_list_cost(row, prefix="" if whole else "root_unpriced_" if root else "unpriced_")
 
 
+def row_api_cost(row: dict, *, root: bool = False) -> float:
+    """One estimate policy: revalue Copilot fully; retain other providers' billing."""
+    prefix = "root_" if root else ""
+    recorded = float(row.get("real_" + prefix + "cost", row.get(prefix + "cost")) or 0)
+    if is_copilot_model(str(row.get("model_name") or "")):
+        if root and "root_input" not in row:
+            # Older portable summaries lack full paid-root ownership. Keep the
+            # available recorded/unpriced split rather than inventing a fraction.
+            return recorded + unpriced_cost(row, root=True)
+        return row_list_cost(row, prefix=prefix)
+    return recorded + float(row.get(prefix + "estimated_cost") or 0) + unpriced_cost(row, root=root)
+
+
+def row_api_delta(row: dict, *, root: bool = False) -> float:
+    prefix = "root_" if root else ""
+    recorded = float(row.get("real_" + prefix + "cost", row.get(prefix + "cost")) or 0)
+    return row_api_cost(row, root=root) - recorded
+
+
+def detail_api_cost(row: dict) -> float:
+    """Detail rows keep their historical non-Copilot positive-cost behavior."""
+    if is_copilot_model(str(row.get("model_name") or "")):
+        return row_api_cost(row)
+    return (float(row.get("cost") or 0) or row_list_cost(row)) + float(
+        row.get("estimated_cost") or 0
+    )
+
+
 def unknown_tier_context(row: dict, model: str | None = None) -> bool:
     name = model if model is not None else str(row.get("model_name") or "")
     return bool(model_tiers(name)) and any(
@@ -188,6 +353,7 @@ def node_token_row(node: dict) -> dict:
     return {
         "model_name": node.get("model_name", ""),
         **{field: node.get("tokens_" + field, 0) for field in FIELDS},
+        **{key: node[key] for key in ("context_tokens", "inferred_cache_write") if key in node},
     }
 
 
@@ -197,6 +363,7 @@ def attach_node_pricing(node: dict, turns, *, per_request: bool = True) -> None:
     for turn in turns:
         name = turn["model_name"]
         row = models.setdefault(name, {"model_name": name})
+        row["cost"] = row.get("cost", 0) + float(turn.get("cost") or 0)
         for field in FIELDS:
             value = float(turn.get(field) or 0)
             row[field] = row.get(field, 0) + value
@@ -227,5 +394,9 @@ def node_api_cost(node: dict) -> float:
     recorded = float(node.get("cost") or 0)
     rows = node.get("model_pricing")
     if isinstance(rows, list):
-        return recorded + sum(row_list_cost(row, prefix="unpriced_") for row in rows)
-    return recorded or node_list_cost(node)
+        if any(is_copilot_model(str(r.get("model_name") or "")) and "cost" not in r for r in rows):
+            if all(is_copilot_model(str(r.get("model_name") or "")) for r in rows):
+                return sum(row_list_cost(r) for r in rows)
+            return recorded + sum(unpriced_cost(r) for r in rows)
+        return recorded + sum(row_api_delta(row) for row in rows)
+    return detail_api_cost({**node_token_row(node), "cost": recorded})
