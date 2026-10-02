@@ -4620,10 +4620,12 @@ class Renderer:
                 self._trace_tool_at,
                 self._trace_output_ends,
                 dict(self._token_runs),
+                self._trace_call_ends,
             )
             self._trace_layout_cache = cached
         self._trace_tool_at, self._trace_output_ends = cached[5:7]
         self._token_runs.update(cached[7])
+        self._trace_call_ends = cached[8]
         return cached[4]
 
     def _build_turn_trace(
@@ -4631,6 +4633,7 @@ class Renderer:
     ) -> list[str]:
         self._trace_tool_at = {}
         self._trace_output_ends = []
+        self._trace_call_ends = []
         siblings = self.app.drilled_turn_indices()
         if idx not in siblings:
             return []
@@ -4669,12 +4672,17 @@ class Renderer:
         )
         self._trace_tool_at = layout.tool_lines
         self._trace_output_ends = layout.output_ends
+        self._trace_call_ends = layout.call_ends
         self._token_runs.update(layout.token_runs)
         return layout.lines
 
     def trace_output_target(self) -> int | None:
         """The output section at the viewport top, or the next one below it."""
         return output_target(self._trace_output_ends, self.app.scroll)
+
+    def trace_call_target(self) -> int | None:
+        """The call at the viewport top, or the next below it, including empty results."""
+        return output_target(getattr(self, "_trace_call_ends", []), self.app.scroll)
 
     def detail_turn_drill(self, workflow: Workflow, width: int) -> list[str]:
         """Render one prompt's full text, totals, and turns."""

@@ -17,6 +17,28 @@ from tests._support import (
 )
 
 
+def test_tool_call_markdown_preserves_raw_text_and_uses_safe_fences():
+    command = "  printf 'Grüße 界'\t\n" + "command " * 400
+    output = "  raw **text** $1\n\n\tindented\n```\n````\nlast  \n"
+    text = exporting.tool_call_markdown(
+        {
+            "name": "functions.shell",
+            "args": command,
+            "params": [("workdir", "/a b"), ("timeout", "120000")],
+            "output": output,
+            "status": "error",
+        }
+    )
+    assert f"```\n{command}\n```" in text
+    assert f"`````\n{output}`````" in text
+    assert '"workdir": "/a b"' in text and '"timeout": "120000"' in text
+    assert "Status: error" in text and "preview" not in text
+    empty = exporting.tool_call_markdown({"name": "shell", "args": "true", "output": ""})
+    assert "### Output\n\n```\n\n```" in empty
+    incomplete = exporting.tool_call_markdown({"output_dropped": 900})
+    assert "Recorded output incomplete: 900 characters omitted." in incomplete
+
+
 def test_copy_conversation_keeps_full_root_text_and_reads_freshly_from_list_and_detail():
     app = _app_on_session([workflow("root", "2026-06-01")], "root")
     long_text = "Grüße 界\n" * 20000  # Larger than API windows and trace previews.

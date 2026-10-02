@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from opentab.presentation.formatting import (
     cost_bar,
@@ -48,6 +48,7 @@ class TraceLayout:
     tool_lines: dict[int, int]
     output_ends: list[tuple[int, int]]
     token_runs: TokenRuns
+    call_ends: list[tuple[int, int]] = field(default_factory=list)
 
 
 def turn_read_mark(row: Mapping) -> str:
@@ -332,7 +333,7 @@ def build_turn_trace(
             "  ",
             width,
         )
-    return TraceLayout(lines, body.tool_lines, body.output_ends, token_runs)
+    return TraceLayout(lines, body.tool_lines, body.output_ends, token_runs, body.call_ends)
 
 
 def build_turn_drill(

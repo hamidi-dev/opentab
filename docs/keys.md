@@ -55,6 +55,7 @@ compaction.
 | `g` / `G` | Jump to the top / bottom |
 | `[` / `]` | Inside a turn, read the previous / next turn of the same prompt |
 | `z` | Inside a turn, expand its full recorded content / collapse to the preview |
+| `y` | Inside a turn, copy the targeted tool call's full recorded command/arguments, parameters and output as Markdown |
 | Mouse | Wheel scrolls · click selects (anywhere in the preview pane focuses it) · double-click drills · click a tab, or a column header to sort (again to reverse). Inside a turn, click a tool header or result to expand / collapse that output independently |
 
 On **Subagents**, `j`/`k` select an execution, `g`/`G` jump to the first/last,
@@ -103,6 +104,16 @@ turn's full arguments, reasoning and output; a second `z` returns to the capped 
 Expansion is temporary and is released when you leave the turn. Recorded tool
 errors are labeled explicitly. Sources without recorded content still have numeric
 turn detail, but no output expansion. Real content is unavailable in demo mode.
+
+To copy a command and its result, open its turn and press **`y`**. The target is
+the call at the viewport top, or the next call below it; scroll to choose another
+call in the same turn. Copy reads the full recorded text even when the call is
+collapsed, preserving spacing and long lines inside Markdown code fences. It
+includes the tool name, recorded status and other parameters; empty output stays
+empty. Missing source content leaves the clipboard untouched, and any recorded
+output omissions are labeled. Nested Subagents traces copy the selected execution's
+call; remote traces reuse the already fetched turn. Demo disables copy. This uses
+the same remappable `[main] copy_conversation` binding as session chat copy.
 
 Prompt and turn details show a colored token breakdown and exact counts. Prompt
 totals sum the answering turns, not the text you typed. One-hour cache writes are
@@ -302,7 +313,7 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window/tab · `s` right split · `v` lower split · `p` popup · `y` copy the command. tmux offers all spawn targets. Herdr offers a tab and both splits only when it provides a valid `HERDR_PANE_ID` for the current pane; otherwise it offers only the tab and copy. A [launcher hook](#custom-launchers) may offer all four. `y` copies anywhere. If tmux and Herdr are nested, OpenTab uses the innermost multiplexer. A session **pulled from another machine** reopens *there* only when its `remotes.json` entry has an SSH target: every available target uses `ssh -t` and the remote user's interactive login shell to load its PATH and run `cd … && …`; `y` yanks that same line. A box reached by `url` (no SSH target) offers only the yank |
 | `e` | Export the current list to a CSV in the working directory — whatever the pane is showing, including a model scope's attributed columns |
-| `y` | Copy the selected/open session's retained user and assistant messages as Markdown (`## User` / `## Assistant`), including intermediate replies and code blocks. Available in the focused Sessions list and every session tab for local OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp. Copies the root conversation, even inside Subagents; excludes tool calls/results, thinking, system messages and attachments. Disabled in demo |
+| `y` | Copy the selected/open session's retained user and assistant messages as Markdown (`## User` / `## Assistant`), including intermediate replies and code blocks. Available in the focused Sessions list and every session tab for local OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp. Inside an open turn trace, copies the targeted tool call instead (see above). Elsewhere copies the root conversation, including inside Subagents; excludes tool calls/results, thinking, system messages and attachments. Disabled in demo |
 
 Conversation copy reads the source freshly on each press and preserves its message
 order and full retained text, rather than copying truncated Turns previews. It does

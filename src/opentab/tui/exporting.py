@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import re
 from collections import defaultdict
 
 from opentab.accounting.models import HarnessSummary, MachineSummary, ProjectSummary, Workflow
@@ -19,6 +21,32 @@ def conversation_markdown(records: list[dict]) -> tuple[str, int]:
         if text.strip():
             messages.append(f"## {role.capitalize()}\n\n{text}")
     return ("\n\n".join(messages) + "\n" if messages else ""), len(messages)
+
+
+def tool_call_markdown(event: dict) -> str:
+    """Copy one full recorded call, without terminal wrapping or preview limits."""
+
+    def block(text: str) -> str:
+        # Recorded output can itself contain Markdown fences.
+        fence = "`" * max(3, 1 + max((len(m[0]) for m in re.finditer(r"`+", text)), default=0))
+        ending = "" if text.endswith("\n") else "\n"
+        return f"{fence}\n{text}{ending}{fence}"
+
+    sections = [f"## Tool: {event.get('name') or '(unknown)'}"]
+    if event.get("status"):
+        sections.append(f"Status: {event['status']}")
+    sections.append("### Command / arguments\n\n" + block(str(event.get("args") or "")))
+    if event.get("params"):
+        sections.append(
+            "### Parameters\n\n"
+            + block(json.dumps(dict(event["params"]), ensure_ascii=False, indent=2))
+        )
+    sections.append("### Output\n\n" + block(str(event.get("output") or "")))
+    if event.get("output_dropped"):
+        sections.append(
+            f"Recorded output incomplete: {event['output_dropped']:,} characters omitted."
+        )
+    return "\n\n".join(sections) + "\n"
 
 
 def sessions_dataset(

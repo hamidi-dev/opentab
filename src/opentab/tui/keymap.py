@@ -826,11 +826,22 @@ KEYS: tuple[Key, ...] = (
         active=lambda app: app.launch_menu is not None,
     ),
     Key(
+        id="trace-copy",
+        actions=("copy_conversation",),
+        summary="copy the targeted tool call's full arguments and output as Markdown",
+        section="here",
+        when=lambda app: _on_trace(app) and not app.store.demo,
+        chip="copy call",
+    ),
+    Key(
         id="copy-conversation",
         actions=("copy_conversation",),
         summary="copy the root session's user/assistant text as Markdown",
         section="here",
-        when=lambda app: in_main(app) and not app.store.demo and app.bookmark_target() is not None,
+        when=lambda app: in_main(app)
+        and not _on_trace(app)
+        and not app.store.demo
+        and app.bookmark_target() is not None,
         chip="copy chat",
     ),
     Key(
@@ -1353,6 +1364,7 @@ FOOTER_ORDER = (
     "trace-siblings",
     "trace-scroll",
     "trace-expand",
+    "trace-copy",
     "diff-layout",
     "diff-pager",
     "enter",
@@ -1446,6 +1458,7 @@ def footer_entries(app: App) -> list[Key]:
             "trace-siblings",
             "trace-scroll",
             "trace-expand",
+            "trace-copy",
             "enter",
             "esc",
             "help",
