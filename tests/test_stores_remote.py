@@ -6,7 +6,71 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import _parse, workflow
+from tests._support import _parse, tier_prices, workflow
+
+
+def test_machine_export_preserves_request_tiers_and_fractional_tool_shares():
+    from opentab.accounting.tiers import (
+        FIELDS,
+        attach_pricing,
+        node_api_cost,
+        row_list_cost,
+        valid_pricing,
+    )
+    from opentab.util import tool_rows_from_turns
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices() as name:
+        turn = {
+            "model_name": name,
+            "input": 300001,
+            "output": 1000,
+            "cost": 0,
+            "tokens_total": 301001,
+            "depth": 0,
+            "tools": ["Read", "Bash"],
+        }
+        row = {"root_id": "s1", "model_name": name, "runs": 1, "tokens_total": 301001, "cost": 0}
+        for field in FIELDS:
+            row[field] = row["unpriced_" + field] = row["root_unpriced_" + field] = turn.get(
+                field, 0
+            )
+        attach_pricing([row], [turn])
+        tools = tool_rows_from_turns([turn])
+        node = _node(0, "-", "fixture", name, 0, 301001)
+        node.update({"tokens_" + field: row[field] for field in FIELDS})
+        node["model_pricing"] = [row]
+        source = _FakeExtrasStore(
+            [workflow("s1", "2026-07-15 10:00:00", cost=0, tokens=301001)],
+            [row],
+            turns={"s1": [turn]},
+            tools={"s1": tools},
+        )
+        source._w[0].subagents = 1
+        source._n = {"s1": [node]}
+        payload = ot.build_export(source, "fixture")
+        _write(tmp, "fixture.json", payload)
+        remote = ot.RemoteStore(tmp, _parse(["--source", "remote"]))
+        (restored,) = remote.model_breakdown()
+        assert valid_pricing(restored) and row_list_cost(restored) == row_list_cost(row)
+        assert node_api_cost(remote.workflow_nodes("s1")[0]) == row_list_cost(row)
+        assert remote.message_timeline("s1")[0]["context_tokens"] == 300001
+        tool_rows = remote.tool_breakdown("s1")
+        assert all(valid_pricing(r) for r in tool_rows)
+        assert abs(sum(row_list_cost(r) for r in tool_rows) - row_list_cost(row)) < 1e-9
+
+
+def test_remote_rejects_invalid_node_pricing_without_crashing_or_losing_recorded_cost():
+    from opentab.accounting.tiers import node_api_cost
+    from opentab.stores.remote import _clean_node
+
+    node = _node(0, "-", "fixture", "openai/gpt-5.6-sol", 3, 300000)
+    for bad in (
+        [{"model_name": "x", "input": {}}],
+        [{"model_name": "x", "input": float("nan")}],
+        [None],
+    ):
+        clean = _clean_node({**node, "model_pricing": bad})
+        assert "model_pricing" not in clean and node_api_cost(clean) == 3
 
 
 def _summary(label, workflows, model_breakdown=(), records_cost=True):

@@ -138,6 +138,7 @@ def token_economics_card(
     missing_cache_rate: bool,
     local_tokens: int,
     colored: bool,
+    tier_context_missing: bool = False,
 ) -> TokenCard:
     """Format token volume against list-rate spend from explicit economics data."""
     rows = sorted(categories, key=lambda row: (row.cost, row.tokens), reverse=True)
@@ -178,7 +179,7 @@ def token_economics_card(
         )
         for row in rows
     )
-    approx = "~" if estimated else ""
+    approx = "~" if estimated or tier_context_missing else ""
     total_row = StyledLine(
         f"  {'TOTAL':<{type_w}}  {human_tokens(int(total_tokens)):>8}  "
         f"{'':>6}  {approx + money(total_cost):>{cost_w}}"
@@ -186,6 +187,10 @@ def token_economics_card(
     notes = []
     if estimated:
         notes.append("! ~ a model here has no known list rate — its tokens use a generic estimate")
+    if tier_context_missing:
+        notes.append(
+            "! ~ request context sizes unavailable for some tiered usage — base rates estimated"
+        )
     if missing_cache_rate:
         notes.append(
             "! a model here has no cache-read rate on file — its reads price at $0, "

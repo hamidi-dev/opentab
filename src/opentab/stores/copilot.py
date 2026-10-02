@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from opentab.accounting.models import Workflow
 from opentab.accounting.pricing import canonical_model
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.stores.copilot_events import CopilotEvents, call_key, local_time, node_id
 from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
@@ -467,6 +468,11 @@ class CopilotStore:
             "session_id": sid,
             "ts_ms": ts_ms,
             "input": uncached,
+            # Fallback agent totals can span several calls. Only inference records
+            # with a reported inclusive input count establish one request's size.
+            "context_tokens": inp
+            if source in ("chat", "inference") and "gen_ai.usage.input_tokens" in attrs
+            else None,
             "output": out + reasoning,  # fold reasoning into output (priced once at output)
             "cache_read": cache_read,
             "cache_write": cache_write,
@@ -505,6 +511,7 @@ class CopilotStore:
                 "model_name": c["model"],
                 "cost": 0.0,
                 "input": c["input"],
+                "context_tokens": c["context_tokens"],
                 "output": c["output"],
                 "reasoning": 0,
                 "cache_read": c["cache_read"],
@@ -585,6 +592,7 @@ class CopilotStore:
                     "root_unpriced_output": root["output"],
                 }
             )
+        attach_pricing(rows, s["turns"])
         s["model_rows"] = rows
         s["total_tokens"] = sum(r["tokens_total"] for r in rows)
         s["unpriced_tokens"] = s["total_tokens"]  # all of it
@@ -694,8 +702,14 @@ class CopilotStore:
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        models = {row["model_name"]: row for row in s["model_rows"]}
         return [
-            self._node(workflow_id, 0, "-", s["title"], s["created_at"], model, 0.0, acc)
+            dict(
+                self._node(workflow_id, 0, "-", s["title"], s["created_at"], model, 0.0, acc),
+                # The status path covers the whole tree once per model. Reuse its
+                # reconciled buckets rather than the execution's dominant label.
+                model_pricing=[models[model]],
+            )
             for model, acc in s["models"].items()
         ]
 
@@ -781,6 +795,10 @@ class CopilotStore:
                     acc[field] += turn[field]
             best = max(models, key=models.get) if models else "unknown (not recorded)"
             nodes.append(self._node(execution, depth, agent, title, created, best, 0.0, acc))
+            if not self.demo:
+                attach_node_pricing(
+                    nodes[-1], (t for t in s["turns"] if t["execution_id"] == execution)
+                )
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes

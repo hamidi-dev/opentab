@@ -5,7 +5,57 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import workflow
+from tests._support import tier_prices, workflow
+
+
+def test_warm_cache_preserves_request_buckets_and_reprices_without_source_reads():
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+    from opentab.accounting.tiers import attach_pricing, row_list_cost
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices() as name, patch.dict(
+        os.environ, {"XDG_CACHE_HOME": tmp}
+    ):
+        data = os.path.join(tmp, "usage.jsonl")
+        with open(data, "w") as stream:
+            stream.write("fixture\n")
+
+        class Backend:
+            demo = False
+            records_cost = False
+            source_name = "Fake"
+
+            def cache_inputs(self):
+                return [data]
+
+            def workflows(self):
+                return [workflow("s1", "2026-06-01 12:00:00", cost=0, tokens=300000)]
+
+            def model_breakdown(self):
+                row = _fixture_model_row("s1", 300000, name)
+                row.update(input=300000, unpriced_input=300000, root_unpriced_input=300000)
+                attach_pricing([row], [{"model_name": name, "input": 300000}])
+                return [row]
+
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        cold = ot.CachedStore(Backend(), "fake|" + data, args)
+        cold.workflows()
+        (row,) = cold.model_breakdown()
+        assert row_list_cost(row) == 2.4
+        backend = Backend()
+        with patch.object(
+            backend, "model_breakdown", side_effect=AssertionError("warm source read")
+        ):
+            warm = ot.CachedStore(backend, "fake|" + data, args)
+            warm.workflows()
+            (cached,) = warm.model_breakdown()
+            assert cached == row and row_list_cost(cached) == 2.4
+            # Change the in-memory rate layer while keeping the saved numeric buckets.
+            prices = pricing._layers()[0][0]
+            prices.tiers["gpt-5.6-sol"][0]["cost"][0] = 9
+            pricing.model_tiers.cache_clear()
+            assert row_list_cost(cached) == 2.7
 
 
 def test_headless_catalog_persists_scalars_and_reuses_after_source_change():

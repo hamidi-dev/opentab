@@ -224,7 +224,8 @@ def test_web_payload_embeds_nodes_and_reprices_unpriced_ones():
     assert sub["real"] == 0.0 and sub["api"] > 0  # $0 node repriced at list rates
     assert sub["agent"] == "explore" and sub["tokens"] == 1_100_000
     assert all(
-        set(n) == {"title", "agent", "depth", "model", "date", "real", "api", "tokens", "tok"}
+        set(n)
+        == {"title", "agent", "depth", "model", "date", "real", "api", "tokens", "tok", "pricing"}
         for n in nodes
     )
     assert all(len(n["tok"]) == 6 for n in nodes)
@@ -639,6 +640,75 @@ console.log(JSON.stringify({usage, tokens:economics.tokens, totalCost:economics.
     }
     assert actual["tokens"] == [1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000]
     assert actual["totalCost"] == 20.75
+
+
+def test_web_shipped_economics_and_comparison_preserve_individual_context_tiers():
+    from opentab.accounting.tiers import attach_pricing
+    from opentab.web.report import _model_row, _whatif_payload
+
+    from tests._support import tier_prices
+
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript behavior check: Node.js is not installed (required in CI)")
+        return
+    with tier_prices() as name:
+        app = app_with([workflow("root", "2026-06-01 12:00:00", cost=0)])
+        row = {
+            "model_name": name,
+            "input": 500000,
+            "output": 2000,
+            "cost": 0,
+            "tokens_total": 502000,
+            "runs": 2,
+            "unpriced_input": 500000,
+            "unpriced_output": 2000,
+            "root_unpriced_input": 500000,
+            "root_unpriced_output": 2000,
+        }
+        attach_pricing(
+            [row],
+            [{"model_name": name, "input": n, "output": 1000, "cost": 0} for n in (200000, 300000)],
+        )
+        app._model_by_root = {"root": [row]}
+        data = {"models": {"root": [_model_row(row)]}, "whatif": _whatif_payload(app)}
+        source = _js_source()
+        shipped = source[
+            source.index("function whatifCost(") : source.index("function tokenBreakdown(")
+        ]
+        shipped += source[
+            source.index("function tokenEconomics(") : source.index("const moneyCell")
+        ]
+        script = (
+            "const DATA="
+            + json.dumps(data)
+            + ";\n"
+            + "const WHATIF={model:"
+            + json.dumps(name)
+            + "};\n"
+            + r"""
+const sum=(rows,f)=>rows.reduce((a,r)=>a+f(r),0);
+const ALL_W=[{id:'root'}];
+const WI_PRICE=new Map(Object.entries(DATA.whatif.rates));
+const WI_LOCAL=new Set(DATA.whatif.local), WI_UNPRICED=new Set(DATA.whatif.unpriced);
+"""
+            + shipped
+            + r"""
+const e=tokenEconomics([{id:'root'}]); const w=whatifTotals('root');
+DATA.models.root[0].pricing=null;
+const missing=tokenEconomics([{id:'root'}]);
+console.log(JSON.stringify({parts:e.cost,total:e.totalCost,comparison:w,missing:missing.tierContextMissing}));
+"""
+        )
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        actual = json.loads(result.stdout)
+        econ = app.token_economics(app.loaded)
+        assert actual["parts"] == list(econ.cost)
+        assert actual["total"] == 3.25
+        assert actual["comparison"]["actual"] == actual["comparison"]["whatif"] == 3.25
+        assert actual["comparison"]["delta"] == 0
+        assert actual["missing"]
 
 
 def test_web_mirrors_the_projects_ranking_and_its_drill():
@@ -1984,9 +2054,9 @@ def test_web_token_economics_matches_the_tui_split_exactly():
     # The pieces must stay pieces: summing them here would make the pane's TOTAL a second
     # implementation of the cost rather than a decomposition of the one on screen.
     assert "function tokenEconomics(" in js
-    assert "cost[2] += tok[2] * orr / 1e6" in js  # reasoning bills at the output rate
+    assert "cost[2] += bt[2] * orr / 1e6" in js  # reasoning bills at the request's output rate
     # A missing cache rate is flagged, never read as free reads (the TUI's rule).
-    assert "if (crr <= 0 && tok[3] > 0 && ir > 0) missingCache = true;" in js
+    assert "if (crr <= 0 && bt[3] > 0 && ir > 0) missingCache = true;" in js
     assert "WI_LOCAL.has(r.model)" in js  # local models leave both rows
 
 

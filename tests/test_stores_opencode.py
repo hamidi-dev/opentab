@@ -21,7 +21,47 @@ from tests._support import (
     _write_jsonl,
     _write_opencode_db_with_tools,
     _write_opencode_db_with_turns,
+    tier_prices,
 )
+
+
+def test_opencode_preserves_request_context_billing_and_subagent_buckets():
+    from opentab.accounting.tiers import node_api_cost, row_list_cost, unpriced_cost, valid_pricing
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices():
+        db = os.path.join(tmp, "tiers.db")
+        _write_opencode_db_with_turns(db)
+        with closing(sqlite3.connect(db)) as conn:
+            for mid, inp, cost in (("m1", 200000, 0), ("m2", 300000, 3), ("m3", 600000, 0)):
+                data = json.loads(
+                    conn.execute("select data from message where id=?", [mid]).fetchone()[0]
+                )
+                data.update(
+                    providerID="openai",
+                    modelID="gpt-5.6-sol",
+                    cost=cost,
+                    tokens={"input": inp, "output": 0},
+                )
+                conn.execute("update message set data=? where id=?", [json.dumps(data), mid])
+            conn.commit()
+        store = ot.Store(db, type("Args", (), {"demo": False})())
+        try:
+            rows = store.model_breakdown()
+            assert len(rows) == 1 and valid_pricing(rows[0])
+            assert sorted(b["context"] for b in rows[0]["pricing"]) == [200000, 300000, 600000]
+            assert abs(row_list_cost(rows[0]) - 10.4) < 1e-9
+            assert abs(unpriced_cost(rows[0]) - 8) < 1e-9
+            assert abs(unpriced_cost(rows[0], root=True) - 0.8) < 1e-9
+            nodes = store.workflow_nodes("s1")
+            assert abs(node_api_cost(nodes[0]) - 3.8) < 1e-9
+            assert abs(node_api_cost(nodes[1]) - 7.2) < 1e-9
+            assert sorted(t["context_tokens"] for t in store.message_timeline("s1")) == [
+                200000,
+                300000,
+                600000,
+            ]
+        finally:
+            store.conn.close()
 
 
 @contextmanager

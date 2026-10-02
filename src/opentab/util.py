@@ -505,9 +505,29 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
                 row["tool"] = tool
                 row["model_name"] = t["model_name"]
                 row["calls"] = 0
+                row["pricing"] = []
             row["calls"] += 1
             for f in fields:
                 row[f] += (t.get(f) or 0) / n
+            tok = [
+                (t.get(f) or 0) / n
+                for f in (
+                    "input",
+                    "output",
+                    "reasoning",
+                    "cache_read",
+                    "cache_write",
+                    "cache_write_1h",
+                )
+            ]
+            row["pricing"].append(
+                {
+                    "context": t.get("context_tokens"),
+                    "tok": tok,
+                    "unpriced": tok if not t.get("cost") else [0.0] * 6,
+                    "root_unpriced": tok if not t.get("cost") and not t.get("depth") else [0.0] * 6,
+                }
+            )
     return sorted(agg.values(), key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
 

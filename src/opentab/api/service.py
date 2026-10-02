@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from opentab import sources
 from opentab.accounting.models import API_SCHEMA_VERSION, SessionRef, Workflow
 from opentab.accounting.pricing import (
-    api_equivalent_cost,
     cache_write_1h_price,
     canonical_model,
     catalog_models,
@@ -18,6 +17,12 @@ from opentab.accounting.pricing import (
     is_local_provider,
     model_context_window,
     model_price,
+)
+from opentab.accounting.tiers import (
+    node_api_cost,
+    row_list_cost,
+    unknown_tier_context,
+    unpriced_cost,
 )
 from opentab.persistence.notes import read_notes, update_note
 from opentab.persistence.state import load_state, update_state
@@ -216,21 +221,7 @@ class OpenTabService:
     @staticmethod
     def _api_model_cost(row: dict) -> float:
         real = float(row.get("cost") or 0)
-        whole = real == 0 and "unpriced_input" not in row
-        prefix = "" if whole else "unpriced_"
-        return (
-            real
-            + float(row.get("estimated_cost") or 0)
-            + api_equivalent_cost(
-                str(row.get("model_name") or ""),
-                row.get(prefix + "input", 0),
-                row.get(prefix + "output", 0),
-                row.get(prefix + "reasoning", 0),
-                row.get(prefix + "cache_read", 0),
-                row.get(prefix + "cache_write", 0),
-                row.get("cache_write_1h", 0) if whole else row.get("unpriced_cache_write_1h", 0),
-            )
-        )
+        return real + float(row.get("estimated_cost") or 0) + unpriced_cost(row)
 
     @staticmethod
     def _detail_api_cost(
@@ -240,6 +231,8 @@ class OpenTabService:
         possibly_mixed: bool,
     ) -> float | None:
         recorded = float(row.get("cost") or 0)
+        if "model_pricing" in row:
+            return node_api_cost(row) + float(row.get("estimated_cost") or 0)
         unpriced = []
         has_split = False
         for field in fields:
@@ -261,7 +254,25 @@ class OpenTabService:
         return (
             recorded
             + float(row.get("estimated_cost") or 0)
-            + api_equivalent_cost(str(row.get("model_name") or ""), *tokens)
+            + row_list_cost(
+                {
+                    **row,
+                    **dict(
+                        zip(
+                            (
+                                "input",
+                                "output",
+                                "reasoning",
+                                "cache_read",
+                                "cache_write",
+                                "cache_write_1h",
+                            ),
+                            tokens,
+                        )
+                    ),
+                },
+                prefix="unpriced_" if has_split and "pricing" in row else "",
+            )
         )
 
     def _costs(self, item: _Session) -> tuple[float, float, float, float, int]:
@@ -275,16 +286,7 @@ class OpenTabService:
         has_root_split = any("root_unpriced_input" in row for row in models)
         if has_root_split:
             delta = sum(
-                float(row.get("root_estimated_cost") or 0)
-                + api_equivalent_cost(
-                    str(row.get("model_name") or ""),
-                    row.get("root_unpriced_input", 0),
-                    row.get("root_unpriced_output", 0),
-                    row.get("root_unpriced_reasoning", 0),
-                    row.get("root_unpriced_cache_read", 0),
-                    row.get("root_unpriced_cache_write", 0),
-                    row.get("root_unpriced_cache_write_1h", 0),
-                )
+                float(row.get("root_estimated_cost") or 0) + unpriced_cost(row, root=True)
                 for row in models
             )
             api_root = recorded_root + delta
@@ -1608,12 +1610,12 @@ class OpenTabService:
         baseline = target = 0.0
         estimated = False
         for row in rows:
-            split = model_row_split(row)
             name = str(row.get("model_name") or "")
             if not is_local_provider(name):
-                baseline += api_equivalent_cost(name, *split, model_row_1h_write(row))
-                estimated = estimated or not has_known_price(name)
-            target += api_equivalent_cost(target_model, *split, model_row_1h_write(row))
+                baseline += row_list_cost(row)
+                estimated = estimated or not has_known_price(name) or unknown_tier_context(row)
+            target += row_list_cost(row, target_model)
+            estimated = estimated or unknown_tier_context(row, target_model)
         return {
             "session_key": item.ref.encode(),
             "target_model": target_model,

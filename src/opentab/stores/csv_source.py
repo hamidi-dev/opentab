@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timezone
 
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing, request_context
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import (
     _clean_prompt,
@@ -62,6 +63,7 @@ class CsvStore:
         "input_tokens": "input",
         "prompt_tokens": "input",
         "input": "input",
+        "context_tokens": "context_tokens",
         "output_tokens": "output",
         "completion_tokens": "output",
         "output": "output",
@@ -417,6 +419,7 @@ class CsvStore:
                 "model_name": model,
                 "cost": round(cost, 6),
                 "input": uncached,
+                "context_tokens": request_context({"context_tokens": g("context_tokens")}),
                 "output": out,
                 "reasoning": 0,
                 "cache_read": cached,
@@ -493,6 +496,7 @@ class CsvStore:
                     "root_unpriced_output": u_out,
                 }
             )
+        attach_pricing(rows, s["turns"], per_request=False)
         s["model_rows"] = rows
         s["total_cost"] = round(sum(r["cost"] for r in rows), 6)
         s["total_tokens"] = sum(r["tokens_total"] for r in rows)
@@ -608,6 +612,8 @@ class CsvStore:
                 workflow_id, 0, "-", s["title"], s["created_at"], best, s["total_cost"], root
             )
         ]
+        if not self.demo:
+            attach_node_pricing(nodes[0], s["turns"], per_request=False)
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes

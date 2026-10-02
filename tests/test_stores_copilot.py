@@ -15,9 +15,52 @@ from tests._support import (
     _write_events,
     _write_jsonl,
     _write_otel,
+    tier_prices,
 )
 
 COPILOT_SID = "c623bce1-5906-429f-a517-d4fb2cee7cf7"
+
+
+def test_copilot_cost_command_preserves_request_tiers_across_model_switches():
+    from opentab.accounting.tiers import node_api_cost, row_list_cost
+    from opentab.cli.main import _price_root
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices():
+        _write_otel(
+            tmp,
+            [
+                _otel_chat(COPILOT_SID, "gpt-5.6-sol", 300000, 1000, cache_read=299000),
+                _otel_chat(COPILOT_SID, "gpt-5.6-sol", 200000, 1000, trace="t2", span="s2"),
+                _otel_chat(COPILOT_SID, "gpt-4.1", 1000, 500, trace="t3", span="s3"),
+            ],
+        )
+        store = ot.CopilotStore(tmp, _copilot_args(tmp))
+        # Invoke the one-shot CLI path first, without warming workflow_nodes.
+        text = _price_root(store, COPILOT_SID)
+        expected = sum(row_list_cost(r) for r in store.model_breakdown())
+        status = sum(node_api_cost(n) for n in store.status_nodes(COPILOT_SID))
+        normal = sum(node_api_cost(n) for n in store.workflow_nodes(COPILOT_SID))
+        assert abs(status - expected) < 1e-9
+        assert abs(normal - expected) < 1e-9
+        assert text == "~" + ot.money(expected)
+
+
+def test_copilot_prices_request_context_but_not_multi_call_agent_summary_as_one_request():
+    from opentab.accounting.tiers import row_list_cost, unknown_tier_context
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices():
+        chat = _otel_chat(COPILOT_SID, "gpt-5.6-sol", 300000, 1000, cache_read=299000)
+        _write_otel(tmp, [chat])
+        store = ot.CopilotStore(tmp, _copilot_args(tmp))
+        (row,) = store.model_breakdown()
+        assert abs(row_list_cost(row) - 0.2772) < 1e-9 and not unknown_tier_context(row)
+        assert store.message_timeline(COPILOT_SID)[0]["context_tokens"] == 300000
+        chat["name"] = "invoke_agent fixture"
+        chat["attributes"]["gen_ai.operation.name"] = "invoke_agent"
+        _write_otel(tmp, [chat])
+        store = ot.CopilotStore(tmp, _copilot_args(tmp))
+        (row,) = store.model_breakdown()
+        assert abs(row_list_cost(row) - 0.1436) < 1e-9 and unknown_tier_context(row)
 
 
 def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():

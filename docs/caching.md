@@ -402,6 +402,14 @@ invalidate derived workflow projections via `_invalidate_workflow_cache()`;
 showing ignored items also changes the projection cache key. Neither requires
 new source parsing.
 
+List-price cost parts and approximation flags are memoized per loaded model row
+in the App. Overviews, model rankings and model-scoped sessions reuse these
+projections instead of repricing every request-context bucket on each redraw.
+Request buckets are immutable within that model snapshot; replacing the model
+cache or refreshing prices clears the memo. Changing scope or the `$` display
+mode reuses it, since neither changes list rates. These derived dollars remain
+in memory and never enter persistent rollups or machine exports.
+
 The backend has its own parsed-state memos. Claude's `workflows()` clears
 `_sessions`, `_one`, and `_trace_one`; a subset parse must clear them too because
 a successful splice bypasses `workflows()`. Never install the subset into

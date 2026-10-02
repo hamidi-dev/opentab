@@ -11,6 +11,48 @@ from unittest.mock import patch
 from opentab.stores.opencode import Store
 from opentab.stores.opencode_v2 import REQUIRED_SCHEMA_V2, install_views, scoped_detail_sql
 
+from tests._support import tier_prices
+
+
+def test_v2_request_tiers_preserve_unknown_summary_residual_and_execution_ownership():
+    from opentab.accounting.tiers import (
+        node_api_cost,
+        row_list_cost,
+        unknown_tier_context,
+        valid_pricing,
+    )
+
+    with _v2_db() as (writer, store), tier_prices() as name:
+        model = {"providerID": "openai", "id": "gpt-5.6-sol"}
+        for sid, parent, inp in (("root", None, 400000), ("child", "root", 600000)):
+            row = list(_session(sid, parent, tokens=(inp, 0, 0, 0, 0)))
+            row[5] = json.dumps(model)
+            writer.execute("insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(
+                    "r", "root", "assistant", 1, {"model": model, "tokens": {"input": 300000}}
+                ),
+                _message(
+                    "c", "child", "assistant", 1, {"model": model, "tokens": {"input": 600000}}
+                ),
+            ],
+        )
+        writer.commit()
+        rows = store.model_breakdown()
+        assert len(rows) == 2 and all(valid_pricing(r) for r in rows)
+        row = next(r for r in rows if r["model_name"] == name)
+        residual = next(r for r in rows if r is not row)
+        assert not unknown_tier_context(row)
+        assert {b["context"] for b in row["pricing"]} == {300000, 600000}
+        assert residual["pricing"][0]["context"] is None
+        assert abs(row_list_cost(row) - 9.6) < 1e-9
+        assert abs(row_list_cost(residual) - 0.2) < 1e-9  # unassigned summary remains generic
+        nodes = store.workflow_nodes("root")
+        assert abs(node_api_cost(nodes[0]) - 2.6) < 1e-9
+        assert abs(node_api_cost(nodes[1]) - 7.2) < 1e-9
+
 
 def _session(sid, parent=None, *, title=None, tokens=(0, 0, 0, 0, 0), cost: float = 0, updated=20):
     return (

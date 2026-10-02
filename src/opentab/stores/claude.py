@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 from opentab.accounting.models import Workflow
-from opentab.accounting.pricing import api_equivalent_cost, has_catalog_row
+from opentab.accounting.pricing import has_catalog_row
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing, row_list_cost
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import (
     _clean_prompt,
@@ -145,15 +146,7 @@ class ClaudeStore:
 
     @staticmethod
     def _price(model_name: str, acc: dict[str, int]) -> float:
-        return api_equivalent_cost(
-            model_name,
-            acc["input"],
-            acc["output"],
-            acc["reasoning"],
-            acc["cache_read"],
-            acc["cache_write"],
-            acc.get("cache_write_1h", 0),
-        )
+        return row_list_cost(acc, model_name)
 
     def _git_root(self, cwd: str) -> str:
         if cwd not in self._git_root_cache:
@@ -852,6 +845,9 @@ class ClaudeStore:
                 "model_name": model_name,
                 "cost": 0.0,
                 "input": i,
+                # Nested execution readers ingest turns without finalizing model
+                # rollups, so request size must be part of the turn itself.
+                "context_tokens": i + cr + cw,
                 "output": out_t,
                 "reasoning": 0,
                 "cache_read": cr,
@@ -864,6 +860,7 @@ class ClaudeStore:
                 # later trace parse, and the two only meet if the key is derived from
                 # the record rather than from whichever walk happened to build it.
                 "content_key": ck,
+                "pricing_run": self._side_run_root(s, uuid) if side else None,
                 **reads,
             }
         )
@@ -1516,6 +1513,7 @@ class ClaudeStore:
                     "root_unpriced_output": root["output"],
                 }
             )
+        attach_pricing(rows, s["turns"])
         s["model_rows"] = rows
         s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows)  # all of it is unpriced
         s["subagents"] = self._build_subagents(sid, s)
@@ -1865,6 +1863,20 @@ class ClaudeStore:
         # cost 0 (recorded); _priced_nodes reprices from the token columns under "$".
         nodes = [self._node(workflow_id, 0, "-", s["title"], s["created_at"], best, 0.0, root_tot)]
         nodes.extend(dict(n) for n in s["subagents"])
+        if not self.demo:
+            for node in nodes:
+                attach_node_pricing(
+                    node,
+                    (
+                        t
+                        for t in s["turns"]
+                        if (
+                            not t["depth"]
+                            if not node["depth"]
+                            else str(t.get("pricing_run"))[:8] == node["id"]
+                        )
+                    ),
+                )
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes

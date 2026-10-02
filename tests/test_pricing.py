@@ -5,7 +5,53 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import _model_row, app_with, workflow
+from tests._support import _model_row, app_with, tier_prices, workflow
+
+
+def test_tier_prices_apply_to_output_reasoning_long_ttl_and_cache_repurchase():
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    with tier_prices() as name:
+        cost = ot.api_equivalent_cost(name, 1000, 1000, 100, 299000, 0, context_tokens=300000)
+        assert abs(cost - 0.2802) < 1e-9
+        assert abs(pricing._repay_cost(name, 1000, 1000, 0, 300000) - 0.0092) < 1e-9
+    layer = pricing._parse_catalog(
+        {
+            "providers": {
+                "anthropic": {
+                    "models": {
+                        "claude-sonnet-4-5": {
+                            "cost": [3, 15, 0.3, 3.75],
+                            "tiers": [
+                                {
+                                    "tier": {"type": "context", "size": 200000},
+                                    "cost": [6, 22.5, 0.6, 7.5],
+                                },
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+    )
+    pricing.model_tiers.cache_clear()
+    try:
+        with patch.object(pricing, "_layers", return_value=[layer]):
+            cost = ot.api_equivalent_cost(
+                "anthropic/claude-sonnet-4-5",
+                1000,
+                1000,
+                100,
+                200000,
+                1000,
+                500,
+                context_tokens=202000,
+            )
+            assert abs(cost - (0.006 + 0.02475 + 0.12 + 0.00375 + 0.006)) < 1e-9
+    finally:
+        pricing.model_tiers.cache_clear()
 
 
 def test_canonical_model_folds_alias_spellings():
@@ -22,6 +68,50 @@ def test_canonical_model_folds_alias_spellings():
     assert ot.display_model("claude-sonnet-4.5") == "claude-sonnet-4.5"
     assert ot.display_model("claude-opus-4-5-20251101") == "claude-opus-4-5"
     assert ot.display_model("gpt-5.1-codex-max-xhigh") == "gpt-5.1-codex-max"
+
+
+def test_context_tiers_use_strict_request_boundaries_and_highest_matching_tier():
+    with tier_prices() as name:
+        assert ot.model_price(name, 272000) == (4, 20, 0.4, 5)
+        assert ot.model_price(name, 272001) == (8, 30, 0.8, 10)
+        assert ot.model_price(name, 500000) == (8, 30, 0.8, 10)
+        assert ot.model_price(name, 500001) == (12, 40, 1.2, 15)
+        assert ot.model_price(name + "-high", 300000) == (8, 30, 0.8, 10)
+        assert ot.model_price(name) == (4, 20, 0.4, 5)
+
+
+def test_catalog_preserves_context_tiers_and_legacy_fallback_without_false_200k_boundary():
+    from opentab.accounting.pricing import prune_models_dev
+
+    cards = {
+        "explicit": {
+            "cost": {
+                "input": 4,
+                "output": 20,
+                "tiers": [{"tier": {"type": "context", "size": 272000}, "input": 8, "output": 30}],
+                "context_over_200k": {"input": 99, "output": 99},
+            }
+        },
+        "legacy": {
+            "cost": {"input": 2, "output": 3, "context_over_200k": {"input": 4, "output": 5}}
+        },
+        "bad": {
+            "cost": {
+                "input": 1,
+                "output": 2,
+                "tiers": [
+                    {"tier": {"type": "context", "size": True}, "input": 2, "output": 3},
+                    {"tier": {"type": "context", "size": 100}, "input": float("nan"), "output": 3},
+                ],
+            }
+        },
+    }
+    kept = prune_models_dev({"openai": {"models": cards}})["openai"]["models"]
+    assert kept["explicit"]["tiers"] == [
+        {"tier": {"type": "context", "size": 272000}, "cost": [8, 30, 0, 0]}
+    ]
+    assert kept["legacy"]["tiers"][0]["tier"]["size"] == 200000
+    assert "tiers" not in kept["bad"]
 
 
 def test_effective_price_blends_mix_and_flags_missing_cache_read():

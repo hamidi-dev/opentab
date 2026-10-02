@@ -1015,6 +1015,7 @@ class HermesStore:
             # rather than an invented per-turn attribution.
             "cost": 0.0,
             "input": inp,
+            "context_tokens": raw_in,
             "output": out_t,
             "reasoning": 0,  # folded into `out` by the provider; never counted twice
             "cache_read": cache_read,

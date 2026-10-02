@@ -7,6 +7,7 @@ import os
 import sqlite3
 
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.presentation.formatting import (
     _clean_prompt,
     iso_to_epoch,
@@ -305,6 +306,10 @@ class OmpStore(PiStore):
                     "root_unpriced_output": r["u_output"],
                 }
             )
+        turns = list(s["turns"])
+        for child, depth in self._descendants(sessions, sid):
+            turns.extend({**t, "depth": depth} for t in sessions[child]["turns"])
+        attach_pricing(rows, turns)
         s["model_rows"] = rows
         s["total_cost"] = round(sum(row["cost"] for row in rows), 6)
         s["root_cost"] = round(sum(row["root_cost"] for row in rows), 6)
@@ -512,6 +517,9 @@ class OmpStore(PiStore):
                     cacc,
                 )
             )
+        if not self.demo:
+            for node in nodes:
+                attach_node_pricing(node, sessions[node["id"]]["turns"])
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes

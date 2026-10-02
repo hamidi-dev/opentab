@@ -17,11 +17,40 @@ from tests._support import (
     _empty_opencode_db,
     _usage,
     _write_jsonl,
+    tier_prices,
     workflow,
 )
 
 # --- Codex CLI rollout helpers (~/.codex/sessions/**/rollout-*.jsonl) ---------
 CODEX_SID = "0199aa8e-1b9e-7912-bcd4-9b00c8733ea6"
+
+
+def test_codex_tiers_only_use_a_final_request_that_reconciles_with_the_accepted_delta():
+    from opentab.accounting.tiers import row_list_cost, unknown_tier_context
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices():
+        first = _codex_tokens(300000, 1000, 299000, 301000)
+        first["payload"]["info"]["last_token_usage"] = dict(
+            first["payload"]["info"]["total_token_usage"]
+        )
+        second = _codex_tokens(600000, 2000, 598000, 602000)
+        second["payload"]["info"]["last_token_usage"] = {
+            "input_tokens": 100000,
+            "output_tokens": 100,
+            "cached_input_tokens": 99000,
+        }
+        _codex_rollout(
+            tmp,
+            CODEX_SID,
+            [_codex_meta(CODEX_SID, tmp), _codex_turn("gpt-5.6-sol", tmp), first, first, second],
+        )
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        (row,) = store.model_breakdown()
+        assert row["input"] + row["cache_read"] == 600000  # duplicate echo skipped
+        assert abs(row_list_cost(row) - (0.2772 + 0.1436)) < 1e-9
+        assert unknown_tier_context(row)
+        turns = store.message_timeline(CODEX_SID)
+        assert [t["context_tokens"] for t in turns] == [300000, None]
 
 
 def _codex_user(text, ts="2025-10-03T14:51:05.000Z"):

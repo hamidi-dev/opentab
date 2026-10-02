@@ -2,8 +2,57 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
+from unittest.mock import patch
 
 import opentab as ot
+
+
+@contextmanager
+def tier_prices():
+    """Stable multi-threshold cards shared by pricing, store and frontend regressions."""
+    from opentab.accounting import pricing
+
+    raw = {
+        "openai": {
+            "models": {
+                "gpt-5.6-sol": {
+                    "cost": {
+                        "input": 4,
+                        "output": 20,
+                        "cache_read": 0.4,
+                        "cache_write": 5,
+                        "tiers": [
+                            {
+                                "tier": {"type": "context", "size": 272000},
+                                "input": 8,
+                                "output": 30,
+                                "cache_read": 0.8,
+                                "cache_write": 10,
+                            },
+                            {
+                                "tier": {"type": "context", "size": 500000},
+                                "input": 12,
+                                "output": 40,
+                                "cache_read": 1.2,
+                                "cache_write": 15,
+                            },
+                        ],
+                        "context_over_200k": {"input": 99, "output": 99},
+                    }
+                }
+            }
+        }
+    }
+    layer = pricing._parse_catalog(
+        {"providers": pricing.prune_models_dev(raw), "fetched_at": "2099"}
+    )
+    pricing.model_tiers.cache_clear()
+    try:
+        with patch.object(pricing, "_layers", return_value=[layer]):
+            yield "openai/gpt-5.6-sol"
+    finally:
+        pricing.model_tiers.cache_clear()
 
 
 def workflow(

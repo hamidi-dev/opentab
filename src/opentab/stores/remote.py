@@ -10,6 +10,7 @@ import argparse
 import copy
 import glob
 import json
+import math
 import os
 import threading
 from dataclasses import asdict, fields
@@ -17,6 +18,7 @@ from urllib.parse import unquote
 
 from opentab import remote_content
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import request_context, valid_pricing
 from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scramble_workflow
 from opentab.persistence import paths
 from opentab.util import safe_float, tool_names
@@ -85,6 +87,7 @@ def _clean_turn(row: dict) -> dict:
         "prompt_title": str(row.get("prompt_title") or ""),
         "prompt_full": str(row.get("prompt_full") or row.get("prompt_title") or ""),
         "cost": _coerce_float(row.get("cost")),
+        "context_tokens": request_context(row),
         "estimated_cost": max(0.0, safe_float(row.get("estimated_cost"))),
         # Apply the same sanitizer as local turn rows.
         "tools": tool_names(row.get("tools")),
@@ -101,7 +104,15 @@ def _clean_tool(row: dict) -> dict:
         "cost": _coerce_float(row.get("cost")),
     }
     for field in _TOOL_INT_FIELDS:
-        tool[field] = _coerce_int(row.get(field))
+        # Tool attribution divides request usage between calls; retain fractions so
+        # its request buckets can still reconcile after a machine round trip.
+        tool[field] = (
+            _coerce_int(row.get(field)) if field == "calls" else safe_float(row.get(field))
+        )
+    if "pricing" in row:
+        tool["pricing"] = row["pricing"]
+        if not valid_pricing(tool):
+            tool.pop("pricing")
     return tool
 
 
@@ -129,7 +140,42 @@ def _clean_node(row: dict) -> dict:
     node["estimated_cost"] = max(0.0, safe_float(row.get("estimated_cost")))
     for field in _NODE_INT_FIELDS:
         node[field] = _coerce_int(row.get(field))
+    models = _clean_model_pricing(row.get("model_pricing"))
+    if models is not None:
+        if all(
+            abs(sum(float(m.get(f) or 0) for m in models) - node.get("tokens_" + f, 0)) < 1e-6
+            for f in ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
+        ):
+            node["model_pricing"] = models
     return node
+
+
+def _clean_model_pricing(rows) -> list[dict] | None:
+    if not isinstance(rows, list):
+        return None
+    clean = []
+    fields = ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("model_name"), str):
+            return None
+        model = {"model_name": row["model_name"]}
+        for prefix in ("", "unpriced_", "root_unpriced_"):
+            for field in fields:
+                value = row.get(prefix + field, 0)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value < 0
+                ):
+                    return None
+                model[prefix + field] = value
+        if "pricing" in row:
+            model["pricing"] = row["pricing"]
+        if not valid_pricing(model):
+            return None
+        clean.append(model)
+    return clean
 
 
 def _export_supports(store, name: str, sid: str) -> bool:
@@ -432,6 +478,8 @@ class RemoteStore:
                 rid = row.get("root_id")
                 if isinstance(rid, str) and rid in kept:
                     model = dict(row)
+                    if not valid_pricing(model):
+                        model.pop("pricing", None)
                     for field in ("estimated_cost", "root_estimated_cost"):
                         if field in model:
                             model[field] = max(0.0, safe_float(model[field]))

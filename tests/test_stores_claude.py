@@ -360,6 +360,26 @@ def _claude_prompt_run(tmp, run="12345678-first", content="received task"):
     return ot.ClaudeStore(tmp, _claude_args()), path, rows
 
 
+def test_claude_nested_turns_keep_context_tiers_without_session_finalization():
+    from opentab.accounting.tiers import node_api_cost, row_list_cost
+
+    from tests._support import tier_prices
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices() as name:
+        store, path, rows = _claude_prompt_run(tmp)
+        rows[-1]["message"].update(model=name, usage=_usage(1000, 1000, 299000))
+        _write_jsonl(path, rows)
+        # The nested reader performs its own private parse; no prior rollup may be needed.
+        (nested,) = store.node_timeline("s1", "12345678")
+        (turn,) = store.message_timeline("s1")
+        child = next(n for n in store.workflow_nodes("s1") if n["depth"])
+        assert nested["context_tokens"] == turn["context_tokens"] == 300000
+        assert nested["content_key"] == turn["content_key"]
+        assert nested["depth"] == 0 and turn["depth"] == 1
+        assert abs(row_list_cost(nested) - 0.2772) < 1e-9
+        assert row_list_cost(nested) == row_list_cost(turn) == node_api_cost(child)
+
+
 def test_claude_conversation_reads_all_text_without_usage_or_accounting_caches():
     from opentab.conversations.reader import source_key
 

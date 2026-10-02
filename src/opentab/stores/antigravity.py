@@ -9,6 +9,7 @@ import sqlite3
 from urllib.parse import unquote, urlparse
 
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import _clean_prompt, worked_seconds
 from opentab.util import LazyStatusRoot, git_root, safe_int, tool_rows_from_turns
@@ -400,6 +401,10 @@ class AntigravityStore:
             self._model_row(sid, model, acc, own.get(model, self._new_acc()))
             for model, acc in total.items()
         ]
+        turns = list(s["turns"])
+        for child, depth in self._descendants(sessions, sid):
+            turns.extend({**t, "depth": depth} for t in sessions[child]["turns"])
+        attach_pricing(s["model_rows"], turns)
         self._roll_totals(s)
 
     @classmethod
@@ -674,6 +679,7 @@ class AntigravityStore:
             self._model_row(s["sid"], model_name, acc, acc)
             for model_name, acc in s["models"].items()
         ]
+        attach_pricing(s["model_rows"], s["turns"])
         self._roll_totals(s)
 
     @staticmethod
@@ -990,6 +996,8 @@ class AntigravityStore:
                 "tokens_total": acc["tokens_total"],
             }
         ]
+        if not (self.demo if demo is None else demo):
+            attach_node_pricing(nodes[0], s["turns"])
         if self.demo if demo is None else demo:
             nodes = [scramble_node(n, self.demo_scale, self.demo_cats) for n in nodes]
         return nodes
