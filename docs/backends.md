@@ -149,9 +149,13 @@ fold descendants into root workflows and expose their own usage as nodes.
   [Changes controls and semantics](keys.md#session-changes).
 - OpenCode can persist OpenAI cache writes, but some ChatGPT OAuth responses omit the
   `cache_write_tokens` detail. Those tokens then remain in OpenCode's uncached-input
-  bucket and `tokens.cache.write` is zero. OpenTab cannot reconstruct the split from
-  the database, so affected historical API-equivalent estimates price that residual
-  as ordinary input rather than inventing a write count.
+  bucket and `tokens.cache.write` is zero. OpenTab cannot reconstruct the exact split from
+  the database. ChatGPT OAuth residuals remain ordinary input. The separate
+  `github-copilot` GPT-5.6+ decoder loss has an explicit estimate-only policy:
+  zero-write requests treat uncached input as inferred writes, while original
+  counters remain unchanged. Full root splits and per-request inference amounts
+  survive rollup caches; the raw scalar sidecar retains only original source values.
+  See [Copilot estimates](pricing.md#copilot-list-price-estimates).
 
 ## Claude Code
 

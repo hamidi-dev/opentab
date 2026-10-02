@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 
+from opentab.accounting.tiers import inferred_cache_write
 from opentab.util import tool_names, tool_namespace
 
 _ARITHMETIC_FIELDS = (
@@ -13,6 +14,7 @@ _ARITHMETIC_FIELDS = (
     "cache_read",
     "cache_write",
     "cache_write_1h",
+    "inferred_cache_write",
 )
 
 
@@ -41,6 +43,7 @@ def tool_calls_from_turns(turns: Iterable[dict]) -> list[dict]:
             }
             for field in _ARITHMETIC_FIELDS:
                 call[field] = (turn.get(field) or 0) / share_count
+            call["inferred_cache_write"] = inferred_cache_write(turn) / share_count
             if "context_tokens" in turn:
                 call["context_tokens"] = turn["context_tokens"]
             calls.append(call)

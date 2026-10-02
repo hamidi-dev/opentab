@@ -16,8 +16,9 @@ press `$` for the recorded numbers, and your choice is remembered.
 
 ## The `$` what-if view
 
-Press `$` (non-demo) for the **what-if** view: real recorded spend plus what `$0.00`
-subscription/credit usage *would have cost* at published API list prices. It's a
+Press `$` (non-demo) for the **estimate** view: recorded spend plus what `$0.00`
+subscription/credit usage *would have cost* at published API list prices, with
+**GitHub Copilot usage fully repriced** as described below. It's a
 toggle — press `$` again for the recorded numbers — and your choice is remembered
 between runs.
 
@@ -33,9 +34,38 @@ OpenRouter/Together/etc.) price out of the box — with family fallbacks for ver
 churn and a mid-range fallback for unknown models. Ordinary price lookup stays
 offline; refreshing rates is an explicit action.
 
+### Copilot list-price estimates
+
+For the `github-copilot` provider, the estimate replaces **all** recorded costs with
+the loaded models.dev **Copilot route** rates, including per-request context tiers.
+OpenCode can save locally calculated positive costs that are not authoritative
+Copilot charges. Other providers retain recorded dollars plus estimates of unpriced
+usage. Recorded mode always exposes the original dollars and tokens.
+
+OpenCode's Copilot Responses adapter can discard GPT-5.6+ cache-write counts and leave
+them in ordinary input. For each such request with zero recorded writes, OpenTab's
+estimate treats its uncached input as cache writes. This intentionally ignores the
+small genuine ordinary-input remainder: it is an **inferred allocation**, not recovered
+provider usage. GPT-5.5 and earlier, other providers, and requests already reporting
+writes keep their original split. Token totals, recorded fields and source files do
+not change. Token economics and session-local `w` use the same estimated allocation.
+
+Numeric inference amounts are retained before aggregation, so a zero-write request
+and a positive-write request sharing one model/context bucket remain correctly priced.
+Full root-only splits keep positive-cost root and subagent contributions separate.
+Tools use proportional shares of the same request estimate. Warm caches and machine
+exports preserve these ingredients, never frozen dollar estimates.
+
+Token economics labels inferred writes and incomplete/missing Copilot rates with `~`.
+Missing route cards use the existing fallback rates and are explicitly approximate.
+Prices (`P`) shows the loaded snapshot date; programmatic model estimates expose their
+price source and approximation reasons. These are **list-price estimates, not a
+Copilot subscription invoice**. Older summaries without inference/root splits cannot
+recover those missing details.
+
 ## Comparing models with `w`
 
-`$` fills in unpriced usage. **`w` asks a different question:** what would this
+`$` estimates Copilot and fills in other unpriced usage. **`w` asks a different question:** what would this
 session's recorded tokens cost if one model had produced them all?
 
 Press `w` to choose from your used models or, on the second tab, the full priced
@@ -94,7 +124,8 @@ Numeric context buckets survive model/session rollups, warm caches and machine
 exports. Token economics, `$` estimates, model comparisons, Turns and tool-call
 attribution use them in the terminal and browser. Rates can refresh without
 rereading transcripts because buckets retain context sizes, not calculated dollars.
-Recorded spend remains recorded spend: `$` only estimates the unpriced portion.
+Recorded mode remains unchanged; `$` estimates the unpriced portion for other routes
+and fully revalues Copilot using the same request buckets.
 
 Summary-only records and older exports cannot establish individual request sizes.
 Their tiered usage uses base rates as an approximation, with a `~` and an explanation

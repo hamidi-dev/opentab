@@ -114,6 +114,7 @@ def test_tool_calls_copy_only_allowed_metadata_and_numeric_fields():
         "turn_index": 0,
         "call_index": 0,
         "tool": "serena_find_symbol",
+        "inferred_cache_write": 0,
         "namespace": "serena",
         "time": "2026-09-12T12:00:00Z",
         "agent": "build",

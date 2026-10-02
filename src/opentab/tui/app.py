@@ -15,13 +15,17 @@ from typing import NamedTuple
 
 from opentab.accounting.models import SessionRef, Workflow
 from opentab.accounting.tiers import (
+    detail_api_cost,
+    estimated_token_split,
     node_api_cost,
     node_list_cost,
     pricing_samples,
+    row_api_cost,
+    row_api_delta,
     row_cost_parts,
+    row_estimate_reasons,
     row_list_cost,
     unknown_tier_context,
-    unpriced_cost,
 )
 from opentab.stores.opencode import Store
 
@@ -128,6 +132,7 @@ class TokenEconomics(NamedTuple):
     missing_cache_rate: bool
     local_tokens: int
     tier_context_missing: bool = False
+    estimate_reasons: tuple[str, ...] = ()
 
     @property
     def total_tokens(self) -> float:
@@ -1836,8 +1841,8 @@ class App:
 
     def effective_tool_cost(self, row: dict) -> float:
         cost = float(row.get("cost") or 0)
-        if self.show_api_prices and not self.store.demo and not cost:
-            return row_list_cost(row)
+        if self.show_api_prices and not self.store.demo:
+            return detail_api_cost(row)
         return cost
 
     @staticmethod
@@ -3247,18 +3252,18 @@ class App:
             w.real_root_cost = w.api_root_cost = w.root_cost
 
     def _compute_api_costs(self) -> None:
-        # Model rows may mix metered and subscription calls. Add list prices only for
-        # unpriced tokens, always from real snapshots to avoid compounding refreshes.
+        # Always derive from real snapshots: Copilot is fully repriced, other routes
+        # retain recorded dollars plus unpriced usage. Refreshes must not compound.
         by_id = {w.id: w for w in self.loaded}
         for root_id, rows in self._model_by_root.items():
             has_root_split = any("root_unpriced_input" in m for m in rows)
             root_delta = 0.0
             for m in rows:
-                real = m["real_cost"] = m.get("real_cost", m["cost"])
+                m["real_cost"] = m.get("real_cost", m["cost"])
                 # Legacy in-memory rows may expose only aggregate tokens.
-                m["api_cost"] = real + m.get("estimated_cost", 0.0) + unpriced_cost(m)
+                m["api_cost"] = row_api_cost(m)
                 if has_root_split:
-                    root_delta += m.get("root_estimated_cost", 0.0) + unpriced_cost(m, root=True)
+                    root_delta += row_api_delta(m, root=True)
             wf = by_id.get(root_id)
             if not wf:
                 continue
@@ -3358,6 +3363,7 @@ class App:
             split,
             row.get("cache_write_1h"),
             row.get("context_tokens"),
+            row.get("inferred_cache_write"),
             id(row.get("pricing")),
         )
         cached = self._model_economics_cache.get(id(row))
@@ -3373,12 +3379,13 @@ class App:
                     missing_cache_rate = True
                     break
             econ = TokenEconomics(
-                split,
+                estimated_token_split(row),
                 row_cost_parts(row),
-                sum(split) > 0 and not has_known_price(name),
+                sum(split) > 0 and (not has_known_price(name) or bool(row_estimate_reasons(row))),
                 missing_cache_rate,
                 0,
                 unknown_tier_context(row),
+                tuple(row_estimate_reasons(row)),
             )
         self._model_economics_cache[id(row)] = (row, signature, econ)
         return econ
@@ -3396,6 +3403,7 @@ class App:
         cost = [0.0] * len(TOKEN_TYPES)
         estimated = missing_cache_rate = False
         tier_context_missing = False
+        estimate_reasons = set()
         local_tokens = 0
         for workflow in workflows:
             for row in self._model_by_root.get(workflow.id) or []:
@@ -3410,6 +3418,7 @@ class App:
                 missing_cache_rate = missing_cache_rate or econ.missing_cache_rate
                 tier_context_missing = tier_context_missing or econ.tier_context_missing
                 estimated = estimated or econ.estimated
+                estimate_reasons.update(econ.estimate_reasons)
         if sum(tokens) <= 0:
             return None
         return TokenEconomics(
@@ -3419,6 +3428,7 @@ class App:
             missing_cache_rate,
             local_tokens,
             tier_context_missing,
+            tuple(sorted(estimate_reasons)),
         )
 
     @staticmethod
@@ -3705,7 +3715,7 @@ class App:
         self.show_api_prices = not self.show_api_prices
         self._reprice_in_place(tool_key)
         self.notice = (
-            "what-if prices (what unpriced usage would cost at API list prices)"
+            "estimated list prices (all Copilot usage + other unpriced usage)"
             if self.show_api_prices
             else "actual cost"
         )
@@ -4645,10 +4655,8 @@ class App:
         rows = []
         for r in self.reader_turn_rows(session.id):
             row = dict(r)
-            if api and not row["cost"]:  # reprice a wholly-$0 turn at list price, like the tab
-                row["cost"] = row_list_cost(r)
             if api:
-                row["cost"] += r.get("estimated_cost", 0.0)
+                row["cost"] = detail_api_cost(r)
             rows.append(row)
         return exporting.turns_dataset(rows)
 
@@ -4657,8 +4665,8 @@ class App:
         rows = []
         for r in self.session_tool_rows(session.id):
             row = dict(r)
-            if api and not row["cost"]:
-                row["cost"] = row_list_cost(r)
+            if api:
+                row["cost"] = detail_api_cost(r)
             rows.append(row)
         return exporting.tools_dataset(rows)
 

@@ -10,14 +10,67 @@ from opentab.cli import main as cli
 from opentab.web import page, report
 
 from tests._support import (
+    CopilotEstimateStore,
     FakeStore,
     _whatif_app,
     _whatif_baseline,
     _whatif_db,
     _whatif_msg,
     app_with,
+    copilot_prices,
     workflow,
 )
+
+
+def test_web_copilot_estimates_and_shipped_comparison_match_tui():
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for browser accounting parity"
+    with copilot_prices() as name:
+        store = CopilotEstimateStore()
+        app = ot.App(store, type("Args", (), {"since": None, "until": None, "days": None})())
+        payload = ot.build_payload(app)
+        wf = payload["workflows"][0]
+        assert abs(wf["api"] - 7.17066) < 1e-9 and wf["real"] == 25
+        assert abs(sum(n["api"] for n in payload["nodes"]["root"]) - wf["api"]) < 1e-9
+        extras = report.session_extras(app, "root")
+        for key in ("turns", "tools", "toolCalls"):
+            assert abs(sum(r["api"] for r in extras[key]) - wf["api"]) < 1e-9
+        copilot = next(r for r in payload["models"]["root"] if r["model"] == name)
+        assert copilot["tok"][0] == 10140 and copilot["tok"][4] == 60
+        assert "cache_write_inferred" in copilot["estimateReasons"]
+        assert payload["meta"]["priceSource"]["fetched_at"] == "2099-01-01T00:00:00Z"
+        source = _js_source()
+        shipped = source[
+            source.index("function whatifCost(") : source.index("function tokenBreakdown(")
+        ]
+        shipped += source[
+            source.index("function tokenEconomics(") : source.index("const moneyCell")
+        ]
+        script = (
+            "const DATA="
+            + json.dumps(payload)
+            + ";const WHATIF={model:"
+            + json.dumps(name)
+            + "};\n"
+            + r"""
+const sum=(rows,f)=>rows.reduce((a,r)=>a+f(r),0), ALL_W=DATA.workflows;
+const WI_PRICE=new Map(Object.entries(DATA.whatif.rates));
+const WI_LOCAL=new Set(DATA.whatif.local), WI_UNPRICED=new Set(DATA.whatif.unpriced);
+"""
+            + shipped
+            + "\nconsole.log(JSON.stringify({economics:tokenEconomics(ALL_W),comparison:whatifTotals('root')}));"
+        )
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        actual = json.loads(result.stdout)
+        econ = app.token_economics(app.loaded)
+        assert actual["economics"]["tokens"] == list(econ.tokens)
+        assert actual["economics"]["cost"] == list(econ.cost)
+        app.whatif_model = name
+        baseline, target = app.whatif_session_totals(app.loaded[0])
+        assert actual["comparison"]["actual"] == baseline
+        assert actual["comparison"]["whatif"] == target
+
 
 # --- The web browser (--html / --serve) -------------------------------------
 

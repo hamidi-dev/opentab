@@ -18,7 +18,7 @@ from opentab.accounting.models import (
     Workflow,
     YearSummary,
 )
-from opentab.accounting.tiers import row_list_cost
+from opentab.accounting.tiers import detail_api_cost
 from opentab.presentation.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
 from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, keymap
@@ -1408,7 +1408,7 @@ class Renderer:
             tag = " DEMO — synthetic "
         elif self.show_api_prices:
             if getattr(self.store, "records_cost", True):
-                tag = " WHAT-IF — would-have-paid at API prices "
+                tag = " ESTIMATED — recorded / list-price mix "
             else:
                 # With no recorded dollars, list-price spend is an estimate, not a delta.
                 tag = " ESTIMATED — usage × API list prices "
@@ -3729,6 +3729,7 @@ class Renderer:
             missing_cache_rate=econ.missing_cache_rate,
             local_tokens=econ.local_tokens,
             tier_context_missing=econ.tier_context_missing,
+            estimate_reasons=econ.estimate_reasons,
             colored=self._token_series_ok,
         )
         if card.header:
@@ -4596,10 +4597,8 @@ class Renderer:
         out = []
         for row in rows:
             cost = row["cost"]
-            if api and not cost:
-                cost = row_list_cost(row)
             if api:
-                cost += row.get("estimated_cost", 0.0)
+                cost = detail_api_cost(row)
             out.append(cost)
         return out
 
@@ -6111,6 +6110,8 @@ class Renderer:
                     estimated=economics.estimated,
                     missing_cache_rate=economics.missing_cache_rate,
                     local_tokens=economics.local_tokens,
+                    tier_context_missing=economics.tier_context_missing,
+                    estimate_reasons=economics.estimate_reasons,
                     colored=self._token_series_ok,
                 )
             lines = self._adopt_trend_layout(

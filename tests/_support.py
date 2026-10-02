@@ -9,6 +9,42 @@ import opentab as ot
 
 
 @contextmanager
+def copilot_prices():
+    """Distinct route/vendor cards expose accidental provider stripping."""
+    from opentab.accounting import pricing
+
+    layer = pricing._parse_catalog(
+        {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "source": "https://models.dev/api.json",
+            "providers": {
+                "github-copilot": {
+                    "models": {
+                        "gpt-5.6-terra": {
+                            "cost": [2, 12, 0.2, 2.5],
+                            "tiers": [
+                                {
+                                    "tier": {"type": "context", "size": 272000},
+                                    "cost": [4, 18, 0.4, 5],
+                                }
+                            ],
+                        },
+                        "gpt-5.4": {"cost": [2, 12, 0.2, 0]},
+                    }
+                },
+                "openai": {"models": {"gpt-5.6-terra": {"cost": [20, 120, 2, 25]}}},
+            },
+        }
+    )
+    pricing.model_tiers.cache_clear()
+    try:
+        with patch.object(pricing, "_layers", return_value=[layer]):
+            yield "github-copilot/gpt-5.6-terra"
+    finally:
+        pricing.model_tiers.cache_clear()
+
+
+@contextmanager
 def tier_prices():
     """Stable multi-threshold cards shared by pricing, store and frontend regressions."""
     from opentab.accounting import pricing
@@ -95,6 +131,112 @@ class FakeStore:
             "subagents": sum(w.subagents for w in workflows),
             "unpriced_tokens": sum(w.unpriced_tokens for w in workflows),
         }
+
+
+class CopilotEstimateStore(FakeStore):
+    """Paid root, mixed-model child and same-context zero/positive-write requests."""
+
+    def __init__(self):
+        from opentab.accounting.tiers import FIELDS, attach_node_pricing, attach_pricing
+
+        self.turns = []
+        for name, inp, reads, writes, output, cost, depth in (
+            ("github-copilot/gpt-5.6-terra", 100, 0, 0, 0, 9, 0),
+            ("github-copilot/gpt-5.6-terra", 40, 0, 60, 0, 8, 0),
+            ("github-copilot/gpt-5.6-terra", 10000, 300000, 0, 10, 1, 1),
+            ("openai/gpt-5.6-terra", 50, 0, 0, 0, 7, 1),
+        ):
+            self.turns.append(
+                {
+                    "model_name": name,
+                    "input": inp,
+                    "output": output,
+                    "reasoning": 0,
+                    "cache_read": reads,
+                    "cache_write": writes,
+                    "cache_write_1h": 0,
+                    "cost": cost,
+                    "depth": depth,
+                    "context_tokens": inp + reads + writes,
+                    "tokens_total": inp + reads + writes + output,
+                    "tools": ["Bash", "Read"],
+                    "agent": "build",
+                    "time": f"2026-10-02 12:00:0{len(self.turns)}",
+                    "prompt_id": "p",
+                    "prompt_title": "fixture",
+                    "prompt_full": "fixture",
+                }
+            )
+        self.models = []
+        for name in dict.fromkeys(t["model_name"] for t in self.turns):
+            turns = [t for t in self.turns if t["model_name"] == name]
+            row = {
+                "root_id": "root",
+                "model_name": name,
+                "runs": len(turns),
+                "cost": sum(t["cost"] for t in turns),
+                "tokens_total": sum(t["tokens_total"] for t in turns),
+            }
+            for field in FIELDS:
+                row[field] = sum(t[field] for t in turns)
+                row["unpriced_" + field] = row["root_unpriced_" + field] = 0
+            self.models.append(row)
+        attach_pricing(self.models, self.turns)
+        self.nodes = []
+        for depth, sid in enumerate(("root", "child")):
+            turns = [t for t in self.turns if t["depth"] == depth]
+            node = {
+                "id": sid,
+                "depth": depth,
+                "agent": "build",
+                "title": sid,
+                "created_at": "2026-10-02 12:00:00",
+                "model_name": turns[0]["model_name"],
+                "cost": sum(t["cost"] for t in turns),
+                "tokens_total": sum(t["tokens_total"] for t in turns),
+                **{"tokens_" + f: sum(t[f] for t in turns) for f in FIELDS},
+            }
+            attach_node_pricing(node, turns)
+            self.nodes.append(node)
+        wf = workflow(
+            "root",
+            "2026-10-02 12:00:00",
+            cost=25,
+            tokens=sum(t["tokens_total"] for t in self.turns),
+        )
+        wf.root_cost, wf.subagents, wf.model_count = 17, 1, 2
+        super().__init__([wf])
+
+    def workflows(self):
+        import copy
+
+        return copy.deepcopy(self._workflows)
+
+    def model_breakdown(self):
+        import copy
+
+        return copy.deepcopy(self.models)
+
+    def workflow_nodes(self, _sid):
+        import copy
+
+        return copy.deepcopy(self.nodes)
+
+    def message_timeline(self, _sid):
+        import copy
+
+        return copy.deepcopy(self.turns)
+
+    def tool_breakdown(self, _sid):
+        from opentab.util import tool_rows_from_turns
+
+        return tool_rows_from_turns(self.turns)
+
+    def supports_turns(self, _sid):
+        return True
+
+    def supports_tools(self, _sid):
+        return True
 
 
 def app_with(workflows, since=None, until=None, days=None):

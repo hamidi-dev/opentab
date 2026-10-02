@@ -85,6 +85,14 @@ def is_local_provider(name: str) -> bool:
     return str(name).split("/", 1)[0].lower() in LOCAL_PROVIDERS
 
 
+def is_copilot_model(name: str) -> bool:
+    return str(name).split("/", 1)[0].lower() == "github-copilot"
+
+
+def copilot_cache_write_model(name: str) -> bool:
+    return is_copilot_model(name) and _openai_paid_cache_writes(name)
+
+
 # Infer vendor from the bare model name, never a gateway route carrying many vendors.
 _MODEL_FAMILIES = (
     ("anthropic", "Anthropic", ("claude",)),
@@ -536,11 +544,55 @@ def model_price(
     return _base_model_price(name)
 
 
+def _copilot_card(name: str):
+    """Resolve the actual route, including aliases, without a vendor-card substitution."""
+    if not is_copilot_model(name):
+        return None
+    mid = str(name).split("/", 1)[-1].lower()
+    for _prices, _limits, tree, meta, _vendor in _layers():
+        models = tree.get("github-copilot", {}).get("models", {})
+        row = models.get(mid)
+        if row is None:
+            canonical = canonical_model(mid)
+            row = next((v for k, v in models.items() if canonical_model(k) == canonical), None)
+        if row is not None and all(math.isfinite(v) and v >= 0 for v in row["cost"]):
+            return row, meta
+    return None
+
+
+def copilot_price_estimated(name: str) -> bool:
+    if not is_copilot_model(name):
+        return False
+    card = _copilot_card(name)
+    return (
+        card is None
+        or not any(card[0]["cost"][:2])
+        or (
+            copilot_cache_write_model(name)
+            and any(
+                rates[3] <= 0
+                for rates in [card[0]["cost"], *(t["cost"] for t in card[0].get("tiers", []))]
+            )
+        )
+    )
+
+
+def model_price_source(name: str) -> dict | None:
+    card = _copilot_card(name)
+    return dict(card[1] or {}) if card is not None else price_source_meta()
+
+
 @lru_cache(maxsize=8192)
 def model_tiers(name: str) -> tuple:
     """Return the selected rate card's context tiers, with the same alias/route rules."""
     if is_local_provider(name):
         return ()
+    card = _copilot_card(name)
+    if card is not None:
+        return tuple(
+            (t["tier"]["size"], _with_openai_cache_write(name, tuple(t["cost"])))
+            for t in card[0].get("tiers", [])
+        )
     mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     plain = display_model(mid)
     for prices, _limits, _tree, _meta, vendor in _layers():
@@ -566,6 +618,9 @@ def model_tiers(name: str) -> tuple:
 def _base_model_price(name: str) -> tuple[float, float, float, float]:
     if is_local_provider(name):
         return (0.0, 0.0, 0.0, 0.0)
+    card = _copilot_card(name)
+    if card is not None:
+        return _with_openai_cache_write(name, card[0]["cost"])
     mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     plain = display_model(mid)
     for prices, _limits, _tree, _meta, vendor in _layers():

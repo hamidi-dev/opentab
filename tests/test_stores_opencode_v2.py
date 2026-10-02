@@ -11,7 +11,57 @@ from unittest.mock import patch
 from opentab.stores.opencode import Store
 from opentab.stores.opencode_v2 import REQUIRED_SCHEMA_V2, install_views, scoped_detail_sql
 
-from tests._support import tier_prices
+from tests._support import copilot_prices, tier_prices
+
+
+def test_v2_copilot_estimates_keep_paid_root_and_mixed_write_calls_separate():
+    from opentab.accounting.tiers import node_api_cost, row_api_cost, valid_pricing
+
+    with _v2_db() as (writer, store), copilot_prices() as name:
+        model = {"providerID": "github-copilot", "id": "gpt-5.6-terra"}
+        writer.executemany(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                _session("root", tokens=(140, 0, 0, 0, 60), cost=17),
+                _session("child", "root", tokens=(10000, 10, 0, 300000, 0), cost=1),
+            ],
+        )
+        for mid, sid, seq, inp, reads, writes, output, cost in (
+            ("a", "root", 1, 100, 0, 0, 0, 9),
+            ("b", "root", 2, 40, 0, 60, 0, 8),
+            ("c", "child", 1, 10000, 300000, 0, 10, 1),
+        ):
+            writer.execute(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                _message(
+                    mid,
+                    sid,
+                    "assistant",
+                    seq,
+                    {
+                        "model": model,
+                        "cost": cost,
+                        "tokens": {
+                            "input": inp,
+                            "output": output,
+                            "cache": {"read": reads, "write": writes},
+                        },
+                    },
+                ),
+            )
+        writer.commit()
+        (row,) = store.model_breakdown()
+        assert row["model_name"] == name and valid_pricing(row)
+        assert row["input"] == 10140 and row["cache_write"] == 60 and row["cost"] == 18
+        assert row["root_input"] == 140 and row["root_cost"] == 17
+        assert row["inferred_cache_write"] == 10100
+        assert abs(row_api_cost(row) - 0.17066) < 1e-9
+        assert abs(row_api_cost(row, root=True) - 0.00048) < 1e-9
+        nodes = store.workflow_nodes("root")
+        assert abs(sum(node_api_cost(n) for n in nodes) - row_api_cost(row)) < 1e-9
+        turns = store.message_timeline("root")
+        assert sum(t["inferred_cache_write"] for t in turns) == 10100
+        assert sum(t["input"] for t in turns) == 10140
 
 
 def test_v2_request_tiers_preserve_unknown_summary_residual_and_execution_ownership():

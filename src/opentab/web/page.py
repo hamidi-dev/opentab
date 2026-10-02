@@ -1038,13 +1038,15 @@ function turnTokenDetails(turn, index) {
 function tokenEconomics(ws, model) {
   const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
   let local = 0, est = false, missingCache = false, tierContextMissing = false;
+  const estimateReasons = new Set();
   ws.forEach(w => (DATA.models[w.id] || []).forEach(r => {
     if (model && r.model !== model) return;
+    (r.estimateReasons || []).forEach(reason => estimateReasons.add(reason));
     // The sixth slot refines cache-write pricing and must not enter token totals.
     const tok = (r.tok || [0, 0, 0, 0, 0]).slice(0, 5);
     if (WI_LOCAL.has(r.model)) { local += tok.reduce((a, b) => a + b, 0); return; }
-    tok.forEach((v, i) => { tokens[i] += v; });
     pricingSamples(r).forEach(b => {
+      b.tok.slice(0, 5).forEach((v, i) => { tokens[i] += v; });
       const p = requestRates(r.model, b.context);
       if (!p) return;
       const [ir, orr, crr, cwr, cwr1h] = p, bt = b.tok;
@@ -1057,11 +1059,11 @@ function tokenEconomics(ws, model) {
       if (crr <= 0 && bt[3] > 0 && ir > 0) missingCache = true;
     });
     if (unknownTierContext(r)) tierContextMissing = true;
-    if (r.tokens > 0 && WI_UNPRICED.has(r.model)) est = true;
+    if (r.tokens > 0 && (WI_UNPRICED.has(r.model) || (r.estimateReasons || []).length)) est = true;
   }));
   const totalTokens = tokens.reduce((a, b) => a + b, 0);
   if (totalTokens <= 0) return null;
-  return { tokens, cost, est, missingCache, local, tierContextMissing,
+  return { tokens, cost, est, missingCache, local, tierContextMissing, estimateReasons: [...estimateReasons],
     totalTokens, totalCost: cost.reduce((a, b) => a + b, 0) };
 }
 
@@ -1077,7 +1079,7 @@ function whatifTotals(id) {
   const actual = sum(rows, r => whatifRowCost(r));
   const whatif = sum(rows, r => whatifRowCost(r, WHATIF.model));
   // Zero-token fallback-priced rows do not make the baseline approximate.
-  const est = rows.some(r => r.tokens > 0 && (WI_UNPRICED.has(r.model)
+  const est = rows.some(r => r.tokens > 0 && (WI_UNPRICED.has(r.model) || (r.estimateReasons || []).length
     || unknownTierContext(r) || unknownTierContext(r, WHATIF.model)));
   return { target: WHATIF.model, actual, whatif, delta: whatif - actual, est };
 }
@@ -1513,7 +1515,9 @@ function tokenEconomicsPane(ws, label, model) {
       h('span', null, h('i', { style: 'background:' + SER[r.i] }), r.t))),
     grid);
   const notes = [];
-  if (e.est) notes.push('~ a model here has no known list rate — its tokens use a generic estimate');
+  if (e.est && !(e.estimateReasons || []).length) notes.push('~ a model here has no known list rate — its tokens use a generic estimate');
+  if ((e.estimateReasons || []).includes('cache_write_inferred')) notes.push('~ Copilot GPT-5.6+ cache writes inferred from uncached input; recorded tokens unchanged');
+  if ((e.estimateReasons || []).includes('copilot_rate_fallback')) notes.push('~ Copilot route rates incomplete or unavailable; fallback list rates estimated');
   if (e.tierContextMissing) notes.push('~ request context sizes unavailable for some tiered usage — base rates estimated');
   if (e.missingCache) notes.push('a model here has no cache-read rate on file — its reads '
     + 'price at $0, so Cache read is understated');
@@ -3274,7 +3278,8 @@ function priceIntro() {
   return h('div', { class: 'pr-intro' },
     'eff $/M prices each model’s list rates at your token mix: ',
     h('b', null, p(m[0]) + ' input'), ' · ' + p(m[1]) + ' output · ' + p(m[2]) + ' cacheR · ' + p(m[3]) + ' cacheW',
-    DATA.prices.mixTokens ? ' (' + hTok(DATA.prices.mixTokens) + ' tokens).' : '.');
+    DATA.prices.mixTokens ? ' (' + hTok(DATA.prices.mixTokens) + ' tokens).' : '.',
+    ' models.dev snapshot: ' + ((DATA.meta.priceSource || {}).fetched_at || 'unavailable') + '. Copilot estimates use its route list prices.');
 }
 function renderPrices() {
   const host = document.getElementById('prices');

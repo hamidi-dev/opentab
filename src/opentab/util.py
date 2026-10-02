@@ -478,6 +478,8 @@ def agent_mix_label(turns) -> str:
 
 
 def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
+    from opentab.accounting.tiers import inferred_cache_write
+
     # Attribute a turn evenly across all calls, including duplicates. This measures
     # tokens in turns using a tool, not the tool output's size.
     agg: dict[tuple[str, str], dict] = {}
@@ -526,6 +528,7 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
                     "tok": tok,
                     "unpriced": tok if not t.get("cost") else [0.0] * 6,
                     "root_unpriced": tok if not t.get("cost") and not t.get("depth") else [0.0] * 6,
+                    "inferred_cache_write": inferred_cache_write(t) / n,
                 }
             )
     return sorted(agg.values(), key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)

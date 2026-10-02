@@ -6,7 +6,24 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import _parse, tier_prices, workflow
+from tests._support import CopilotEstimateStore, _parse, copilot_prices, tier_prices, workflow
+
+
+def test_copilot_fleet_roundtrip_retains_paid_model_splits_and_inferred_writes():
+    from opentab.accounting.tiers import detail_api_cost, node_api_cost, row_api_cost
+
+    with tempfile.TemporaryDirectory() as tmp, copilot_prices():
+        payload = ot.build_export(CopilotEstimateStore(), "fixture")
+        _write(tmp, "fixture.json", payload)
+        remote = ot.RemoteStore(tmp, _parse(["--source", "remote"]))
+        rows = remote.model_breakdown()
+        assert abs(sum(row_api_cost(r) for r in rows) - 7.17066) < 1e-9
+        assert abs(sum(row_api_cost(r, root=True) for r in rows) - 0.00048) < 1e-9
+        assert abs(sum(node_api_cost(r) for r in remote.workflow_nodes("root")) - 7.17066) < 1e-9
+        assert (
+            abs(sum(detail_api_cost(r) for r in remote.message_timeline("root")) - 7.17066) < 1e-9
+        )
+        assert abs(sum(detail_api_cost(r) for r in remote.tool_breakdown("root")) - 7.17066) < 1e-9
 
 
 def test_machine_export_preserves_request_tiers_and_fractional_tool_shares():

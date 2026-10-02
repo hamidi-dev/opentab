@@ -86,12 +86,21 @@ It never loads another harness or fetches remote data. Detailed path and environ
 overrides are in [Sources](sources.md).
 
 Recorded spend and API-equivalent costs are separate fields. API-equivalent cost
-preserves recorded dollars and adds list-rate estimates for the unpriced portion;
-it is not an all-token repricing or a subscription bill. `unpriced_tokens` means
+fully revalues `github-copilot` usage at the loaded models.dev Copilot route rates;
+other providers preserve recorded dollars and add list-rate estimates for the
+unpriced portion. It is not a subscription bill. `unpriced_tokens` means
 tokens without attributed recorded dollars, **not** tokens lacking a known model
 rate. Unknown models use fallback rates; recognized local providers price to zero.
 See [Pricing](pricing.md). The JSON API never applies the TUI's session-only what-if
 rate globally; model comparison is an explicit `models compare` operation.
+
+Copilot GPT-5.6+ requests with zero recorded cache writes estimate their uncached
+input as writes. This affects estimated costs and model comparisons, not original
+token fields or `recorded_cost_usd`. Model, Turn and Tool `estimate` metadata names
+the basis, price-source snapshot and `approximation_reasons` (`cache_write_inferred`
+or `copilot_rate_fallback`). Sessions expose `price_source` and aggregated
+`estimate_reasons`. Full root/model splits and proportional tool attribution use
+the same calculation; see [Copilot estimates](pricing.md#copilot-list-price-estimates).
 
 An aggregated Node or Tool row from an older backend can mix metered and unpriced
 calls without retaining their token split. In that case `api_equivalent_cost_usd`
