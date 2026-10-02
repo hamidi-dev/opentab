@@ -291,15 +291,28 @@ def estimated_token_split(row: dict) -> tuple:
 def row_cost_parts(row: dict, model: str | None = None, prefix: str = "") -> tuple:
     name = model if model is not None else str(row.get("model_name") or "")
     cost = [0.0] * 5
+    # Thousands of request contexts usually share only one or two rate bands.
+    # Resolve aliases/catalog cards once per used band, not once per request.
+    # Keep this memo local so price refreshes cannot leave stale dollar estimates.
+    thresholds = tuple(size for size, _price in reversed(model_tiers(name)))
+    rates = {}
+    long_rates = {}
     for context, tok in pricing_samples(row, prefix):
-        ir, out, cr, cw = model_price(name, context)
+        if not any(tok[:5]):
+            continue
+        band = next((size for size in thresholds if context is not None and context > size), None)
+        if band not in rates:
+            rates[band] = model_price(name, context)
+        ir, out, cr, cw = rates[band]
         long = min(max(tok[5], 0.0), tok[4])
+        if long and band not in long_rates:
+            long_rates[band] = cache_write_1h_price(name, context)
         values = (
             tok[0] * ir,
             tok[1] * out,
             tok[2] * out,
             tok[3] * cr,
-            (tok[4] - long) * cw + (long * cache_write_1h_price(name, context) if long else 0),
+            (tok[4] - long) * cw + (long * long_rates[band] if long else 0),
         )
         cost = [a + b / 1e6 for a, b in zip(cost, values)]
     return tuple(cost)

@@ -8,6 +8,90 @@ import opentab as ot
 from tests._support import CopilotEstimateStore, copilot_prices, tier_prices, workflow
 
 
+def test_opencode_model_cache_reuses_validated_inputs_after_metadata_only_write():
+    import argparse
+    from unittest.mock import patch
+
+    from tests.test_stores_opencode_v2 import _message, _session, _v2_db
+
+    with _v2_db(legacy=True) as (writer, store), tempfile.TemporaryDirectory() as cache, patch.dict(
+        os.environ, {"XDG_CACHE_HOME": cache}
+    ):
+        writer.executemany(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [_session("root"), _session("child", "root"), _session("other")],
+        )
+        writer.execute(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            _message(
+                "m",
+                "child",
+                "assistant",
+                1,
+                {
+                    "model": {"providerID": "github-copilot", "id": "gpt-5.6-terra"},
+                    "tokens": {"input": 100},
+                    "cost": 1,
+                },
+            ),
+        )
+        writer.execute(
+            "insert into session values (?,?,?,?,?,?,?)",
+            ("legacy", None, "Legacy", "/repo", None, 1, 1),
+        )
+        writer.execute(
+            "insert into message values (?,?,?)",
+            ("old", "legacy", json.dumps({"role": "assistant", "tokens": {"input": 10}})),
+        )
+        writer.commit()
+        args = argparse.Namespace(demo=False, no_cache=False)
+        cache_id = "opencode|" + store.db
+        cold = ot.CachedStore(store, cache_id, args)
+        cold.workflows()
+        expected = cold.model_breakdown()
+        assert cold._disk["model_token"]
+        writer.execute("update session_v2 set title='Renamed' where id='root'")
+        writer.commit()
+        warm = ot.CachedStore(store, cache_id, args)
+        workflows = warm.workflows()
+        assert next(w for w in workflows if w.id == "root").title == "Renamed"
+        with patch.object(
+            store, "model_breakdown", side_effect=AssertionError("unnecessary model rebuild")
+        ):
+            assert warm.model_breakdown() == expected
+        # All these affect model ownership/usage even with reused native message rows.
+        for sql in (
+            "update session_v2 set parent_id='other' where id='child'",
+            "update session_v2 set tokens_input=500 where id='root'",
+            "update message set data=json_set(data,'$.tokens.input',20) where id='old'",
+            "update session_message set data=json_set(data,'$.tokens.input',200), time_updated=time_updated+1 where id='m'",
+            "delete from session_message where id='m'",
+        ):
+            writer.execute(sql)
+            writer.commit()
+            changed = ot.CachedStore(store, cache_id, args)
+            changed.workflows()
+            with patch.object(store, "model_breakdown", wraps=store.model_breakdown) as rebuild:
+                rows = changed.model_breakdown()
+                assert rebuild.call_count == 1
+            assert rows == store.model_breakdown()
+
+
+def test_model_cache_does_not_stamp_a_new_token_on_rows_during_source_change():
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as cache, patch.dict(os.environ, {"XDG_CACHE_HOME": cache}):
+        backend = CopilotEstimateStore()
+        backend.cache_inputs = lambda: []
+        backend.model_cache_token = lambda: "before"
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        wrapped = ot.CachedStore(backend, "fixture|race", args)
+        wrapped.workflows()
+        with patch.object(backend, "model_cache_token", side_effect=["before", "after"]):
+            wrapped.model_breakdown()
+        assert "model_token" not in wrapped._disk
+
+
 def test_copilot_warm_cache_preserves_inference_root_split_and_refreshable_rates():
     from unittest.mock import patch
 

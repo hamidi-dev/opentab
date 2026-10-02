@@ -183,6 +183,7 @@ class CachedStore:
         workflows: list,
         model_breakdown: list,
         provenance: dict | None = None,
+        model_token: str | None = None,
     ) -> None:
         # Cache writes are best-effort and atomic; failure must not block launch.
         payload = {
@@ -196,6 +197,8 @@ class CachedStore:
             # Empty provenance disables incremental misses for this backend.
             "provenance": provenance or {},
         }
+        if model_token is not None:
+            payload["model_token"] = model_token
         getter = getattr(self._store, "accounting_cache", None)
         try:
             os.makedirs(cache_dir(), exist_ok=True)
@@ -454,11 +457,21 @@ class CachedStore:
         ):
             self._debug("cache.models_decision", result="hit")
             return [dict(row) for row in self._disk["model_breakdown"]]
+        token_of = getattr(self._store, "model_cache_token", None)
+        token = token_of() if token_of is not None else None
         if self._fresh_models is not None:
             # An incremental splice already built these from the files it re-read.
             # Calling through would parse the whole corpus -- what the splice avoided.
             rows = [dict(row) for row in self._fresh_models]
             self._debug("cache.models_decision", result="splice_memo")
+        elif (
+            token is not None
+            and self._disk is not None
+            and self._disk.get("model_token") == token
+            and fp == self._fingerprint()
+        ):
+            rows = [dict(row) for row in self._disk["model_breakdown"]]
+            self._debug("cache.models_decision", result="unchanged_accounting")
         else:
             self._debug("cache.models_decision", result="backend")
             with debug.span("cache.backend_models", source=self._source):
@@ -470,7 +483,9 @@ class CachedStore:
             if prov is None:
                 getter = getattr(self._store, "cache_provenance", None)
                 prov = getter() if getter is not None else None
-            self._write(fp, self._fresh_wf, rows, prov)
+            # A concurrent source change must not label old model rows with a new token.
+            stable_token = token if token is not None and token_of() == token else None
+            self._write(fp, self._fresh_wf, rows, prov, model_token=stable_token)
         return rows
 
     def persist_accounting(self) -> None:

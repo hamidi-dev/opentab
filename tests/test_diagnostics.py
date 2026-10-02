@@ -22,13 +22,69 @@ def test_debug_disabled_does_not_create_files_or_read_clocks():
 
     with patch.object(
         debug.time, "perf_counter", side_effect=AssertionError("clock")
-    ), patch.object(debug.paths, "state_dir", side_effect=AssertionError("path")):
+    ), patch.object(debug.paths, "state_dir", side_effect=AssertionError("path")), patch.object(
+        debug, "_code_fingerprint", side_effect=AssertionError("source read")
+    ):
         with debug.session():
             assert operation() == 42
             with debug.span("test.phase"):
                 debug.event("test.event")
             assert debug.identity("private") is None
             debug.query_plan(None, "must not prepare", label="test.plan")
+
+
+def test_debug_model_loading_separates_pricing_and_keeps_usage_private():
+    from opentab.tui.app import App
+
+    from tests._support import CopilotEstimateStore, _parse, copilot_prices
+
+    with tempfile.TemporaryDirectory() as tmp, copilot_prices(), contextlib.redirect_stderr(
+        io.StringIO()
+    ):
+        store = CopilotEstimateStore()
+        plain = App(store, _parse(["--no-state"]))
+        plain._ensure_models()
+        filename = os.path.join(tmp, "pricing.jsonl")
+        with debug.session(filename=filename):
+            logged = App(store, _parse(["--no-state"]))
+            logged._ensure_models()
+        assert logged._model_by_root == plain._model_by_root
+        assert logged.loaded == plain.loaded
+        rows = _records(filename)
+        starts = {r["seq"]: r for r in rows if r["event"].endswith(".start")}
+        for event in (
+            "fetch_models",
+            "group_models",
+            "reconcile_unpriced",
+            "price_models",
+            "apply_prices",
+        ):
+            end = next(r for r in rows if r["event"] == "app." + event + ".end")
+            start = starts[end["span"]]
+            assert starts[start["parent"]]["event"] == "app.load_models.start"
+        summary = next(r for r in rows if r["event"] == "app.pricing_workload")
+        assert summary["model_rows"] == 2 and summary["request_buckets"] == 3
+        assert summary["copilot_rows"] == 1 and summary["root_split_rows"] == 2
+        fingerprint = next(r["code_fingerprint"] for r in rows if r["event"] == "run.start")
+        assert len(fingerprint) == 16 and all(c in "0123456789abcdef" for c in fingerprint)
+        text = Path(filename).read_text()
+        for model in store.models:
+            assert model["model_name"] not in text
+        assert "copilot_list_prices" not in text and tmp not in text
+
+
+def test_debug_source_fingerprint_detects_same_version_code_changes():
+    from unittest.mock import Mock
+
+    package = Mock()
+    package.joinpath.return_value.read_bytes.return_value = b"first build"
+    with patch("importlib.resources.files", return_value=package):
+        first = debug._code_fingerprint()
+        assert debug._code_fingerprint() == first
+        package.joinpath.return_value.read_bytes.return_value = b"second build"
+        assert debug._code_fingerprint() != first
+        package.joinpath.return_value.read_bytes.side_effect = OSError("private path")
+        assert debug._code_fingerprint() is None
 
 
 def test_debug_nested_spans_workers_errors_and_private_values():

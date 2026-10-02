@@ -1009,7 +1009,9 @@ def test_full_opts_out_of_the_redaction():
         remotes = os.path.join(tmp, "remotes")
         _touch(os.path.join(remotes, "build-box-7.json"), "{}")
         args = _args(tmp, "--remotes", remotes)
-        text = "\n".join(doctor.render(doctor.build_report(args, full=True)))
+        report = doctor.build_report(args, full=True)
+        assert _by_label(report, "opentab", "sqlite").detail == sqlite3.sqlite_version
+        text = "\n".join(doctor.render(report))
         assert "build-box-7" in text
         assert os.path.expanduser("~") in text  # absolute install/python paths
 

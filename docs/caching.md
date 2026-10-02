@@ -45,6 +45,12 @@ Events cover:
   Turns, Tools, Context and trace reads. Turns separates message queries, tool
   attribution and readable-content markers. Changes file/diff reads are timed on
   their worker; web session extras have their own outer phase.
+  `app.price_models` isolates cost projection inside `app.load_models`, so a fast
+  `cache.models` hit followed by slow price calculation is distinguishable from
+  a source scan. `app.fetch_models`, `app.group_models`, `app.reconcile_unpriced`
+  and `app.apply_prices` separate the remaining stages. `app.pricing_workload`
+  reports aggregate workflow/model/request-bucket counts, Copilot rows and full
+  root splits; no model names or token/cost values are emitted.
 - Indexed scalar sidecar reads distinguish all-history and subtree scope, row
   fetching and tuple reconstruction. `usage.sidecar_written` reports rows actually
   upserted, deleted and unchanged, after the transaction commits. Sidecar rejection
@@ -81,6 +87,11 @@ include children, so do not sum nested phases. Peak RSS is a lifetime high-water
 mark, not current RSS, filesystem cache, or Windows' total WSL memory. Logging and
 per-row clocks add overhead; use debug mode to locate work, then compare normal
 runs with the same measurement boundaries.
+
+`run.start` also includes a `code_fingerprint` of the installed accounting/startup
+source files. This distinguishes development builds sharing one version number;
+it is not a Git revision or a hash of user data. Source-file hashing runs only when
+debugging is explicitly enabled, and emits no installation paths.
 
 On Linux, span starts and ends also report current `rss_mib`, anonymous/file-backed
 RSS and process swap from `/proc/self/status`, when available. End records include
@@ -128,6 +139,23 @@ a blocking scan. This is deferred synchronous work, not a background worker.
 model counts, reconciles unpriced tokens, and computes API-equivalent costs.
 Day, month, project, and session views then aggregate those rows in memory;
 they do not query the backend once per visible session.
+
+Pricing resolves catalog aliases and long-TTL rates once per used rate band within
+each model-row projection, not once per request-context bucket. Empty token splits
+do not resolve prices. The memo lasts only for that calculation: price refreshes
+still recalculate from the original numeric buckets, with no persisted dollar cache.
+Before deferred pricing completes, the first frame contains recorded-cost snapshots;
+months dominated by unpriced usage may therefore change when the estimates arrive.
+
+For OpenCode v2, a changed DB/WAL fingerprint still requires fresh workflow metadata
+and revision-checked usage. Before rebuilding model buckets, OpenTab compares a
+numeric input digest covering assistant usage (including legacy rows), the complete
+session parent map, and native session totals used for residual accounting. Unchanged
+inputs reuse the validated model buckets (`cache.models_decision: unchanged_accounting`),
+even after metadata-only writes. `opencode.model_cache_token` times this check.
+Reused native rows alone are insufficient: legacy changes, reparenting, removals and
+session-total corrections must invalidate the digest. Older caches acquire the digest
+after their next rebuild; source changes during calculation withhold it.
 
 Deferral matters particularly for OpenCode's message-table scan. A cold file
 backend may already parse its corpus for `workflows()` and reuse it for model

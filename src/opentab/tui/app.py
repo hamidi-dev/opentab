@@ -1634,14 +1634,18 @@ class App:
     def _load_model_cache(self) -> None:
         self._model_economics_cache.clear()
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
-        for row in self.store.model_breakdown():
-            model = dict(row)
-            if self.store.demo:
-                model.pop("pricing", None)
-            self._model_by_root[row["root_id"]].append(model)
-        # Reuse the heavy breakdown scan for model_count; compute before demo renaming.
-        for w in self.loaded:
-            w.model_count = len(self._model_by_root.get(w.id, ()))
+        with debug.span("app.fetch_models") as info:
+            rows = self.store.model_breakdown()
+            info["rows"] = len(rows)
+        with debug.span("app.group_models"):
+            for row in rows:
+                model = dict(row)
+                if self.store.demo:
+                    model.pop("pricing", None)
+                self._model_by_root[row["root_id"]].append(model)
+            # Reuse the heavy breakdown scan for model_count; compute before demo renaming.
+            for w in self.loaded:
+                w.model_count = len(self._model_by_root.get(w.id, ()))
         if self.store.demo:
             rename = "titles" in self._demo_cats
             for root_id, models in self._model_by_root.items():
@@ -1656,6 +1660,7 @@ class App:
         self._apply_price_mode()
         self._revalidate_whatif()
 
+    @debug.timed("app.reconcile_unpriced")
     def _reconcile_unpriced_tokens(self) -> None:
         """Replace coarse rollup counts with the deferred message-level truth.
 
@@ -3251,9 +3256,23 @@ class App:
             w.real_total_cost = w.api_total_cost = w.total_cost
             w.real_root_cost = w.api_root_cost = w.root_cost
 
+    @debug.timed("app.price_models")
     def _compute_api_costs(self) -> None:
         # Always derive from real snapshots: Copilot is fully repriced, other routes
         # retain recorded dollars plus unpriced usage. Refreshes must not compound.
+        if debug.enabled():
+            models = [m for rows in self._model_by_root.values() for m in rows]
+            debug.event(
+                "app.pricing_workload",
+                workflows=len(self.loaded),
+                model_rows=len(models),
+                request_buckets=sum(len(m.get("pricing", ())) for m in models),
+                copilot_rows=sum(
+                    str(m.get("model_name") or "").lower().startswith("github-copilot/")
+                    for m in models
+                ),
+                root_split_rows=sum("root_input" in m for m in models),
+            )
         by_id = {w.id: w for w in self.loaded}
         for root_id, rows in self._model_by_root.items():
             has_root_split = any("root_unpriced_input" in m for m in rows)
@@ -3276,6 +3295,7 @@ class App:
                 frac = wf.real_root_cost / wf.real_total_cost if wf.real_total_cost else 1.0
                 wf.api_root_cost = wf.real_root_cost + delta * frac
 
+    @debug.timed("app.apply_prices")
     def _apply_price_mode(self) -> None:
         # What-if must not enter this app-wide `$` path; it is session-scoped only.
         api = self.show_api_prices and not self.store.demo
