@@ -75,6 +75,39 @@ Unknown prices are marked approximate. This is a token-type explanation at list
 rates, **not a decomposition of a provider invoice**, even when recorded dollars
 are available for that model.
 
+### Context pricing tiers
+
+OpenTab preserves models.dev's context-tier rate cards and prices each recorded
+request at the highest threshold its **input context** exceeds. Input context includes
+uncached input, cache reads and cache writes, but excludes output and reasoning.
+The threshold is strict: a request exactly at the boundary still uses the lower rate.
+The selected tier prices the whole request, including output; it is not marginal
+pricing of just the tokens above the threshold.
+
+For example, GPT-5.6 Sol's 272,000-token tier doubles input/read/write rates and
+raises output from $20/M to $30/M. Two separate 200,000-token requests still use
+base rates, despite their combined total exceeding that boundary. Explicit tier
+tables take precedence over legacy `context_over_200k` metadata; the legacy field
+alone supplies a 200,000-token boundary.
+
+Numeric context buckets survive model/session rollups, warm caches and machine
+exports. Token economics, `$` estimates, model comparisons, Turns and tool-call
+attribution use them in the terminal and browser. Rates can refresh without
+rereading transcripts because buckets retain context sizes, not calculated dollars.
+Recorded spend remains recorded spend: `$` only estimates the unpriced portion.
+
+Summary-only records and older exports cannot establish individual request sizes.
+Their tiered usage uses base rates as an approximation, with a `~` and an explanation
+in Token economics. Codex accepts a request size only when its recorded final-request
+usage reconciles with the entire accepted cumulative delta; multi-request deltas
+remain unknown. CSV/JSONL producers can supply `context_tokens` explicitly.
+VS Code chat combines final-round input with accumulated multi-round output, so
+its tier context remains unknown rather than applying the last round's tier to
+all output. Claude's execution-level Turns and Copilot's CLI cost path retain the
+same request context as their session rollups.
+The `P` table and its effective-price rankings show **base rates**; context tiers
+are selected when calculating request costs, not from aggregate monthly tokens.
+
 Drilling a Models row narrows this card to the model's contribution in the current
 scope. Its Sessions tab shows **Model list** and **Model tok**, not whole-session
 totals. `$` does not change those model-attributed figures; see

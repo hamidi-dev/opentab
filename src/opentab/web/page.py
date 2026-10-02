@@ -950,6 +950,23 @@ function whatifCost(tok, rates) {
   const write = (cw - long) * cwr + long * (cwr1h || cwr);
   return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6;
 }
+function requestRates(model, context) {
+  let rates = WI_PRICE.get(model);
+  if (context != null) for (const tier of (DATA.whatif?.tiers?.[model] || [])) {
+    if (context > tier.context) rates = tier.price;
+  }
+  return rates;
+}
+function pricingSamples(r) {
+  return Array.isArray(r.pricing) ? r.pricing : [{ context: r.context ?? null, tok: r.tok }];
+}
+function unknownTierContext(r, model = r.model) {
+  return !!DATA.whatif?.tiers?.[model]?.length
+    && pricingSamples(r).some(b => b.context == null && b.tok?.slice(0, 5).some(v => v > 0));
+}
+function whatifRowCost(r, model = r.model) {
+  return sum(pricingSamples(r), b => whatifCost(b.tok, requestRates(model, b.context)));
+}
 function modelSessionUsage(w, model) {
   const rows = (DATA.models[w.id] || []).filter(r => r.model === model);
   // A local model has no API rate, and `rates` carries a fallback for every used model:
@@ -958,8 +975,8 @@ function modelSessionUsage(w, model) {
   return {
     runs: sum(rows, r => r.runs),
     tokens: sum(rows, r => r.tokens),
-    listCost: local ? 0 : sum(rows, r => whatifCost(r.tok, WI_PRICE.get(r.model))),
-    est: !local && rows.some(r => r.tokens > 0 && WI_UNPRICED.has(r.model)),
+    listCost: local ? 0 : sum(rows, r => whatifRowCost(r)),
+    est: !local && rows.some(r => r.tokens > 0 && (WI_UNPRICED.has(r.model) || unknownTierContext(r))),
   };
 }
 function modelScopeUsage(ws, model) {
@@ -1020,28 +1037,31 @@ function turnTokenDetails(turn, index) {
 // Token economics always uses list rates: recorded spend has no per-token-type split.
 function tokenEconomics(ws, model) {
   const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
-  let local = 0, est = false, missingCache = false;
+  let local = 0, est = false, missingCache = false, tierContextMissing = false;
   ws.forEach(w => (DATA.models[w.id] || []).forEach(r => {
     if (model && r.model !== model) return;
     // The sixth slot refines cache-write pricing and must not enter token totals.
     const tok = (r.tok || [0, 0, 0, 0, 0]).slice(0, 5);
-    const long1h = Math.min(Math.max((r.tok || [])[5] || 0, 0), tok[4] || 0);
     if (WI_LOCAL.has(r.model)) { local += tok.reduce((a, b) => a + b, 0); return; }
-    const p = WI_PRICE.get(r.model);
-    if (!p) return;
-    const [ir, orr, crr, cwr, cwr1h] = p;
     tok.forEach((v, i) => { tokens[i] += v; });
-    cost[0] += tok[0] * ir / 1e6;
-    cost[1] += tok[1] * orr / 1e6;
-    cost[2] += tok[2] * orr / 1e6;
-    cost[3] += tok[3] * crr / 1e6;
-    cost[4] += ((tok[4] - long1h) * cwr + long1h * (cwr1h || cwr)) / 1e6;
-    if (crr <= 0 && tok[3] > 0 && ir > 0) missingCache = true;
+    pricingSamples(r).forEach(b => {
+      const p = requestRates(r.model, b.context);
+      if (!p) return;
+      const [ir, orr, crr, cwr, cwr1h] = p, bt = b.tok;
+      const long1h = Math.min(Math.max(bt[5] || 0, 0), bt[4] || 0);
+      cost[0] += bt[0] * ir / 1e6;
+      cost[1] += bt[1] * orr / 1e6;
+      cost[2] += bt[2] * orr / 1e6;
+      cost[3] += bt[3] * crr / 1e6;
+      cost[4] += ((bt[4] - long1h) * cwr + long1h * (cwr1h || cwr)) / 1e6;
+      if (crr <= 0 && bt[3] > 0 && ir > 0) missingCache = true;
+    });
+    if (unknownTierContext(r)) tierContextMissing = true;
     if (r.tokens > 0 && WI_UNPRICED.has(r.model)) est = true;
   }));
   const totalTokens = tokens.reduce((a, b) => a + b, 0);
   if (totalTokens <= 0) return null;
-  return { tokens, cost, est, missingCache, local,
+  return { tokens, cost, est, missingCache, local, tierContextMissing,
     totalTokens, totalCost: cost.reduce((a, b) => a + b, 0) };
 }
 
@@ -1054,15 +1074,11 @@ function whatifTotals(id) {
   const rows = DATA.models[id];
   if (!rows || !rows.length) return null;
   // Carry the 1h subset on both sides so same-model substitution is exactly zero.
-  const tot = [0, 0, 0, 0, 0, 0];
-  let actual = 0;
-  rows.forEach(r => {
-    actual += whatifCost(r.tok, WI_PRICE.get(r.model));
-    r.tok.forEach((v, i) => { tot[i] += v; });
-  });
-  const whatif = whatifCost(tot, WI_PRICE.get(WHATIF.model));
+  const actual = sum(rows, r => whatifRowCost(r));
+  const whatif = sum(rows, r => whatifRowCost(r, WHATIF.model));
   // Zero-token fallback-priced rows do not make the baseline approximate.
-  const est = rows.some(r => r.tokens > 0 && WI_UNPRICED.has(r.model));
+  const est = rows.some(r => r.tokens > 0 && (WI_UNPRICED.has(r.model)
+    || unknownTierContext(r) || unknownTierContext(r, WHATIF.model)));
   return { target: WHATIF.model, actual, whatif, delta: whatif - actual, est };
 }
 
@@ -1459,7 +1475,7 @@ function tokShare(v, tot) {
 function tokenEconomicsPane(ws, label, model) {
   const e = tokenEconomics(ws, model);
   if (!e) return null;
-  const approx = e.est ? '~' : '';
+  const approx = e.est || e.tierContextMissing ? '~' : '';
   const SER = tokSeries();
   const rows = TOK_TYPES.map((t, i) => ({ t, i, tok: e.tokens[i], cost: e.cost[i] }))
     .filter(r => r.tok > 0 || r.cost > 0)
@@ -1498,6 +1514,7 @@ function tokenEconomicsPane(ws, label, model) {
     grid);
   const notes = [];
   if (e.est) notes.push('~ a model here has no known list rate — its tokens use a generic estimate');
+  if (e.tierContextMissing) notes.push('~ request context sizes unavailable for some tiered usage — base rates estimated');
   if (e.missingCache) notes.push('a model here has no cache-read rate on file — its reads '
     + 'price at $0, so Cache read is understated');
   if (e.local) notes.push(hTok(e.local) + ' local-model tokens excluded — no API rate to price them at');
@@ -2423,7 +2440,7 @@ const signedPct = (part, whole, sign) => { const s = pct(Math.abs(part), whole);
 function executionTable(nodes, t) {
   const total = sum(nodes, mCost);
   const rows = nodes.map((n, index) => ({ ...n, index,
-    wi: t ? whatifCost(n.tok, WI_PRICE.get(t.target)) : 0 }));
+    wi: t ? whatifRowCost(n, t.target) : 0 }));
   return table('t-s-nodes', [
     { key: 'index', label: '#', asc: true, align: 'r', fmt: r => r.index + 1 },
     { key: 'title', label: 'Execution', asc: true, cls: 'grow',
@@ -2523,7 +2540,7 @@ function executionDetail(nodes, index, t) {
     ['cache hit', pct(tok[3], tok[0] + tok[3] + tok[4]) + ' (read / (input + read + write))'],
   ];
   if (tok[5]) fields.push(['1h cache write', exact(tok[5]) + ' (subset of cache write)']);
-  if (t) fields.push(['what-if at ' + t.target, money(whatifCost(tok, WI_PRICE.get(t.target)))]);
+  if (t) fields.push(['what-if at ' + t.target, money(whatifRowCost(n, t.target))]);
   return pane('Execution ' + (index + 1) + ' of ' + nodes.length,
     h('div', { class: 'execution-detail' },
       h('button', { class: 'hbtn', onclick: closeExecution }, 'Back to executions (Esc)'),
@@ -2547,7 +2564,7 @@ function whatifTree(nodes, t) {
   const saved = t.actual - t.whatif;
   const tbl = executionTable(nodes, t);
   // Node rollups can disagree with message totals; the per-model TOTAL remains canonical.
-  const wiColumn = sum(nodes, n => whatifCost(n.tok, WI_PRICE.get(t.target)));
+  const wiColumn = sum(nodes, n => whatifRowCost(n, t.target));
   const drift = Math.abs(wiColumn - t.whatif) > 0.01 ? (wiColumn > t.whatif ? 'more' : 'less') : '';
   return h('div', null, tbl,
     h('div', { class: 'wi-total' }, 'TOTAL (list rates)  your models ', (t.est ? '~' : '') + money(t.actual), ' → all at ' + t.target + ' ',

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import (
     _clean_prompt,
@@ -797,6 +798,10 @@ class CodexStore:
                     "root_unpriced_output": r["output"],
                 }
             )
+        turns = list(s["turns"])
+        for child, depth in self._descendants(sessions, sid):
+            turns.extend({**t, "depth": depth} for t in sessions[child]["turns"])
+        attach_pricing(rows, turns, per_request=False)
         s["model_rows"] = rows
         s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows)
 
@@ -1154,6 +1159,18 @@ class CodexStore:
         cache_read = min(max(0, d_cached), input_tokens)
         cache_write = min(max(0, d_write), input_tokens - cache_read)
         uncached = input_tokens - cache_read - cache_write
+        last = info.get("last_token_usage")
+        context_tokens = None
+        if isinstance(last, dict) and all(
+            self._cumulative(last.get(k, 0)) == value
+            for k, value in (
+                ("input_tokens", d_in),
+                ("output_tokens", d_out),
+                ("cached_input_tokens", d_cached),
+                ("cache_write_input_tokens", d_write),
+            )
+        ):
+            context_tokens = input_tokens
         acc["runs"] += 1
         acc["input"] += uncached  # input_tokens includes both cache categories
         acc["cache_read"] += cache_read
@@ -1178,6 +1195,7 @@ class CodexStore:
                 "model_name": model_name,
                 "cost": 0.0,
                 "input": uncached,
+                "context_tokens": context_tokens,
                 "output": max(0, d_out),
                 "reasoning": 0,
                 "cache_read": cache_read,
@@ -1233,6 +1251,7 @@ class CodexStore:
                     "root_unpriced_output": acc["output"],
                 }
             )
+        attach_pricing(rows, s["turns"], per_request=False)
         s["model_rows"] = rows
         s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows)  # all of it
 
@@ -1499,6 +1518,9 @@ class CodexStore:
                     acc,
                 )
             )
+        if not self.demo:
+            for node in nodes:
+                attach_node_pricing(node, sessions[node["id"]]["turns"], per_request=False)
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes

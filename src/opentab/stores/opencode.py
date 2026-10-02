@@ -109,6 +109,7 @@ def _process_timeline(
         d["prompt_title"] = cur_title
         d["prompt_full"] = cur_full
         d["tools"] = message_tools
+        d["context_tokens"] = d["input"] + d["cache_read"] + d["cache_write"]
         # The message id is what the part table joins on, so it is also the turn's
         # identity for the trace. Set before mid is dropped below.
         d["content_key"] = d["mid"] or ""
@@ -594,15 +595,28 @@ class Store:
         {self._message_usage_join()}
         order by tree.depth, s.time_created
         """
-        rows = list(self.conn.execute(sql, [workflow_id]))
+        rows = [dict(r) for r in self.conn.execute(sql, [workflow_id])]
         if not self.demo:
+            models = {}
+            for model in self.model_breakdown(workflow_id, own=True):
+                models.setdefault(model["root_id"], []).append(model)
+            for row in rows:
+                parts = models.get(row["id"], [])
+                if all(
+                    abs(sum(p.get(f, 0) for p in parts) - row.get("tokens_" + f, 0)) < 1e-6
+                    for f in ("input", "output", "reasoning", "cache_read", "cache_write")
+                ):
+                    row["model_pricing"] = parts
             return rows
         return [scramble_node(dict(r), self.demo_scale, self.demo_cats) for r in rows]
 
     @debug.timed("opencode.models")
-    def model_breakdown(self) -> list[sqlite3.Row | dict]:
+    def model_breakdown(self, workflow_id: str | None = None, *, own: bool = False) -> list[dict]:
         if self._usage_cache is not None:
-            self._usage_cache.prepare(self.conn, self._legacy_usage_available())
+            if workflow_id is None:
+                self._usage_cache.prepare(self.conn, self._legacy_usage_available())
+            else:
+                self._prepare_session_usage(workflow_id)
         # Per-(root session, model) cost/token attribution for EVERY root, in one
         # pass. Computed from per-message data (accurate for multi-model and older
         # sessions). The App caches this and slices it per session/day/month, so we
@@ -635,9 +649,9 @@ class Store:
         attributed = "attributed" if self.has_v2 else "msg"
         sql = f"""
         with recursive tree(root_id, id, depth) as (
-          select id, id, 0 from session where parent_id is null
+          select id, id, 0 from session where {"id = ?" if workflow_id else "parent_id is null"}
           union all
-          select tree.root_id, child.id, tree.depth + 1
+          select {"child.id" if own else "tree.root_id"}, child.id, tree.depth + 1
           from session child join tree on child.parent_id = tree.id
         ),
         msg as {mat} (
@@ -652,7 +666,8 @@ class Store:
             {usage['output']} as output,
             {usage['reasoning']} as reasoning,
             {usage['cache_read']} as cache_read,
-            {usage['cache_write']} as cache_write
+            {usage['cache_write']} as cache_write,
+            {usage['input']} + {usage['cache_read']} + {usage['cache_write']} as context_tokens
           from {message_table} m
           join tree on tree.id = m.session_id
           where {role} = 'assistant'
@@ -660,6 +675,7 @@ class Store:
         select
           root_id,
           model_name,
+          context_tokens,
           sum(runs) as runs,
           sum(cost) as cost,
           sum(case when depth = 0 then cost else 0 end) as root_cost,
@@ -680,13 +696,30 @@ class Store:
           sum(case when depth = 0 and cost = 0 then cache_write else 0 end) as root_unpriced_cache_write,
           sum(case when depth = 0 and cost = 0 then output else 0 end) as root_unpriced_output
         from {attributed}
-        group by root_id, model_name
+        group by root_id, model_name, context_tokens
         """
         # Subscription/credit rows (Copilot, Codex, Claude Code) carry real runs
         # AND real token counts but cost 0 in the message JSON. Demo mode reconciles
         # them to each session's synthetic total; the "$" toggle prices their tokens
         # at API list prices -- both in App._load_model_cache.
-        return list(self.conn.execute(sql))
+        models = {}
+        fields = ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
+        for result in self.conn.execute(sql, [workflow_id] if workflow_id else []):
+            part = dict(result)
+            key = (part["root_id"], part["model_name"])
+            row = models.setdefault(key, {"root_id": key[0], "model_name": key[1], "pricing": []})
+            row["pricing"].append(
+                {
+                    "context": part["context_tokens"],
+                    "tok": [part.get(k, 0) for k in fields],
+                    "unpriced": [part.get("unpriced_" + k, 0) for k in fields],
+                    "root_unpriced": [part.get("root_unpriced_" + k, 0) for k in fields],
+                }
+            )
+            for name, value in part.items():
+                if name not in ("root_id", "model_name", "context_tokens"):
+                    row[name] = row.get(name, 0) + value
+        return list(models.values())
 
     @staticmethod
     def _v2_model_residual_cte() -> str:
@@ -712,7 +745,8 @@ class Store:
                max(0, coalesce(s.tokens_output, 0) - coalesce(usage.output, 0)) as output,
                max(0, coalesce(s.tokens_reasoning, 0) - coalesce(usage.reasoning, 0)) as reasoning,
                max(0, coalesce(s.tokens_cache_read, 0) - coalesce(usage.cache_read, 0)) as cache_read,
-               max(0, coalesce(s.tokens_cache_write, 0) - coalesce(usage.cache_write, 0)) as cache_write
+                max(0, coalesce(s.tokens_cache_write, 0) - coalesce(usage.cache_write, 0)) as cache_write,
+                null as context_tokens
         from tree join main.session_v2 s on s.id = tree.id
         left join usage on usage.session_id = s.id
         ), attributed as (
@@ -874,6 +908,7 @@ class Store:
         select
           t.tool as tool,
           {model} as model_name,
+          {fields['input']} + {fields['cache_read']} + {fields['cache_write']} as context_tokens,
           count(*) as calls,
           sum(({total}) * 1.0 / tc.n) as tokens_total,
           sum({fields['input']} * 1.0 / tc.n) as input,
@@ -886,17 +921,43 @@ class Store:
         join {'opentab_message_usage' if numeric else 'message'} m on m.id = t.message_id
         join tool_counts tc on tc.message_id = t.message_id
         where m.session_id in (select id from tree)
-        group by t.tool, model_name
+        group by t.tool, model_name, context_tokens
         order by cost desc, tokens_total desc
         """
-        return list(
-            debug.query_rows(
-                self.conn,
-                self._detail_sql(sql, part_metadata=True),
-                [workflow_id],
-                label="opencode.tools_query",
-            )
+        parts = debug.query_rows(
+            self.conn,
+            self._detail_sql(sql, part_metadata=True),
+            [workflow_id],
+            label="opencode.tools_query",
         )
+        tools = {}
+        for part in parts:
+            part = dict(part)
+            key = (part["tool"], part["model_name"])
+            row = tools.setdefault(key, {"tool": key[0], "model_name": key[1], "pricing": []})
+            tok = [
+                part.get(k, 0)
+                for k in (
+                    "input",
+                    "output",
+                    "reasoning",
+                    "cache_read",
+                    "cache_write",
+                    "cache_write_1h",
+                )
+            ]
+            row["pricing"].append(
+                {
+                    "context": part["context_tokens"],
+                    "tok": tok,
+                    "unpriced": tok if not part["cost"] else [0.0] * 6,
+                    "root_unpriced": [0.0] * 6,
+                }
+            )
+            for name, value in part.items():
+                if name not in ("tool", "model_name", "context_tokens"):
+                    row[name] = row.get(name, 0) + value
+        return sorted(tools.values(), key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
     def supports_tools(self, workflow_id: str) -> bool:
         # Per-session capability gate for the Tools tab. A single OpenCode DB is

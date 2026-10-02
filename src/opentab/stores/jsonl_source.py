@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 
+from opentab.accounting.tiers import request_context
 from opentab.demo import demo_config
 from opentab.presentation.formatting import _clean_prompt
 from opentab.stores.csv_source import CsvStore
@@ -49,6 +50,7 @@ class JsonlStore(CsvStore):
         "timestamp": ("timestamp", "time", "ts", "date", "created_at", "datetime"),
         "model": ("model", "model_id", "model_name"),
         "input": ("input_tokens", "input", "prompt_tokens"),
+        "context_tokens": ("context_tokens",),
         "output": ("output_tokens", "output", "completion_tokens"),
         "cached": ("cached_tokens", "cached", "cache_read", "cache_read_tokens"),
         "cache_write": (
@@ -286,6 +288,7 @@ class JsonlStore(CsvStore):
                 "model_name": model,
                 "cost": round(cost, 6),
                 "input": uncached,
+                "context_tokens": request_context(obj),
                 "output": out,
                 "reasoning": 0,
                 "cache_read": cached,

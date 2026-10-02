@@ -17,9 +17,10 @@ from dataclasses import asdict
 
 from opentab import diagnostics as debug
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 16  # Copilot execution ownership and root-only model shares
+CACHE_VERSION = 18  # Request tiers; VS Code multi-round context remains unknown
 
 
 # Required because cache readers index these fields directly.
@@ -161,7 +162,7 @@ class CachedStore:
             return self._reject("disk", "workflow_shape")
         # Validate direct-index fields before the hit path loses its reparse fallback.
         if not all(
-            isinstance(row, dict) and MODEL_ROW_KEYS <= row.keys()
+            isinstance(row, dict) and MODEL_ROW_KEYS <= row.keys() and valid_pricing(row)
             for row in data["model_breakdown"]
         ):
             return self._reject("disk", "model_shape")

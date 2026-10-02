@@ -2,7 +2,44 @@ import opentab.tui.app as app_mod
 from opentab.accounting.pricing import TOKEN_TYPES, api_equivalent_cost, model_price
 from opentab.presentation.heatmap import TOKEN_SERIES_BASE_PAIR
 
-from tests._support import AttrScreen, _model_row, app_with, workflow
+from tests._support import AttrScreen, _model_row, app_with, tier_prices, workflow
+
+
+def test_monthly_economics_and_api_cost_use_request_tiers_and_same_model_target_is_zero():
+    from opentab.accounting.tiers import attach_pricing
+
+    with tier_prices() as name:
+        row = _row(name, input=500000, output=2000)
+        row.update(
+            unpriced_input=500000,
+            unpriced_output=2000,
+            root_unpriced_input=500000,
+            root_unpriced_output=2000,
+            real_cost=0,
+        )
+        turns = [
+            {"model_name": name, "input": n, "output": 1000, "cost": 0} for n in (200000, 300000)
+        ]
+        attach_pricing([row], turns)
+        app = _app({"a": [row]}, [workflow("a", "2026-06-01 12:00:00", cost=0)])
+        app._compute_api_costs()
+        app.show_api_prices = True
+        app._apply_price_mode()
+        econ = app.token_economics(app.loaded)
+        assert abs(econ.total_cost - 3.25) < 1e-9
+        assert abs(app.months[0].cost - 3.25) < 1e-9
+        app.whatif_model = name
+        assert app.whatif_session_totals(app.loaded[0]) == (3.25, 3.25)
+        assert not econ.tier_context_missing
+        table_row = app.renderer._mix_rows([row])[0]
+        parts = app.renderer._price_split_dollars(name, 3.25, 502000, 0, 0, 2000, table_row[7])
+        assert parts == (0, 0, 0.05)
+        row.pop("pricing")
+        econ = app.token_economics(app.loaded)
+        assert econ.tier_context_missing
+        assert "request context sizes unavailable" in "\n".join(
+            app.renderer._token_economics_box(app.loaded, 100)
+        )
 
 
 def _row(model, **tok):
@@ -27,6 +64,48 @@ def _app(rows_by_session, workflows=None):
     app = app_with(workflows or [workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = rows_by_session
     return app
+
+
+def test_tier_overview_projections_reuse_prices_and_refresh_on_rates_and_usage():
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+    from opentab.accounting.tiers import attach_pricing
+
+    with tier_prices() as name:
+        turns = [{"model_name": name, "input": 280000 + i, "output": 1000} for i in range(128)]
+        row = _row(name, input=sum(t["input"] for t in turns), output=128000)
+        for field in ("input", "output"):
+            row["unpriced_" + field] = row["root_unpriced_" + field] = row[field]
+        attach_pricing([row], turns)
+        app = _app({"a": [row]})
+        app._models_loaded = True
+        before = app.token_economics(app.loaded)
+        with patch.object(
+            app_mod, "row_cost_parts", side_effect=AssertionError("warm reprice")
+        ), patch.object(app_mod, "pricing_samples", side_effect=AssertionError("warm scan")):
+            assert app.token_economics(app.loaded) == before
+            assert dict(app.aggregate_models(app.loaded))[name]["list_parts"] == before.cost
+            assert app.model_session_usage("a", name)["list_cost"] == before.total_cost
+            assert app.renderer._mix_rows([row])[0][7] == before.cost
+
+        # A real refresh action invalidates derived dollars, even with unchanged buckets.
+        prices = pricing._layers()[0][0]
+        tier = prices.tiers["gpt-5.6-sol"][0]
+        tier["cost"] = [2 * value for value in tier["cost"]]
+        with patch.object(app_mod, "refresh_model_prices", return_value=(1, "fixture")):
+            app.refresh_prices_action()
+        after = app.token_economics(app.loaded)
+        assert abs(after.total_cost - before.total_cost * 2) < 1e-9
+
+        # A changed source reload replaces usage and releases the old projection.
+        replacement = _row(name, input=1000, output=1000)
+        replacement["root_id"] = "a"
+        with patch.object(app.store, "model_breakdown", return_value=[replacement]):
+            app.reload()
+        reloaded = app.token_economics(app.loaded)
+        assert abs(reloaded.total_cost - 0.024) < 1e-9
+        assert reloaded.tier_context_missing
 
 
 def test_the_five_parts_sum_to_the_api_equivalent_total():
@@ -178,8 +257,11 @@ def test_a_missing_cache_read_rate_is_flagged_rather_than_read_as_free():
     app = _app({"a": [_row("weird/no-cache-rate", input=1_000, cache_read=9_000_000)]})
     original = app_mod.model_price
     try:
-        app_mod.model_price = lambda name: (3.0, 15.0, 0.0, 0.0)
-        econ = app.token_economics([workflow("a", "2026-06-01 12:00:00")])
+        from unittest.mock import patch
+
+        app_mod.model_price = lambda name, context=None: (3.0, 15.0, 0.0, 0.0)
+        with patch("opentab.accounting.tiers.model_price", app_mod.model_price):
+            econ = app.token_economics([workflow("a", "2026-06-01 12:00:00")])
     finally:
         app_mod.model_price = original
     assert econ.missing_cache_rate

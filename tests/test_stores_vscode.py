@@ -57,6 +57,47 @@ def _vscode_user_dir(tmp, journal_entries, hash_name="h1", folder_name="myrepo",
     return user, folder
 
 
+def test_vscode_multi_round_usage_keeps_tier_context_unknown_across_views():
+    from opentab.accounting.tiers import node_api_cost, row_list_cost, unknown_tier_context
+
+    from tests._support import app_with, tier_prices
+
+    with tempfile.TemporaryDirectory() as tmp, tier_prices():
+        user, _ = _vscode_user_dir(
+            tmp,
+            [
+                {
+                    "kind": 0,
+                    "v": {
+                        "sessionId": VSCODE_SID,
+                        "requests": [
+                            _vscode_request(
+                                md_prompt=300000,
+                                md_output=1000,
+                                completion=10000,
+                                resolved="gpt-5.6-sol",
+                            ),
+                        ],
+                    },
+                }
+            ],
+        )
+        store = ot.VscodeStore([user], _vscode_args(user))
+        (row,) = store.model_breakdown()
+        (node,) = store.workflow_nodes(VSCODE_SID)
+        (turn,) = store.message_timeline(VSCODE_SID)
+        # Only the last round's prompt is known; the accumulated output cannot all
+        # inherit that round's tier. Keep the conservative aggregate estimate explicit.
+        assert unknown_tier_context(row)
+        assert turn.get("context_tokens") is None
+        assert abs(row_list_cost(row) - 1.4) < 1e-9
+        assert abs(node_api_cost(node) - 1.4) < 1e-9
+        assert abs(row_list_cost(turn) - 1.4) < 1e-9
+        app = app_with(store.workflows())
+        app._model_by_root = {VSCODE_SID: [row]}
+        assert app.token_economics(app.loaded).tier_context_missing
+
+
 def test_vscode_store_replays_journal_and_prefers_cumulative_output():
     with tempfile.TemporaryDirectory() as tmp:
         user, folder = _vscode_user_dir(

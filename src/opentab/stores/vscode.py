@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from urllib.parse import unquote
 
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import _clean_prompt
 from opentab.util import git_root, read_files_parallel, windows_to_wsl_path
@@ -448,6 +449,9 @@ class VscodeStore:
                     "root_unpriced_output": acc["output"],
                 }
             )
+        # Output spans tool rounds, but input describes only the final round.
+        # Neither the aggregate nor its output has a single proven request tier.
+        attach_pricing(rows, s["turns"], per_request=False)
         s["model_rows"] = rows
         s["total_tokens"] = sum(r["tokens_total"] for r in rows)
         s["unpriced_tokens"] = s["total_tokens"]  # all of it
@@ -528,6 +532,8 @@ class VscodeStore:
                 "tokens_total": root["tokens_total"],
             }
         ]
+        if not self.demo:
+            attach_node_pricing(nodes[0], s["turns"], per_request=False)
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes

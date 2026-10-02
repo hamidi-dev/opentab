@@ -45,6 +45,7 @@ package and installed command are both `opentab`.
 | `tui/bindings.py`, `tui/keymap.py` | Configurable bindings, contextual actions and help |
 | `web/report.py`, `web/page.py` | Report payload, HTTP server and self-contained HTML/CSS/JS |
 | `accounting/pricing.py`, `data/models.json` | Rate lookup, cost calculations and generated catalog |
+| `accounting/tiers.py` | Numeric request-context buckets and tier-aware model/node cost projections |
 | `presentation/formatting.py`, `presentation/heatmap.py`, `presentation/themes.py` | Text, charts and shared colour palettes |
 | `presentation/whats_new.py` | Shared release-note content, validation and announcement rules |
 | `sources.py` | Harness discovery, selection and store construction |

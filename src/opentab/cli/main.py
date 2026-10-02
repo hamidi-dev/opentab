@@ -11,6 +11,8 @@ import sys
 import time
 from datetime import datetime
 
+from opentab.accounting.tiers import node_api_cost, unpriced_cost
+
 try:
     import curses
 except ImportError:  # native Windows has no stdlib curses
@@ -19,7 +21,6 @@ except ImportError:  # native Windows has no stdlib curses
 from opentab import __version__, sources
 from opentab.accounting.pricing import (
     MODELS_DEV_URL,
-    api_equivalent_cost,
     price_cache_path,
     refresh_model_prices,
 )
@@ -67,7 +68,6 @@ from opentab.tui.app import App
 from opentab.util import (
     git_root,
     init_color_allowed,
-    node_1h_write,
     resolve_project_root,
     unicode_screen,
 )
@@ -1220,10 +1220,6 @@ def _fleet_estimated_costs(backends: list) -> dict[str, float]:
     # Mirror App's `$` estimate from already-parsed per-model rows. The tuples follow
     # api_equivalent_cost's argument order and end with the 1h-write subset; older exports
     # omit it and therefore retain their previous pricing.
-    unpriced = ("unpriced_input", "unpriced_output", "unpriced_reasoning",
-                "unpriced_cache_read", "unpriced_cache_write",
-                "unpriced_cache_write_1h")  # fmt: skip
-    whole = ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
     delta: dict[str, float] = {}
     for row in backends:
         for m in row[6] if len(row) > 6 and row[6] else ():
@@ -1231,14 +1227,7 @@ def _fleet_estimated_costs(backends: list) -> dict[str, float]:
             rid = m.get("root_id")
             if not rid:
                 continue
-            real = m.get("cost", 0) or 0
-            # Old pure-$0 rows lack the unpriced split, so their whole token row is unpriced.
-            keys = whole if (real == 0 and "unpriced_input" not in m) else unpriced
-            delta[rid] = (
-                delta.get(rid, 0.0)
-                + m.get("estimated_cost", 0.0)
-                + api_equivalent_cost(m["model_name"], *(m.get(k, 0) for k in keys))
-            )
+            delta[rid] = delta.get(rid, 0.0) + m.get("estimated_cost", 0.0) + unpriced_cost(m)
     return delta
 
 
@@ -1481,16 +1470,7 @@ def _price_root(store, workflow_id: str) -> str:
     nodes_of = getattr(store, "status_nodes", store.workflow_nodes)
     for node in nodes_of(workflow_id):
         total += node["cost"]
-        if not node["cost"] and node["tokens_total"]:
-            estimated += api_equivalent_cost(
-                node["model_name"],
-                node["tokens_input"],
-                node["tokens_output"],
-                node["tokens_reasoning"],
-                node["tokens_cache_read"],
-                node["tokens_cache_write"],
-                node_1h_write(node),
-            )
+        estimated += node_api_cost(dict(node)) - node["cost"]
     text = money(total + estimated)
     return "~" + text if estimated > 0 else text
 

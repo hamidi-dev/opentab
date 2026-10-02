@@ -15,8 +15,45 @@ import opentab.persistence.state as state_module
 from opentab import remote_content
 from opentab.api import json_cli as programmatic
 
-from tests._support import FakeStore, _claude_msg, _parse, _usage, _write_jsonl, workflow
+from tests._support import (
+    FakeStore,
+    _claude_msg,
+    _parse,
+    _usage,
+    _write_jsonl,
+    tier_prices,
+    workflow,
+)
 from tests.test_remote_content import _managed, _replies
+
+
+def test_service_costs_and_model_comparison_price_individual_request_tiers():
+    from opentab.accounting.tiers import FIELDS, attach_pricing
+
+    with tier_prices() as name:
+        turns = [
+            {"model_name": name, "input": 100000, "output": 1000, "cost": 7},
+            {"model_name": name, "input": 300000, "output": 1000, "cost": 0},
+        ]
+        row = {"root_id": "s1", "model_name": name, "runs": 2, "cost": 7, "tokens_total": 402000}
+        for field in FIELDS:
+            row[field] = sum(t.get(field, 0) for t in turns)
+            row["unpriced_" + field] = row["root_unpriced_" + field] = turns[1].get(field, 0)
+        attach_pricing([row], turns)
+
+        class Store(DetailStore):
+            def model_breakdown(self):
+                return [row]
+
+        service = ot.OpenTabService(
+            Store([workflow("s1", "2026-09-01 12:00:00", cost=7, tokens=402000)], model=name),
+            _args(),
+        )
+        assert abs(service._api_model_cost(row) - 9.43) < 1e-9
+        result = service.compare_model("s1", name)
+        assert result["actual_models_list_cost_usd"] == result["target_model_list_cost_usd"]
+        assert abs(result["actual_models_list_cost_usd"] - 2.85) < 1e-9
+        assert result["change_usd"] == 0 and not result["baseline_estimated"]
 
 
 def test_api_package_is_lightweight_and_root_service_exports_preserve_identity():

@@ -89,7 +89,7 @@ def intro_lines(
     if token_mix:
         (inp, out, cache_read, cache_write), _total = token_mix
         parts.append(
-            "eff $/M = list rates at your mix: "
+            "eff $/M = base list rates at your mix: "
             f"{inp:.1%} in · {out:.1%} out · {cache_read:.1%} cacheR · "
             f"{cache_write:.1%} cacheW"
         )

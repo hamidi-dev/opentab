@@ -93,6 +93,8 @@ def scramble_node(n: dict, scale: float, cats: frozenset, *, seed: str | None = 
         n["cost"] = demo_cost(n.get("tokens_total") or 0, key)
     n["cost"] = round(float(n.get("cost") or 0.0) * scale, 4)
     n.pop("estimated_cost", None)
+    n.pop("model_pricing", None)
+    n.pop("pricing", None)
     for f in _NODE_TOKEN_FIELDS:
         if f in n:
             n[f] = int(round((n.get(f) or 0) * scale))

@@ -14,6 +14,15 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from opentab.accounting.models import SessionRef, Workflow
+from opentab.accounting.tiers import (
+    node_api_cost,
+    node_list_cost,
+    pricing_samples,
+    row_cost_parts,
+    row_list_cost,
+    unknown_tier_context,
+    unpriced_cost,
+)
 from opentab.stores.opencode import Store
 
 try:
@@ -37,8 +46,6 @@ from opentab.accounting.models import (
 from opentab.accounting.pricing import (
     LOCAL_PROVIDERS,
     TOKEN_TYPES,
-    api_equivalent_cost,
-    cache_write_1h_price,
     canonical_model,
     catalog_models,
     display_model,
@@ -84,11 +91,9 @@ from opentab.tui.search_workspace import SearchWorkspace
 from opentab.util import (
     DULL_AGENT_NAMES,
     fuzzy_score,
-    model_row_1h_write,
     model_row_split,
     month_bounds,
     month_window_start,
-    node_1h_write,
     open_path,
     parse_range_text,
     resolve_project_root,
@@ -122,6 +127,7 @@ class TokenEconomics(NamedTuple):
     estimated: bool
     missing_cache_rate: bool
     local_tokens: int
+    tier_context_missing: bool = False
 
     @property
     def total_tokens(self) -> float:
@@ -360,6 +366,7 @@ class App:
         self._resolve_project_roots()
         # Defer the corpus-wide model scan until after the fast first frame.
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
+        self._model_economics_cache: dict[int, tuple] = {}
         self._models_loaded = False
         self._tool_by_session: dict[str, list[dict]] = {}
         self._turns_by_session: dict[str, list[dict]] = {}
@@ -1620,9 +1627,13 @@ class App:
 
     @debug.timed("app.load_models")
     def _load_model_cache(self) -> None:
+        self._model_economics_cache.clear()
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
         for row in self.store.model_breakdown():
-            self._model_by_root[row["root_id"]].append(dict(row))
+            model = dict(row)
+            if self.store.demo:
+                model.pop("pricing", None)
+            self._model_by_root[row["root_id"]].append(model)
         # Reuse the heavy breakdown scan for model_count; compute before demo renaming.
         for w in self.loaded:
             w.model_count = len(self._model_by_root.get(w.id, ()))
@@ -1782,8 +1793,11 @@ class App:
             runs += int(row.get("runs") or 0)
             tokens += row_tokens
             if not is_local_provider(model):
-                list_cost += api_equivalent_cost(model, *split, model_row_1h_write(row))
-                estimated = estimated or (row_tokens > 0 and not has_known_price(model))
+                econ = self.model_row_economics(row)
+                list_cost += econ.total_cost
+                estimated = estimated or (
+                    row_tokens > 0 and (econ.estimated or econ.tier_context_missing)
+                )
         return {
             "runs": runs,
             "tokens": tokens,
@@ -1823,15 +1837,7 @@ class App:
     def effective_tool_cost(self, row: dict) -> float:
         cost = float(row.get("cost") or 0)
         if self.show_api_prices and not self.store.demo and not cost:
-            return api_equivalent_cost(
-                str(row.get("model_name") or ""),
-                row.get("input", 0),
-                row.get("output", 0),
-                row.get("reasoning", 0),
-                row.get("cache_read", 0),
-                row.get("cache_write", 0),
-                row.get("cache_write_1h", 0),
-            )
+            return row_list_cost(row)
         return cost
 
     @staticmethod
@@ -2019,6 +2025,7 @@ class App:
         k = self.store.demo_scale
         synth = "spend" in self._demo_cats
         for r in rows:
+            r.pop("pricing", None)
             if synth and r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
                 r["cost"] = demo_cost(
                     r["tokens_total"], f"{workflow_id}:{r['tool']}:{r['model_name']}"
@@ -2744,6 +2751,8 @@ class App:
         titles, turns, spend = "titles" in cats, "turns" in cats, "spend" in cats
         synthetic_trace = turns and self.session_supports_trace(workflow_id)
         for n, r in enumerate(rows):
+            r.pop("context_tokens", None)
+            r.pop("pricing_run", None)
             if titles:
                 r["model_name"] = demo_model(r["model_name"])
                 # Keep aliases stable per prompt so grouped turns remain grouped.
@@ -3247,34 +3256,9 @@ class App:
             for m in rows:
                 real = m["real_cost"] = m.get("real_cost", m["cost"])
                 # Legacy in-memory rows may expose only aggregate tokens.
-                all_unpriced = real == 0 and "unpriced_input" not in m
-                m["api_cost"] = (
-                    real
-                    + m.get("estimated_cost", 0.0)
-                    + api_equivalent_cost(
-                        m["model_name"],
-                        m.get("input", 0) if all_unpriced else m.get("unpriced_input", 0),
-                        m.get("output", 0) if all_unpriced else m.get("unpriced_output", 0),
-                        m.get("reasoning", 0) if all_unpriced else m.get("unpriced_reasoning", 0),
-                        m.get("cache_read", 0) if all_unpriced else m.get("unpriced_cache_read", 0),
-                        m.get("cache_write", 0)
-                        if all_unpriced
-                        else m.get("unpriced_cache_write", 0),
-                        m.get("cache_write_1h", 0)
-                        if all_unpriced
-                        else m.get("unpriced_cache_write_1h", 0),
-                    )
-                )
+                m["api_cost"] = real + m.get("estimated_cost", 0.0) + unpriced_cost(m)
                 if has_root_split:
-                    root_delta += m.get("root_estimated_cost", 0.0) + api_equivalent_cost(
-                        m["model_name"],
-                        m.get("root_unpriced_input", 0),
-                        m.get("root_unpriced_output", 0),
-                        m.get("root_unpriced_reasoning", 0),
-                        m.get("root_unpriced_cache_read", 0),
-                        m.get("root_unpriced_cache_write", 0),
-                        m.get("root_unpriced_cache_write_1h", 0),
-                    )
+                    root_delta += m.get("root_estimated_cost", 0.0) + unpriced_cost(m, root=True)
             wf = by_id.get(root_id)
             if not wf:
                 continue
@@ -3355,17 +3339,49 @@ class App:
         rows = self._model_by_root.get(workflow.id) or []
         if not rows:
             return None
-        baseline = 0.0
-        tokens = [0.0, 0.0, 0.0, 0.0, 0.0]
-        long_write = 0.0
-        for m in rows:
-            split = model_row_split(m)
-            long_1h = model_row_1h_write(m)
-            baseline += api_equivalent_cost(str(m.get("model_name") or ""), *split, long_1h)
-            tokens = [a + b for a, b in zip(tokens, split)]
-            long_write += long_1h
-        # Preserve the 1h-write subset on both sides of the exact comparison.
-        return baseline, api_equivalent_cost(target, *tokens, long_write)
+        return sum(self.model_row_economics(m).total_cost for m in rows), sum(
+            row_list_cost(m, target) for m in rows
+        )
+
+    def model_row_economics(self, row: dict) -> TokenEconomics:
+        """Reuse list-price projections across scopes and redraws, never persist them.
+
+        Request buckets are immutable within a loaded model snapshot. Reload/source/demo
+        changes replace it; a rate refresh explicitly clears this memo. The constant-size
+        signature also handles replaced buckets and legacy scalar rows without hashing
+        every request on the paint path. Keep the row alive to prevent identity reuse.
+        """
+        name = str(row.get("model_name") or "")
+        split = model_row_split(row)
+        signature = (
+            name,
+            split,
+            row.get("cache_write_1h"),
+            row.get("context_tokens"),
+            id(row.get("pricing")),
+        )
+        cached = self._model_economics_cache.get(id(row))
+        if cached is not None and cached[0] is row and cached[1] == signature:
+            return cached[2]
+        if is_local_provider(name):
+            econ = TokenEconomics((0.0,) * 5, (0.0,) * 5, False, False, int(sum(split)))
+        else:
+            missing_cache_rate = False
+            for context, tok in pricing_samples(row):
+                ir, _out, crr, _cw = model_price(name, context)
+                if crr <= 0 and tok[3] > 0 and ir > 0:
+                    missing_cache_rate = True
+                    break
+            econ = TokenEconomics(
+                split,
+                row_cost_parts(row),
+                sum(split) > 0 and not has_known_price(name),
+                missing_cache_rate,
+                0,
+                unknown_tier_context(row),
+            )
+        self._model_economics_cache[id(row)] = (row, signature, econ)
+        return econ
 
     def token_economics(
         self, workflows: list[Workflow], model: str | None = None
@@ -3379,36 +3395,30 @@ class App:
         tokens = [0.0] * len(TOKEN_TYPES)
         cost = [0.0] * len(TOKEN_TYPES)
         estimated = missing_cache_rate = False
+        tier_context_missing = False
         local_tokens = 0
         for workflow in workflows:
             for row in self._model_by_root.get(workflow.id) or []:
                 name = str(row.get("model_name") or "")
                 if model is not None and name != model:
                     continue
-                split = model_row_split(row)
-                if is_local_provider(name):
-                    local_tokens += int(sum(split))
-                    continue
-                inp, out, reasoning, cache_read, cache_write = split
-                ir, orr, crr, cwr = model_price(name)
-                for i, n in enumerate(split):
+                econ = self.model_row_economics(row)
+                local_tokens += econ.local_tokens
+                for i, n in enumerate(econ.tokens):
                     tokens[i] += n
-                cost[0] += inp * ir / 1e6
-                cost[1] += out * orr / 1e6
-                cost[2] += reasoning * orr / 1e6
-                cost[3] += cache_read * crr / 1e6
-                long_write = min(max(model_row_1h_write(row), 0.0), cache_write)
-                cost[4] += (
-                    (cache_write - long_write) * cwr + long_write * cache_write_1h_price(name)
-                ) / 1e6
-                if crr <= 0 and cache_read > 0 and ir > 0:
-                    missing_cache_rate = True
-                if sum(split) > 0 and not has_known_price(name):
-                    estimated = True
+                cost = [a + b for a, b in zip(cost, econ.cost)]
+                missing_cache_rate = missing_cache_rate or econ.missing_cache_rate
+                tier_context_missing = tier_context_missing or econ.tier_context_missing
+                estimated = estimated or econ.estimated
         if sum(tokens) <= 0:
             return None
         return TokenEconomics(
-            tuple(tokens), tuple(cost), estimated, missing_cache_rate, local_tokens
+            tuple(tokens),
+            tuple(cost),
+            estimated,
+            missing_cache_rate,
+            local_tokens,
+            tier_context_missing,
         )
 
     @staticmethod
@@ -3513,23 +3523,18 @@ class App:
         # Ignore aborted zero-token rows; only contributing fallback rates make `~` truthful.
         return any(
             int(m.get("tokens_total") or 0) > 0
-            and not has_known_price(str(m.get("model_name") or ""))
+            and (
+                not has_known_price(str(m.get("model_name") or ""))
+                or unknown_tier_context(m)
+                or (self.whatif_model and unknown_tier_context(m, self.whatif_model))
+            )
             and not is_local_provider(str(m.get("model_name") or ""))
             for m in self._model_by_root.get(workflow.id) or []
         )
 
     def whatif_node_price(self, row: dict, target: str) -> float:
         # A target cost is exact; a mixed-model node baseline is not available.
-        return api_equivalent_cost(
-            target,
-            row["tokens_input"],
-            row["tokens_output"],
-            row["tokens_reasoning"],
-            row["tokens_cache_read"],
-            row["tokens_cache_write"],
-            # Cache TTL belongs to the prompt, not the model answering it.
-            node_1h_write(row),
-        )
+        return node_list_cost(row, target)
 
     def toggle_whatif(self) -> None:
         # Demo scaling hides absolute what-if spend while preserving its ratio.
@@ -3720,6 +3725,7 @@ class App:
             self.notify(f"price refresh failed: {exc}", "error")
             return
         invalidate_price_cache()
+        self._model_economics_cache.clear()
         self.renderer._turn_layout_cache = None
         self.renderer._trace_layout_cache = None
         self._whatif_catalog_rows = None
@@ -4640,15 +4646,7 @@ class App:
         for r in self.reader_turn_rows(session.id):
             row = dict(r)
             if api and not row["cost"]:  # reprice a wholly-$0 turn at list price, like the tab
-                row["cost"] = api_equivalent_cost(
-                    r["model_name"],
-                    r["input"],
-                    r["output"],
-                    r["reasoning"],
-                    r["cache_read"],
-                    r["cache_write"],
-                    r.get("cache_write_1h", 0),
-                )
+                row["cost"] = row_list_cost(r)
             if api:
                 row["cost"] += r.get("estimated_cost", 0.0)
             rows.append(row)
@@ -4660,15 +4658,7 @@ class App:
         for r in self.session_tool_rows(session.id):
             row = dict(r)
             if api and not row["cost"]:
-                row["cost"] = api_equivalent_cost(
-                    r["model_name"],
-                    r["input"],
-                    r["output"],
-                    r["reasoning"],
-                    r["cache_read"],
-                    r["cache_write"],
-                    r.get("cache_write_1h", 0),
-                )
+                row["cost"] = row_list_cost(r)
             rows.append(row)
         return exporting.tools_dataset(rows)
 
@@ -9141,10 +9131,8 @@ class App:
         rows = self.ranged_workflows if include_ignored else self.all_workflows
         return [w for w in rows if self.project_root(w.directory) == directory]
 
-    def aggregate_models(
-        self, workflows: list[Workflow]
-    ) -> list[tuple[str, dict[str, float | int]]]:
-        aggregate: dict[str, dict[str, float | int]] = defaultdict(
+    def aggregate_models(self, workflows: list[Workflow]) -> list[tuple[str, dict]]:
+        aggregate: dict[str, dict] = defaultdict(
             lambda: {
                 "runs": 0,
                 "cost": 0.0,
@@ -9152,6 +9140,7 @@ class App:
                 "cache_read": 0,
                 "cache_write": 0,
                 "output": 0,
+                "list_parts": (0.0,) * 5,
             }
         )
         for workflow in workflows:
@@ -9163,6 +9152,9 @@ class App:
                 item["cache_read"] = int(item["cache_read"]) + int(row["cache_read"] or 0)
                 item["cache_write"] = int(item["cache_write"]) + int(row["cache_write"] or 0)
                 item["output"] = int(item["output"]) + int(row["output"] or 0)
+                item["list_parts"] = tuple(
+                    a + b for a, b in zip(item["list_parts"], self.model_row_economics(row).cost)
+                )
         return sorted(
             aggregate.items(),
             key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
@@ -9186,17 +9178,8 @@ class App:
         out = []
         for row in rows:
             d = dict(row)
-            if api and not d["cost"]:
-                d["cost"] = api_equivalent_cost(
-                    d["model_name"],
-                    d["tokens_input"],
-                    d["tokens_output"],
-                    d["tokens_reasoning"],
-                    d["tokens_cache_read"],
-                    d["tokens_cache_write"],
-                    node_1h_write(d),
-                )
             if api:
+                d["cost"] = node_api_cost(d)
                 d["cost"] += d.get("estimated_cost", 0.0)
             out.append(d)
         return out

@@ -20,7 +20,6 @@ from urllib.parse import parse_qs, unquote
 from opentab import __version__
 from opentab import diagnostics as debug
 from opentab.accounting.pricing import (
-    api_equivalent_cost,
     cache_misses,
     cache_write_1h_price,
     family_label,
@@ -28,7 +27,9 @@ from opentab.accounting.pricing import (
     is_local_provider,
     model_context_window,
     model_price,
+    model_tiers,
 )
+from opentab.accounting.tiers import node_api_cost, pricing_samples, row_list_cost
 from opentab.accounting.tools import tool_calls_from_turns
 from opentab.presentation.themes import DEFAULT_THEME
 from opentab.presentation.whats_new import public_payload
@@ -59,18 +60,7 @@ def _money6(value) -> float:
 
 def _node_api_cost(d: dict) -> float:
     # Match App._priced_nodes: a zero-cost node is wholly repriced at list rates.
-    real = float(d.get("cost") or 0)
-    if real:
-        return real + float(d.get("estimated_cost") or 0)
-    return float(d.get("estimated_cost") or 0) + api_equivalent_cost(
-        d.get("model_name") or "",
-        d.get("tokens_input") or 0,
-        d.get("tokens_output") or 0,
-        d.get("tokens_reasoning") or 0,
-        d.get("tokens_cache_read") or 0,
-        d.get("tokens_cache_write") or 0,
-        d.get("tokens_cache_write_1h") or 0,
-    )
+    return node_api_cost(d) + float(d.get("estimated_cost") or 0)
 
 
 def _model_row(r: dict) -> dict:
@@ -89,6 +79,7 @@ def _model_row(r: dict) -> dict:
         # Full pricing split; the sixth value is a subset of cacheWrite, not extra tokens.
         # Per-model rows are the only exact baseline for sessions that switched models.
         "tok": [int(inp), int(out), int(reasoning), int(cr), int(cw), int(model_row_1h_write(r))],
+        "pricing": [{"context": context, "tok": tok} for context, tok in pricing_samples(r)],
     }
 
 
@@ -104,6 +95,13 @@ def _node_row(row) -> dict:
         # This mirrors App._priced_nodes, not the per-model what-if baseline.
         "api": _money6(_node_api_cost(d)),
         "tokens": int(d.get("tokens_total") or 0),
+        "pricing": [
+            {"context": context, "tok": tok}
+            for row in d.get("model_pricing", [])
+            for context, tok in pricing_samples(row)
+        ]
+        if "model_pricing" in d
+        else None,
         # The client chooses the target later, so nodes carry the full pricing split.
         "tok": [
             int(d.get("tokens_input") or 0),
@@ -145,6 +143,14 @@ def _whatif_payload(app: App) -> dict:
             for name, _eff, _approx in app.whatif_catalog_candidates()
         ],
         "rates": rates,
+        "tiers": {
+            name: [
+                {"context": size, "price": list(price) + [cache_write_1h_price(name, size + 1)]}
+                for size, price in model_tiers(name)
+            ]
+            for name in set(rates) | {n for n, _eff, _approx in app.whatif_catalog_candidates()}
+            if model_tiers(name)
+        },
         "unpriced": sorted(
             name for name in rates if not has_known_price(name) and not is_local_provider(name)
         ),
@@ -315,16 +321,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         turn_rows = app.session_turn_rows(workflow_id)
         for r in turn_rows:
             real = float(r.get("cost") or 0)
-            api = real or api_equivalent_cost(
-                r.get("model_name") or "",
-                r.get("input") or 0,
-                r.get("output") or 0,
-                r.get("reasoning") or 0,
-                r.get("cache_read") or 0,
-                r.get("cache_write") or 0,
-                # Long-TTL writes replace the same subset in the 5m bucket.
-                r.get("cache_write_1h") or 0,
-            )
+            api = real or row_list_cost(r)
             turns.append(
                 {
                     "time": r.get("time") or "",
@@ -378,15 +375,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
     if supports_tools:
         for r in app.session_tool_rows(workflow_id):
             real = float(r.get("cost") or 0)
-            api = real or api_equivalent_cost(
-                r.get("model_name") or "",
-                r.get("input") or 0,
-                r.get("output") or 0,
-                r.get("reasoning") or 0,
-                r.get("cache_read") or 0,
-                r.get("cache_write") or 0,
-                r.get("cache_write_1h") or 0,
-            )
+            api = real or row_list_cost(r)
             tools.append(
                 {
                     "tool": r.get("tool") or "?",
@@ -417,15 +406,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         source = turn_rows[turn_index]
         count = calls_per_turn[turn_index]
         turn_real = float(source.get("cost") or 0)
-        turn_api = turn_real or api_equivalent_cost(
-            source.get("model_name") or "",
-            source.get("input") or 0,
-            source.get("output") or 0,
-            source.get("reasoning") or 0,
-            source.get("cache_read") or 0,
-            source.get("cache_write") or 0,
-            source.get("cache_write_1h") or 0,
-        )
+        turn_api = turn_real or row_list_cost(source)
         tool_calls.append(
             {
                 "index": int(call.get("index") or 0),

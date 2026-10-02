@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 
 from opentab import __version__
 from opentab.persistence import paths
@@ -229,6 +231,9 @@ def _catalog_entry(cost: dict, m: dict) -> dict | None:
             float(cw) if isinstance(cw, (int, float)) else 0.0,
         ]
     }
+    tiers = _context_tiers(cost)
+    if tiers:
+        entry["tiers"] = tiers
     if m.get("status") in _MODEL_STATUSES:
         entry["status"] = m["status"]
     limit = m.get("limit")
@@ -236,6 +241,63 @@ def _catalog_entry(cost: dict, m: dict) -> dict | None:
     if isinstance(ctx, (int, float)) and ctx > 0:
         entry["limit"] = int(ctx)
     return entry
+
+
+def _context_tiers(cost: dict) -> list[dict]:
+    """Normalize context thresholds, preferring explicit tiers over the legacy field."""
+    tiers = {}
+    raw = cost.get("tiers")
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            tier = item.get("tier")
+            if not isinstance(tier, dict) or tier.get("type") != "context":
+                continue
+            size = tier.get("size")
+            if (
+                isinstance(size, bool)
+                or not isinstance(size, (int, float))
+                or not math.isfinite(size)
+                or size <= 0
+                or int(size) != size
+            ):
+                continue
+            values = item.get("cost")
+            if values is None:
+                values = [
+                    item.get(k, cost.get(k, 0))
+                    for k in ("input", "output", "cache_read", "cache_write")
+                ]
+            if not isinstance(values, (list, tuple)) or len(values) != 4:
+                continue
+            if any(
+                isinstance(v, bool)
+                or not isinstance(v, (int, float))
+                or not math.isfinite(v)
+                or v < 0
+                for v in values
+            ):
+                continue
+            tiers.setdefault(int(size), [float(v) for v in values])
+    # Legacy metadata has a literal 200k boundary. Never insert that boundary when
+    # an explicit table supplies a different one (e.g. OpenAI's 272k threshold).
+    legacy = cost.get("context_over_200k")
+    if not tiers and isinstance(legacy, dict):
+        tiers = {
+            t["tier"]["size"]: t["cost"]
+            for t in _context_tiers(
+                {
+                    **cost,
+                    "tiers": [{**legacy, "tier": {"type": "context", "size": 200_000}}],
+                    "context_over_200k": None,
+                }
+            )
+        }
+    return [
+        {"tier": {"type": "context", "size": size}, "cost": values}
+        for size, values in sorted(tiers.items())
+    ]
 
 
 def _mode_rows(mid: str, m: dict, models: dict):
@@ -298,10 +360,18 @@ def prune_models_dev(data: dict) -> dict:
     return providers
 
 
+class _Prices(dict):
+    """Resolved rate cards and their matching tiers, indexed together once per layer."""
+
+    def __init__(self):
+        super().__init__()
+        self.tiers = {}
+
+
 def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
     # Accept provider-keyed and legacy flat layers. Bare-id collisions prefer a priced
     # vendor-owned route, then the most complete resale card; retain which route won.
-    prices: dict[str, tuple[float, float, float, float]] = {}
+    prices = _Prices()
     limits: dict[str, int] = {}
     rank: dict[str, tuple] = {}
     providers: dict = {}
@@ -323,6 +393,9 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
                 except (TypeError, ValueError):
                     continue
                 entry: dict = {"cost": row}
+                tiers = _context_tiers(m)
+                if tiers:
+                    entry["tiers"] = tiers
                 if m.get("status") in _MODEL_STATUSES:
                     entry["status"] = m["status"]
                 limit = m.get("limit")
@@ -335,6 +408,7 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
                 score = (is_vendor_route(pid, bare) and priced > 0, priced)
                 if bare not in rank or score > rank[bare]:
                     prices[bare], rank[bare] = row, score
+                    prices.tiers[bare] = entry.get("tiers", [])
                     if "limit" in entry:
                         limits[bare] = entry["limit"]
                     else:
@@ -421,6 +495,7 @@ def catalog_models() -> list[tuple[str, str, tuple[float, float, float, float], 
 def invalidate_price_cache() -> None:
     global _PRICE_CACHE, _BUNDLED
     _PRICE_CACHE = _BUNDLED = None
+    model_tiers.cache_clear()
 
 
 def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> tuple[int, str]:
@@ -451,7 +526,44 @@ def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> 
     return count, path
 
 
-def model_price(name: str) -> tuple[float, float, float, float]:
+def model_price(
+    name: str, context_tokens: float | None = None
+) -> tuple[float, float, float, float]:
+    if context_tokens is not None:
+        for size, price in reversed(model_tiers(name)):
+            if context_tokens > size:
+                return price
+    return _base_model_price(name)
+
+
+@lru_cache(maxsize=8192)
+def model_tiers(name: str) -> tuple:
+    """Return the selected rate card's context tiers, with the same alias/route rules."""
+    if is_local_provider(name):
+        return ()
+    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
+    plain = display_model(mid)
+    for prices, _limits, _tree, _meta, vendor in _layers():
+        selected = mid
+        row = prices.get(mid)
+        if row is None:
+            selected, row = plain, prices.get(plain)
+        elif plain != mid and not vendor.get(mid) and model_family(mid):
+            alt = prices.get(plain)
+            if alt is not None and (
+                vendor.get(plain) or sum(v > 0 for v in alt) > sum(v > 0 for v in row)
+            ):
+                selected, row = plain, alt
+        if row is None:
+            continue
+        return tuple(
+            (t["tier"]["size"], _with_openai_cache_write(mid, tuple(t["cost"])))
+            for t in getattr(prices, "tiers", {}).get(selected, [])
+        )
+    return ()
+
+
+def _base_model_price(name: str) -> tuple[float, float, float, float]:
     if is_local_provider(name):
         return (0.0, 0.0, 0.0, 0.0)
     mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
@@ -528,13 +640,13 @@ TOKEN_TYPES = ("Uncached input", "Output", "Reasoning", "Cache read", "Cache wri
 CACHE_WRITE_1H_MULTIPLIER = 2.0
 
 
-def cache_write_1h_price(name: str) -> float:
+def cache_write_1h_price(name: str, context_tokens: float | None = None) -> float:
     """Derive Anthropic's one-hour write rate from input, never below the short tier.
 
     Family gating prevents a supplied TTL count from inflating another vendor's writes.
     Extend catalog pruning before replacing this with a published one-hour field.
     """
-    inp, _out, _cr, cw = model_price(name)
+    inp, _out, _cr, cw = model_price(name, context_tokens)
     if model_family(name) != "anthropic" or not inp:
         return cw
     return max(inp * CACHE_WRITE_1H_MULTIPLIER, cw)
@@ -548,14 +660,16 @@ def api_equivalent_cost(
     cache_read: float,
     cache_write: float,
     cache_write_1h: float = 0.0,
+    *,
+    context_tokens: float | None = None,
 ) -> float:
     # ``cache_write_1h`` replaces the rate for a subset of total writes; it is not an
     # additive sixth token type. Reasoning bills at the output rate.
-    ir, orr, crr, cwr = model_price(name)
+    ir, orr, crr, cwr = model_price(name, context_tokens)
     cost = inp * ir + (out + reasoning) * orr + cache_read * crr
     long = min(max(cache_write_1h, 0.0), cache_write)
     if long:
-        cost += (cache_write - long) * cwr + long * cache_write_1h_price(name)
+        cost += (cache_write - long) * cwr + long * cache_write_1h_price(name, context_tokens)
     else:
         cost += cache_write * cwr
     return cost / 1e6
@@ -634,7 +748,9 @@ def cache_misses(rows) -> list[CacheMiss]:
                 idle=idle,
                 ttl=ttl or 0,
                 repaid=repaid,
-                cost=_repay_cost(model, repaid, write, _int(cur.get("cache_write_1h"))),
+                cost=_repay_cost(
+                    model, repaid, write, _int(cur.get("cache_write_1h")), cur.get("context_tokens")
+                ),
                 detail=(f"{_effort(prev)} → {_effort(cur)}" if cause == "reasoning" else ""),
             )
         )
@@ -663,12 +779,14 @@ def _miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b) -> str:
     return "waited"
 
 
-def _repay_cost(model: str, repaid: int, write: int, write_1h: int) -> float:
+def _repay_cost(
+    model: str, repaid: int, write: int, write_1h: int, context_tokens: float | None = None
+) -> float:
     # Bill re-bought writes and uncached input at their own rates, then subtract a hit.
-    ir, _out, crr, cwr = model_price(model)
+    ir, _out, crr, cwr = model_price(model, context_tokens)
     w = min(write, repaid)
     w1h = min(write_1h, w)
-    paid = (w - w1h) * cwr + w1h * cache_write_1h_price(model) + (repaid - w) * ir
+    paid = (w - w1h) * cwr + w1h * cache_write_1h_price(model, context_tokens) + (repaid - w) * ir
     # A missing cache-read rate falls back to input rather than inventing free hits.
     return max(0.0, paid - repaid * (crr if crr > 0 else ir)) / 1e6
 

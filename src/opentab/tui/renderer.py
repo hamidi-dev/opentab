@@ -18,6 +18,7 @@ from opentab.accounting.models import (
     Workflow,
     YearSummary,
 )
+from opentab.accounting.tiers import row_list_cost
 from opentab.presentation.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
 from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, keymap
@@ -149,7 +150,6 @@ except ImportError:  # native Windows has no stdlib curses
 from opentab.accounting.models import ALL_YEARS, year_label
 from opentab.accounting.pricing import (
     TOKEN_TYPES,
-    api_equivalent_cost,
     is_local_provider,
     model_context_window,
     model_price,
@@ -3379,10 +3379,17 @@ class Renderer:
             f"{'Share':>5}{sep}{'Tokens':>9}{sep}{tail_head}"
         )
         body = []
-        for name, runs, cost, tok, cr, cw, out in rows:
+        for row in rows:
+            name, runs, cost, tok, cr, cw, out = row[:7]
             if split:
                 c1, c2, c3 = self._price_split_cells(
-                    str(name), float(cost), int(tok), int(cr), int(cw), int(out)
+                    str(name),
+                    float(cost),
+                    int(tok),
+                    int(cr),
+                    int(cw),
+                    int(out),
+                    row[7] if len(row) > 7 else None,
                 )
                 tail = sep.join((c1, c2, c3))
             else:
@@ -3405,9 +3412,16 @@ class Renderer:
             truns, ttok, tcr, tcw, tout = (sum(int(r[i]) for r in rows) for i in (1, 3, 4, 5, 6))
             if split:
                 dollars = (0.0, 0.0, 0.0)
-                for name, _, cost, tok, cr, cw, out in rows:
+                for row in rows:
+                    name, _, cost, tok, cr, cw, out = row[:7]
                     row_d = self._price_split_dollars(
-                        str(name), float(cost), int(tok), int(cr), int(cw), int(out)
+                        str(name),
+                        float(cost),
+                        int(tok),
+                        int(cr),
+                        int(cw),
+                        int(out),
+                        row[7] if len(row) > 7 else None,
                     )
                     dollars = tuple(a + b for a, b in zip(dollars, row_d))
                 tail = sep.join(self._split_cell(n, d) for n, d in zip((tcr, tcw, tout), dollars))
@@ -3491,13 +3505,22 @@ class Renderer:
 
     @staticmethod
     def _price_split_dollars(
-        name: str, cost: float, tok: int, cr: int, cw: int, out: int
+        name: str,
+        cost: float,
+        tok: int,
+        cr: int,
+        cw: int,
+        out: int,
+        parts: tuple | None = None,
     ) -> tuple[float, float, float]:
         # Weight token categories at list rates, then scale to recorded Cost. This is exact
         # for list-price estimates and proportional for historical recorded costs.
-        ir, orr, crr, cwr = model_price(name)
-        inp = max(0, tok - cr - cw - out)
-        raw = (inp * ir, cr * crr, cw * cwr, out * orr)
+        if parts is not None:
+            raw = (parts[0] + parts[2], parts[3], parts[4], parts[1])
+        else:
+            ir, orr, crr, cwr = model_price(name)
+            inp = max(0, tok - cr - cw - out)
+            raw = (inp * ir, cr * crr, cw * cwr, out * orr)
         total = sum(raw)
         scale = cost / total if cost > 0 and total > 0 else 0.0
         return (raw[1] * scale, raw[2] * scale, raw[3] * scale)
@@ -3509,9 +3532,15 @@ class Renderer:
 
     @staticmethod
     def _price_split_cells(
-        name: str, cost: float, tok: int, cr: int, cw: int, out: int
+        name: str,
+        cost: float,
+        tok: int,
+        cr: int,
+        cw: int,
+        out: int,
+        parts: tuple | None = None,
     ) -> tuple[str, str, str]:
-        d = Renderer._price_split_dollars(name, cost, tok, cr, cw, out)
+        d = Renderer._price_split_dollars(name, cost, tok, cr, cw, out, parts)
         return (
             Renderer._split_cell(cr, d[0]),
             Renderer._split_cell(cw, d[1]),
@@ -3540,12 +3569,12 @@ class Renderer:
                 it["cache_read"],
                 it["cache_write"],
                 it["output"],
+                it.get("list_parts"),
             )
             for m, it in aggregate
         ]
 
-    @staticmethod
-    def _mix_rows(model_rows: list[dict]) -> list[tuple]:
+    def _mix_rows(self, model_rows: list[dict]) -> list[tuple]:
         return [
             (
                 r["model_name"],
@@ -3555,6 +3584,7 @@ class Renderer:
                 r["cache_read"],
                 r["cache_write"],
                 r["output"],
+                self.app.model_row_economics(r).cost if "pricing" in r else None,
             )
             for r in model_rows
         ]
@@ -3698,6 +3728,7 @@ class Renderer:
             estimated=econ.estimated,
             missing_cache_rate=econ.missing_cache_rate,
             local_tokens=econ.local_tokens,
+            tier_context_missing=econ.tier_context_missing,
             colored=self._token_series_ok,
         )
         if card.header:
@@ -4566,15 +4597,7 @@ class Renderer:
         for row in rows:
             cost = row["cost"]
             if api and not cost:
-                cost = api_equivalent_cost(
-                    row["model_name"],
-                    row["input"],
-                    row["output"],
-                    row["reasoning"],
-                    row["cache_read"],
-                    row["cache_write"],
-                    row.get("cache_write_1h", 0),
-                )
+                cost = row_list_cost(row)
             if api:
                 cost += row.get("estimated_cost", 0.0)
             out.append(cost)

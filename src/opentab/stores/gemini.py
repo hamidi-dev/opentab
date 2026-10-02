@@ -12,6 +12,7 @@ import sys
 from typing import NamedTuple
 
 from opentab.accounting.models import Workflow
+from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import (
     _clean_prompt,
@@ -1389,6 +1390,10 @@ class GeminiStore:
             self._model_row(sid, model, acc, own.get(model, self._new_acc()))
             for model, acc in total.items()
         ]
+        turns = list(s["turns"])
+        for child, depth in self._descendants(sessions, sid):
+            turns.extend({**t, "depth": depth} for t in sessions[child]["turns"])
+        attach_pricing(s["model_rows"], turns)
         self._roll_totals(s)
 
     def _finalize_all(self, sessions: dict[str, dict]) -> None:
@@ -1420,6 +1425,7 @@ class GeminiStore:
         s["model_rows"] = [
             self._model_row(sid, model, acc, acc) for model, acc in s["models"].items()
         ]
+        attach_pricing(s["model_rows"], s["turns"])
         self._roll_totals(s)
 
     @staticmethod
@@ -1572,6 +1578,9 @@ class GeminiStore:
                     cacc,
                 )
             )
+        if not self.demo:
+            for node in nodes:
+                attach_node_pricing(node, sessions[node["id"]]["turns"])
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes
