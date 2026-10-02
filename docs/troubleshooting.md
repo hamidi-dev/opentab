@@ -1,7 +1,8 @@
 # Troubleshooting
 
 Start with **`opentab doctor`** — one block covering this copy of OpenTab (version, how it
-was installed, and whether the `opentab` on your `PATH` is even the one that answered),
+was installed, its Python interpreter and linked SQLite library version, and whether
+the `opentab` on your `PATH` is even the one that answered),
 every harness backend (found, or not found and why, with the fix), the terminal's colour
 and glyph capabilities including any multiplexer in the way, the price catalog, and
 OpenTab's own files.

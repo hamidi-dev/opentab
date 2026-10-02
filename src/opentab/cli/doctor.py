@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import shutil
+import sqlite3
 import sys
 import sysconfig
 from datetime import datetime, timezone
@@ -993,6 +994,7 @@ def build_report(args: argparse.Namespace, full: bool = False) -> list:
                 Row(OK, "install", f"{_install_method(_pkg_dir())} · {_tilde(_pkg_dir(), full)}"),
                 _path_row(_pkg_dir(), full),
                 Row(OK, "python", f"{platform.python_version()} · {_tilde(sys.executable, full)}"),
+                Row(OK, "sqlite", sqlite3.sqlite_version),
                 Row(OK, "platform", f"{sys.platform} · {platform.machine()} · {_shell()[0]}"),
             ],
         ),

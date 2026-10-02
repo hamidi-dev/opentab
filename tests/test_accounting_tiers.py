@@ -136,6 +136,36 @@ def test_request_buckets_do_not_price_small_calls_as_one_large_context():
         assert len(row["pricing"]) == 1  # identical contexts coalesce without changing eligibility
 
 
+def test_pricing_catalog_work_is_bounded_by_rate_bands_not_request_count():
+    from unittest.mock import patch
+
+    from opentab.accounting import tiers
+
+    with tier_prices() as name:
+        turns = [_turn(name, n, write=1000) for n in range(100000, 601000, 1000)]
+        for turn in turns:
+            turn["cache_write_1h"] = 500
+        row = _row(name, turns)
+        expected = row_cost_parts(row)
+        with patch.object(tiers, "model_price", wraps=tiers.model_price) as prices, patch.object(
+            tiers, "cache_write_1h_price", wraps=tiers.cache_write_1h_price
+        ) as long_prices:
+            assert row_cost_parts(row) == expected
+            assert prices.call_count <= 3, prices.call_count
+            assert long_prices.call_count <= 3, long_prices.call_count
+
+
+def test_empty_pricing_splits_do_not_resolve_catalog_rates():
+    from unittest.mock import patch
+
+    from opentab.accounting import tiers
+
+    with copilot_prices() as name:
+        row = _row(name, [_turn(name, n, cost=1) for n in range(1000, 1100)])
+        with patch.object(tiers, "model_price", side_effect=AssertionError("empty split lookup")):
+            assert row_cost_parts(row, prefix="unpriced_") == (0, 0, 0, 0, 0)
+
+
 def test_mixed_billing_and_children_retain_independent_context_tiers():
     with tier_prices() as name:
         turns = [

@@ -304,6 +304,28 @@ def query_plan(conn, sql: str, params=(), *, label: str) -> None:
         event("sql.plan_unavailable", query=label, error_type=type(exc).__name__)
 
 
+def _code_fingerprint() -> str | None:
+    """Identify the relevant installed source, even between same-version dev builds."""
+    from importlib.resources import files
+
+    try:
+        digest = hashlib.sha256()
+        package = files("opentab")
+        for name in (
+            "accounting/pricing.py",
+            "accounting/tiers.py",
+            "tui/app.py",
+            "stores/cached.py",
+            "stores/opencode.py",
+            "stores/opencode_usage.py",
+        ):
+            digest.update(name.encode("ascii") + b"\0")
+            digest.update(package.joinpath(name).read_bytes())
+        return digest.hexdigest()[:16]
+    except (OSError, AttributeError, TypeError):
+        return None
+
+
 @contextlib.contextmanager
 def session(active: bool = False, filename: str | None = None, *, stderr_progress: bool = False):
     """Own the CLI log's lifetime; stdout remains usable for JSON/MCP/exports."""
@@ -334,6 +356,7 @@ def session(active: bool = False, filename: str | None = None, *, stderr_progres
             sqlite=sqlite3.sqlite_version,
             platform=sys.platform,
             cpu_count=os.cpu_count(),
+            code_fingerprint=_code_fingerprint(),
         ):
             yield sink.path
     finally:

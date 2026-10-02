@@ -742,6 +742,43 @@ class Store:
                     row[name] = row.get(name, 0) + value
         return list(models.values())
 
+    @debug.timed("opencode.model_cache_token")
+    def model_cache_token(self) -> str | None:
+        """Fingerprint all model-rollup inputs, not the enclosing DB/WAL files.
+
+        Even when native messages are reused, legacy usage, parent links and native
+        session residuals may change. Hash their exact numeric inputs before reusing
+        model buckets. This never reads raw native message bodies.
+        """
+        if self._usage_cache is None:
+            return None
+        self._usage_cache.prepare(self.conn, self._legacy_usage_available())
+        version = self.conn.execute("pragma data_version").fetchone()[0]
+        if version != self._usage_cache.data_version or self._usage_cache.scope is not None:
+            return None
+        key = (version, self._usage_cache.built_at)
+        cached = getattr(self, "_model_token_memo", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        digest = hashlib.sha256(b"opentab-model-inputs-v1\0")
+        queries = (
+            "select id,parent_id from session order by id,parent_id",
+            "select id,cost,tokens_input,tokens_output,tokens_reasoning,"
+            "tokens_cache_read,tokens_cache_write from main.session_v2 order by id",
+            "select session_id,model_name,cost,input,output,reasoning,cache_read,cache_write "
+            "from temp.opentab_message_usage where role='assistant' "
+            "order by session_id,model_name,cost,input,output,reasoning,cache_read,cache_write",
+        )
+        for query in queries:
+            digest.update(b"\0")
+            for row in self.conn.execute(query):
+                digest.update(repr(tuple(row)).encode("utf-8", "surrogatepass") + b"\n")
+        if self.conn.execute("pragma data_version").fetchone()[0] != version:
+            return None
+        token = digest.hexdigest()
+        self._model_token_memo = (key, token)
+        return token
+
     @staticmethod
     def _v2_model_residual_cte() -> str:
         # Reuse the materialized numeric rows from the deferred model scan rather
