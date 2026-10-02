@@ -208,7 +208,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("show_bookmarks", ("B",), "show only bookmarked sessions"),
             Action("note", ("n",), "note ✎ this session"),
             Action("export", ("e",), "export this list to CSV"),
-            Action("copy_conversation", ("y",), "copy this session's user/assistant text"),
+            Action("copy_conversation", ("y",), "copy session chat / targeted turn tool call"),
             Action("open_dir", ("o",), "open the selection's directory"),
             Action("launch", ("L",), "resume this session in its own tool"),
             Action("whatif", ("w",), "what-if — reprice a session at one model"),

@@ -2547,6 +2547,7 @@ class App:
         self.renderer._trace_layout_cache = None
         self.renderer._trace_tool_at = {}
         self.renderer._trace_output_ends = []
+        self.renderer._trace_call_ends = []
         if self._remote_trace_job is not None:
             self._remote_trace_job[3].cancel()
             self._remote_trace_job = None
@@ -4690,6 +4691,68 @@ class App:
         # text now, so the directory and filename both stay readable (short_path with a
         # generous width only does the ~ swap here, no clipping).
         self.notify(f"exported {len(rows)} rows → {short_path(path, 999)}", "success")
+
+    def copy_trace_call(self, stdscr=None) -> None:
+        """Copy the targeted call's source text, never its rendered preview."""
+        if self.store.demo:
+            self.notify("tool call copy disabled in demo mode", "error")
+            return
+        wf = self.current_session()
+        idx = self.active_trace_drill
+        if wf is None or idx is None or not self.session_supports_trace(wf.id):
+            self.notify("no recorded tool call to copy", "warn")
+            return
+        if self._trace_loading is not None or self._remote_trace_error:
+            self.notify("turn content is not ready to copy", "warn")
+            return
+        rows = self.reader_turn_rows(wf.id)
+        target = self.renderer.trace_call_target()
+        key = rows[idx].get("content_key") if 0 <= idx < len(rows) else None
+        if not key or target is None:
+            self.notify("no recorded tool call at or below the viewport", "warn")
+            return
+        try:
+            preview = self.turn_trace_events(wf.id, rows[idx])
+            loaded = self._remote_trace_content or self._trace_full
+            if loaded is not None and loaded[:2] == (wf.id, key):
+                events = loaded[2]
+            elif self.remote_trace_reader(wf.id):
+                self.notify("turn content is not ready to copy", "warn")
+                return
+            else:
+                self.notify("reading full tool call…", "info")
+                if stdscr is not None:
+                    self.renderer.draw(stdscr)
+                    stdscr.refresh()
+                events = self._read_turn_content(wf.id, content_key=key).get(key, [])
+            if (
+                not 0 <= target < len(preview)
+                or not 0 <= target < len(events)
+                or events[target].get("kind") != "tool"
+                or events[target].get("name") != preview[target].get("name")
+            ):
+                self.notify("recorded call changed or disappeared; reopen the turn", "warn")
+                return
+            command = str(events[target].get("args") or "").rstrip()
+            shown = str(preview[target].get("args") or "").rstrip()
+            prefix = re.sub(r" … \+\d+ chars$", "", shown)
+            matches = command.startswith(prefix) if prefix != shown else command == shown
+            if not matches:
+                self.notify("recorded call changed or disappeared; reopen the turn", "warn")
+                return
+            text = exporting.tool_call_markdown(events[target])
+        except Exception:  # noqa: BLE001 -- raw source errors must not leak content or close the TUI
+            self.notify("tool call copy failed: source is unavailable", "error")
+            return
+        if util.copy_to_clipboard(text):
+            incomplete = bool(events[target].get("output_dropped"))
+            suffix = "; recorded output is incomplete" if incomplete else ""
+            self.notify(
+                f"copied tool call and output ({len(text):,} characters){suffix}",
+                "warn" if incomplete else "success",
+            )
+        else:
+            self.notify(f"clipboard copy failed ({util.clipboard_tools_label()})", "error")
 
     def copy_conversation(self, stdscr=None) -> None:
         """Explicitly copy retained root text, independently of Turns and its previews."""
@@ -8030,7 +8093,10 @@ class App:
             self.export_current()
             return True
         if act == "copy_conversation":
-            self.copy_conversation(stdscr)
+            if self._on_turns_tab() and self.active_trace_drill is not None:
+                self.copy_trace_call(stdscr)
+            else:
+                self.copy_conversation(stdscr)
             return True
         if act == "open_dir":
             self.open_current()

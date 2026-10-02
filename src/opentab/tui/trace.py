@@ -30,6 +30,7 @@ class TraceLayout:
     lines: list[str]
     tool_lines: dict[int, int]
     output_ends: list[tuple[int, int]]
+    call_ends: list[tuple[int, int]]
 
 
 def output_target(output_ends: list[tuple[int, int]], scroll: int) -> int | None:
@@ -239,6 +240,7 @@ def build_event_body(
     lines: list[str] = []
     tool_lines: dict[int, int] = {}
     output_ends: list[tuple[int, int]] = []
+    call_ends: list[tuple[int, int]] = []
     wrap = max(20, width - 2)
     for event_index, event in enumerate(events):
         kind = event.get("kind")
@@ -259,6 +261,8 @@ def build_event_body(
                 select_key=select_key,
                 whole_turn_expanded=expanded,
             )
+            has_output = bool(event.get("output") or event.get("output_dropped"))
+            call_ends.append((line_offset + len(lines) - (3 if has_output else 1), event_index))
             if event.get("output") or event.get("output_dropped"):
                 end = line_offset + len(lines)
                 tool_lines.update((line, event_index) for line in range(start, end - 2))
@@ -266,4 +270,4 @@ def build_event_body(
         lines.append("")
     while lines and not lines[-1]:
         lines.pop()
-    return TraceLayout(lines, tool_lines, output_ends)
+    return TraceLayout(lines, tool_lines, output_ends, call_ends)

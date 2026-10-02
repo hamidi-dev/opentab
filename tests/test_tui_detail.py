@@ -4996,6 +4996,134 @@ def test_trace_footer_and_help_describe_the_current_level_and_bindings():
     assert "[/] turn" in footer and "z expand" in footer
 
 
+def test_trace_copy_reads_full_targeted_call_and_preserves_reader_state():
+    from opentab.tui.exporting import tool_call_markdown
+    from opentab.util import TRACE_OUTPUT_CAP, TraceContent
+
+    app = _trace_app()
+    command = "printf 'Grüße 界'\n" + "long command " * 300
+    full = [
+        {"kind": "text", "text": "PRIVATE NARRATION"},
+        {"kind": "tool", "name": "shell", "args": "true", "output": ""},
+        {
+            "kind": "tool",
+            "name": "shell",
+            "args": command,
+            "params": [("workdir", "/a b")],
+            "output": "line\n" * 5000 + "  END\t界  \n",
+        },
+    ]
+    preview = [dict(event) for event in full]
+    preview[2]["args"], preview[2]["params"] = TraceContent().arguments(
+        {"command": command, "workdir": "/a b"}
+    )
+    preview[2]["output"], preview[2]["output_dropped"] = TraceContent().clip(
+        full[2]["output"], TRACE_OUTPUT_CAP
+    )
+    app.store.turn_content = Mock(
+        side_effect=lambda wid, content_key=None: {"k0": full if content_key else preview}
+    )
+    app.open_trace_drill()
+    app.renderer.detail_turn_trace(app.current_session(), 50)
+    app.scroll = app.renderer._trace_call_ends[0][0] + 1
+    state = (app.scroll, app.trace_expanded, set(app._trace_open_outputs))
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+        app.handle_key(None, ord("y"))
+        copied.assert_called_once_with(tool_call_markdown(full[2]))
+    app.store.turn_content.assert_called_with(app.current_session().id, content_key="k0")
+    assert "PRIVATE NARRATION" not in copied.call_args.args[0]
+    assert (app.scroll, app.trace_expanded, app._trace_open_outputs) == state
+    assert app._trace_full is None and "copied tool call" in app.notice
+
+
+def test_trace_copy_empty_result_remapping_and_contextual_help():
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [{"kind": "tool", "name": "shell", "args": "true", "output": ""}]
+    app.open_trace_drill()
+    app.renderer.detail_turn_trace(app.current_session(), 80)
+    app.keymap = ot.tui.bindings.Keymap({("main", "copy_conversation"): ["Y"]})
+    assert "Y copy call" in str(ot.keymap.footer_parts(app))
+    assert ot.keymap.BY_ID["trace-copy"].shown(app)
+    assert not ot.keymap.BY_ID["copy-conversation"].shown(app)
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+        app.handle_key(None, ord("y"))
+        copied.assert_not_called()
+        app.handle_key(None, ord("Y"))
+        assert "true" in copied.call_args.args[0]
+    app.handle_key(None, 27)
+    assert ot.keymap.BY_ID["copy-conversation"].shown(app)
+    assert not ot.keymap.BY_ID["trace-copy"].shown(app)
+
+
+def test_trace_copy_failures_never_replace_clipboard_or_fall_back_to_chat():
+    app = _trace_app()
+    app.open_trace_drill()
+    app.renderer.detail_turn_trace(app.current_session(), 80)
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied, patch.object(
+        app, "copy_conversation", side_effect=AssertionError("copied root chat")
+    ):
+        app.store.turn_content = Mock(side_effect=RuntimeError("PRIVATE ERROR"))
+        app.store.demo = True
+        app.handle_key(None, ord("y"))
+        assert "demo" in app.notice
+        app.store.demo = False
+        app._trace_loading = (app.current_session().id, "k0")
+        app.handle_key(None, ord("y"))
+        assert "not ready" in app.notice
+        app._trace_loading = None
+        app.store.turn_content.assert_not_called()
+        app.handle_key(None, ord("y"))
+        assert "source is unavailable" in app.notice and "PRIVATE" not in app.notice
+        app.store.turn_content = Mock(
+            return_value={"k0": [{"kind": "tool", "name": "Bash", "args": "different"}]}
+        )
+        app.handle_key(None, ord("y"))
+        assert "changed or disappeared" in app.notice
+        app.store.turn_content.return_value = {}
+        app.handle_key(None, ord("y"))
+        assert "changed or disappeared" in app.notice
+        app.scroll = app.renderer._trace_call_ends[-1][0] + 1
+        app.handle_key(None, ord("y"))
+        assert "no recorded tool call" in app.notice
+        copied.assert_not_called()
+
+
+def test_trace_copy_reuses_loaded_full_turn_and_reports_clipboard_failure():
+    app = _trace_app()
+    app.open_trace_drill()
+    app.toggle_trace_expansion()
+    app.load_trace_expansion()
+    app.renderer.detail_turn_trace(app.current_session(), 80)
+    app.store.turn_content = Mock(side_effect=AssertionError("unexpected reread"))
+    with patch.object(ot.util, "copy_to_clipboard", return_value=False):
+        app.handle_key(None, ord("y"))
+        assert "clipboard copy failed" in app.notice
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True):
+        app.handle_key(None, ord("y"))
+        assert "recorded output is incomplete" in app.notice
+    app.store.turn_content.assert_not_called()
+
+
+def test_subagent_trace_copy_reads_only_the_exact_child_call():
+    app = _subagent_turns_app()
+    wf = app.current_session()
+    app.open_subagent_drill()
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    app.open_turn_drill(0)
+    app.open_trace_drill()
+    call = {"kind": "tool", "name": "shell", "args": "echo child", "output": "CHILD OUTPUT"}
+    app.store.node_turn_content = Mock(return_value={"k0": [call]})
+    app.renderer.detail_turn_trace(wf, 80)
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+        app.handle_key(None, ord("y"))
+        assert (
+            "echo child" in copied.call_args.args[0] and "CHILD OUTPUT" in copied.call_args.args[0]
+        )
+    app.store.node_turn_content.assert_called_with(wf.id, "child-1", "k0")
+    app.store.turn_content.assert_not_called()
+
+
 def test_first_trace_read_paints_loading_before_fetching_and_respects_demo():
     app = _trace_app()
     app.open_trace_drill()
@@ -5198,6 +5326,23 @@ def test_remote_trace_opens_only_on_explicit_action_and_expands_without_refetch(
         app.step_trace(1)
         assert app._remote_trace_content is None and app._trace_full is None
         assert app._trace_loading == (wf.id, "k1")
+
+
+def test_remote_trace_copy_reuses_fetched_full_text_without_another_ssh_request():
+    app, requests = _remote_trace_app()
+    app.store._CONTENT["k0"][1]["output"] = "line\n" * 5000 + "END OF REMOTE OUTPUT"
+    app.store._CONTENT["k0"][1]["output_dropped"] = 0
+    app.open_trace_drill()
+    with patch("opentab.remote_content.TraceJob", _ManualTraceJob):
+        app.load_trace_expansion()
+        app._remote_trace_job[3].complete()
+        app.poll_remote_trace()
+    preview = "\n".join(app.renderer.detail_turn_trace(app.current_session(), 80))
+    assert "END OF REMOTE OUTPUT" not in preview
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+        app.handle_key(None, ord("y"))
+        assert "END OF REMOTE OUTPUT" in copied.call_args.args[0]
+    assert len(requests) == 1 and app._trace_full is None
 
 
 def test_remote_trace_unconfigured_machine_says_so_on_enter():

@@ -542,6 +542,15 @@ and arguments retain preview limits. Enter targets the output at the viewport
 top or the next below it; mouse regions identify an event directly. Expansion
 anchors scrolling to the section. Whole-turn expansion is a separate action.
 
+The contextual conversation-copy binding copies one tool call while a trace is
+open. A separate ordered call-end map includes tools with empty output without
+changing Enter's output targets. Copy uses full keyed source events or the current
+turn's loaded full content, never wrapped display lines. Local copy-only reads are
+not cached; nested reads route through the execution-scoped reader, and remote
+copy reuses the already fetched turn. Demo, loading, missing and changed calls
+leave the clipboard untouched. The pure formatter in `exporting.py` preserves raw
+command/output spacing and chooses Markdown fences longer than recorded backticks.
+
 The renderer preserves argument/result spacing with cell-based hard wrapping
 (tabs display as four spaces). Output previews collapse blank runs and budget
 six **screen rows**, including wrapped lines, with omitted lines/characters

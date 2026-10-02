@@ -72,3 +72,17 @@ def test_event_layout_has_explicit_expansion_and_absolute_output_targets():
     assert output_target(layout.output_ends, first_end) == first_event
     assert output_target(layout.output_ends, first_end + 1) == second_event
     assert output_target(layout.output_ends, second_end + 1) is None
+
+
+def test_call_targets_include_empty_results_without_changing_output_targets():
+    events = [
+        {"kind": "text", "text": "Intro"},
+        {"kind": "tool", "name": "shell", "args": "true", "output": ""},
+        {"kind": "tool", "name": "shell", "output": "result"},
+    ]
+    layout = build_event_body(events, 60, line_offset=17)
+    assert [index for _end, index in layout.call_ends] == [1, 2]
+    assert [index for _end, index in layout.output_ends] == [2]
+    assert output_target(layout.call_ends, 0) == 1
+    assert output_target(layout.call_ends, layout.call_ends[0][0] + 1) == 2
+    assert output_target(layout.call_ends, layout.call_ends[-1][0] + 1) is None
