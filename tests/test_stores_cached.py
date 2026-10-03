@@ -17,6 +17,18 @@ def test_opencode_model_cache_reuses_validated_inputs_after_metadata_only_write(
     with _v2_db(legacy=True) as (writer, store), tempfile.TemporaryDirectory() as cache, patch.dict(
         os.environ, {"XDG_CACHE_HOME": cache}
     ):
+        revision = os.stat(store.db).st_mtime_ns
+
+        def commit_changed():
+            nonlocal revision
+            writer.commit()
+            # This test exercises model-input invalidation after a detected source
+            # change, not filesystem timestamp resolution. tmpfs can timestamp
+            # successive commits identically during a fast synthetic test.
+            stat = os.stat(store.db)
+            revision = max(stat.st_mtime_ns, revision + 1_000_000)
+            os.utime(store.db, ns=(stat.st_atime_ns, revision))
+
         writer.executemany(
             "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [_session("root"), _session("child", "root"), _session("other")],
@@ -43,7 +55,7 @@ def test_opencode_model_cache_reuses_validated_inputs_after_metadata_only_write(
             "insert into message values (?,?,?)",
             ("old", "legacy", json.dumps({"role": "assistant", "tokens": {"input": 10}})),
         )
-        writer.commit()
+        commit_changed()
         args = argparse.Namespace(demo=False, no_cache=False)
         cache_id = "opencode|" + store.db
         cold = ot.CachedStore(store, cache_id, args)
@@ -51,7 +63,7 @@ def test_opencode_model_cache_reuses_validated_inputs_after_metadata_only_write(
         expected = cold.model_breakdown()
         assert cold._disk["model_token"]
         writer.execute("update session_v2 set title='Renamed' where id='root'")
-        writer.commit()
+        commit_changed()
         warm = ot.CachedStore(store, cache_id, args)
         workflows = warm.workflows()
         assert next(w for w in workflows if w.id == "root").title == "Renamed"
@@ -68,7 +80,7 @@ def test_opencode_model_cache_reuses_validated_inputs_after_metadata_only_write(
             "delete from session_message where id='m'",
         ):
             writer.execute(sql)
-            writer.commit()
+            commit_changed()
             changed = ot.CachedStore(store, cache_id, args)
             changed.workflows()
             with patch.object(store, "model_breakdown", wraps=store.model_breakdown) as rebuild:
@@ -628,10 +640,18 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
             assert next(x for x in c5.workflows() if x.id == "s2").title == "New"
             assert c5.served_from_cache is False
             c5.model_breakdown()
+            wal_revision = os.stat(db + "-wal").st_mtime_ns
             w.execute("pragma wal_checkpoint(restart)").fetchall()
             w.execute("update session set title='Now' where id='s2'")
             w.commit()
             assert os.stat(db + "-wal").st_size == wal_size
+            # Same-size reuse relies on an observed revision change; make it
+            # explicit on filesystems that coalesce these fast synthetic writes.
+            wal_stat = os.stat(db + "-wal")
+            os.utime(
+                db + "-wal",
+                ns=(wal_stat.st_atime_ns, max(wal_stat.st_mtime_ns, wal_revision + 1_000_000)),
+            )
             c6 = ot.CachedStore(store, cid, cargs)
             assert next(x for x in c6.workflows() if x.id == "s2").title == "Now"
             assert c6.served_from_cache is False

@@ -125,6 +125,15 @@ fold descendants into root workflows and expose their own usage as nodes.
   they do not create fabricated turns or model attribution. V1 tool names and trace
   content live separately in `part`; grouped scans join them by message id. A per-row
   correlated lookup is particularly costly on the corpus-wide timeline export.
+- Native cost reconciliation ignores positive differences within eight floating-point
+  ULPs of the larger absolute native/message-sum cost, before admitting residual rows
+  or deciding whether their tokens are unpriced. SQLite versions can sum the same
+  recorded costs slightly differently; this prevents rounding noise from creating
+  phantom models or pricing real token-only gaps. The threshold has no dollar floor,
+  and standalone tiny/subnormal costs survive. Larger differences, source costs and
+  integer token residuals remain unchanged. This is a narrow roundoff boundary, not
+  a guarantee for every long or cancellation-heavy sum. Earlier rollups are rebuilt
+  once so previously misclassified buckets cannot survive an unchanged-source hit.
 - The database is read-only; message/part table availability gates session extras.
 - Changes reads completed tool metadata (`apply_patch.files`, `edit.filediff`,
   `write.filepath`) and user-message `summary.diffs` for the exact root execution

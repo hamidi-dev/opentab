@@ -20,7 +20,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 19  # Copilot inferred writes and complete root pricing splits
+CACHE_VERSION = 20  # Roundoff-safe native cost residuals and unpriced model buckets
 
 
 # Required because cache readers index these fields directly.

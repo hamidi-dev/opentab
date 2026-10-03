@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import sqlite3
 import tempfile
@@ -8,7 +9,7 @@ import time
 from contextlib import contextmanager
 from unittest.mock import patch
 
-from opentab.stores.opencode import Store
+from opentab.stores.opencode import Store, _cost_residual
 from opentab.stores.opencode_v2 import REQUIRED_SCHEMA_V2, install_views, scoped_detail_sql
 
 from tests._support import copilot_prices, tier_prices
@@ -102,6 +103,114 @@ def test_v2_request_tiers_preserve_unknown_summary_residual_and_execution_owners
         nodes = store.workflow_nodes("root")
         assert abs(node_api_cost(nodes[0]) - 2.6) < 1e-9
         assert abs(node_api_cost(nodes[1]) - 7.2) < 1e-9
+
+
+def test_v2_cost_residual_roundoff_boundary_and_sql_arithmetic_semantics():
+    with _v2_db() as (_, store):
+
+        def residual(native, used):
+            return store.conn.execute(
+                "select opentab_cost_residual("
+                "coalesce(?,0)-coalesce(?,0), "
+                "max(abs(cast(coalesce(?,0) as real)),abs(cast(coalesce(?,0) as real))))",
+                (native, used, native, used),
+            ).fetchone()[0]
+
+        ulp = math.ulp(1.0)
+        assert residual(1.0 + 4 * ulp, 1.0) == 0
+        assert residual(1.0 + 8 * ulp, 1.0) == 0
+        assert residual(1.0 + 9 * ulp, 1.0) == 9 * ulp
+        assert residual(1.0, 1.0) == 0
+        assert residual(1.0, 2.0) == 0
+        assert residual(-1.0 + 4 * ulp, -1.0) == 0
+        assert residual(-1.0 + 9 * ulp, -1.0) == 9 * ulp
+        assert residual(1.0, -1.0) == 2.0
+        assert residual(-1.0, 1.0) == 0
+        assert residual(1e-16, 0) == 1e-16
+        assert residual(math.ulp(0.0), 0) == math.ulp(0.0)
+        assert residual(0, -math.ulp(0.0)) == math.ulp(0.0)
+        assert residual(1e-16 + 8 * math.ulp(1e-16), 1e-16) == 0
+        assert residual(1e-16 + 9 * math.ulp(1e-16), 1e-16) > 0
+        assert residual(None, None) == 0
+        assert residual(1e-16, None) == 1e-16
+        assert residual(None, 1.0) == 0
+        assert residual("not a number", 1.0) == 0  # SQLite's existing numeric coercion.
+        assert residual(float("inf"), 1.0) == float("inf")
+        assert residual(1.0, float("inf")) == 0
+        assert residual(float("inf"), float("inf")) is None
+        assert residual(float("-inf"), float("-inf")) is None
+        assert residual(float("nan"), 1.0) == 0  # SQLite binds NaN as NULL.
+        assert _cost_residual(None, float("inf")) is None
+
+
+def test_v2_roundoff_residuals_do_not_create_models_or_price_real_token_gaps():
+    ulp = math.ulp(1.0)
+    cases = [
+        # id, message costs, native cost, extra native input, expected residual cost
+        ("roundoff_only", [1.0], 1.0 + 8 * ulp, 0, None),
+        ("roundoff_tokens", [1.0], 1.0 + 8 * ulp, 1, 0),
+        ("outside_boundary", [1.0], 1.0 + 9 * ulp, 1, 9 * ulp),
+        ("genuine_gap", [1.0], 1.0 + 1e-7, 1, (1.0 + 1e-7) - 1.0),
+        ("tiny_standalone", [], 1e-16, 1, 1e-16),
+        ("subnormal_standalone", [], math.ulp(0.0), 0, math.ulp(0.0)),
+        ("signed_equal", [0.75, -0.25], 0.5, 1, 0),
+        ("signed_gap", [-1.0], 1.0, 1, 2.0),
+        ("negative_gap", [1.0], 0.5, 1, 0),
+        ("missing_cost", [], None, 1, 0),
+    ]
+    with _v2_db() as (writer, store):
+        for sid, costs, native, gap, _ in cases:
+            writer.execute(
+                "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _session(sid, cost=native, tokens=(len(costs) + gap, 0, 0, 0, 0)),
+            )
+            for seq, cost in enumerate(costs):
+                writer.execute(
+                    "insert into session_message values (?,?,?,?,?,?,?)",
+                    _message(
+                        sid + str(seq),
+                        sid,
+                        "assistant",
+                        seq,
+                        {
+                            "cost": cost,
+                            "model": {"providerID": "provider", "id": "model"},
+                            "tokens": {"input": 1},
+                        },
+                    ),
+                )
+        writer.commit()
+        models = store.model_breakdown()
+        residuals = {
+            r["root_id"]: r for r in models if r["model_name"] == "unknown (session aggregate)"
+        }
+        for sid, _costs, _native, gap, expected in cases:
+            if expected is None:
+                assert sid not in residuals
+                continue
+            row = residuals[sid]
+            assert row["cost"] == row["root_cost"] == expected
+            assert row["runs"] == 0
+            assert row["input"] == row["root_input"] == row["tokens_total"] == gap
+            unpriced = gap if expected == 0 else 0
+            assert row["unpriced_input"] == row["root_unpriced_input"] == unpriced
+            (bucket,) = row["pricing"]
+            assert bucket["context"] is None
+            assert bucket["tok"] == bucket["root_tok"] == [gap, 0, 0, 0, 0, 0]
+            assert bucket["unpriced"] == bucket["root_unpriced"] == [unpriced, 0, 0, 0, 0, 0]
+        # Clamp only the synthetic residual: retain native and per-message costs verbatim.
+        assert (
+            writer.execute("select cost from session_v2 where id='roundoff_only'").fetchone()[0]
+            == 1.0 + 8 * ulp
+        )
+        priced = next(r for r in models if r["root_id"] == "roundoff_only")
+        assert priced["cost"] == 1.0 and priced["input"] == 1
+        assert (
+            store.conn.execute(
+                "select cost from temp.opentab_message_usage where id='roundoff_only0'"
+            ).fetchone()[0]
+            == 1.0
+        )
 
 
 def _session(sid, parent=None, *, title=None, tokens=(0, 0, 0, 0, 0), cost: float = 0, updated=20):
@@ -1124,7 +1233,14 @@ def test_opencode_v2_rollups_do_not_resolve_prompt_parents_per_message():
             if not sql.lstrip().lower().startswith(("select", "with")):
                 continue
             plan = list(store.conn.execute("explain query plan " + sql))
-            assert not any("CORRELATED SCALAR SUBQUERY" in row[3] for row in plan), plan
+            for node in plan:
+                if "CORRELATED SCALAR SUBQUERY" not in node[3]:
+                    continue
+                # Bounded member extraction iterates this message's JSON. It
+                # must never hide a lookup into source messages for prompt parents.
+                children = [row for row in plan if row[1] == node[0]]
+                assert len(children) == 1, plan
+                assert "json_each" in children[0][3] and "VIRTUAL TABLE" in children[0][3], plan
 
 
 def test_opencode_v2_tool_outputs_skip_malformed_items_without_losing_text():

@@ -1,7 +1,7 @@
 """Revision-keyed numeric accounting, with bounded decoding of inline tool output.
 
 Only CachedStore persists these rows, in OpenTab's own scalar sidecar. Source tables
-remain read-only. Metadata is cheap to scan even when data lives on overflow pages.
+remain read-only. Revision-only scans avoid payload overflow pages on cache reuse.
 """
 from __future__ import annotations
 
@@ -60,17 +60,37 @@ _MEMBER_SQL = (
 _DECODE_LIMIT = 8 * 1024 * 1024
 _MAX_DEPTH = 1000 if sqlite3.sqlite_version_info >= (3, 42, 0) else 2000
 _READ_BATCH = 64
-_MEMBER_BATCH_SQL = (
-    "select rowid,size,obj is not null, "
+_MEMBER_RESULT = (
     "(select json_group_array(json_array(key,value,type)) from json_each(obj) where key in ("
     + ",".join("'" + key + "'" for key in _FIELDS)
-    + ")) from (select rowid,length(cast(data as blob)) as size, "
+    + "))"
+)
+_MEMBER_OBJECT = (
     "case when typeof(data)='text' and length(cast(data as blob))<=? "
     "and substr(ltrim(data,char(32,9,10,13)),1,1)='{' "
     "and length(cast(printf('%s',data) as blob))=length(cast(data as blob)) "
     + ("and json_valid(data) " if sqlite3.sqlite_version_info >= (3, 42, 0) else "")
-    + "then data end as obj from main.session_message "
+    + "then data end as obj"
+)
+_MEMBER_BATCH_SQL = (
+    "select rowid,size,obj is not null, "
+    + _MEMBER_RESULT
+    + " from (select rowid,length(cast(data as blob)) as size, "
+    + _MEMBER_OBJECT
+    + " from main.session_message "
     "where rowid in ({placeholders})) order by rowid"
+)
+_METADATA_COLUMNS = "rowid,id,session_id,type,time_created,time_updated,seq"
+_MEMBER_SCAN_SQL = (
+    "select "
+    + _METADATA_COLUMNS
+    + ",size,obj is not null, "
+    + _MEMBER_RESULT
+    + " from (select "
+    + _METADATA_COLUMNS
+    + ",length(cast(data as blob)) as size, "
+    + _MEMBER_OBJECT
+    + " from main.session_message {where} order by rowid limit {limit}) order by rowid"
 )
 
 
@@ -619,6 +639,81 @@ class UsageCache:
             for row in rows:
                 yield row, projected.get(row[0]), row[0] in attempted
 
+    def _full_native_rows(self, conn, tracing, timings):
+        """Read metadata and bounded members together on an empty all-history build.
+
+        Rowid keyset pages avoid a separate table scan and subsequent IN lookups.
+        Retain at most one compact page. If parsing fails midway, discard the page
+        before yielding anything and let the established per-row validator handle
+        its metadata. All queries share prepare()'s source snapshot.
+        """
+        last = None
+        while True:
+            where = "" if last is None else "where rowid>?"
+            params = [] if last is None else [last]
+            sql = _MEMBER_SCAN_SQL.replace("{where}", where).replace("{limit}", str(_READ_BATCH))
+            page = []
+            cursor = None
+            kept = 0
+            decode_ms = 0.0
+            started = time.perf_counter() if tracing else 0
+            with debug.span("usage.scan_page", limit=_READ_BATCH):
+                try:
+                    cursor = conn.execute(sql, [_DECODE_LIMIT, *params])
+                    for row in cursor:
+                        stamp = tuple(row[:7])
+                        size, valid, raw = row[7:]
+                        compact = None
+                        if (size or 0) <= _DECODE_LIMIT:
+                            tick = time.perf_counter() if tracing else 0
+                            try:
+                                compact = (
+                                    _compact_members(
+                                        json.loads(
+                                            raw,
+                                            object_pairs_hook=_first_keys,
+                                            parse_constant=_invalid_constant,
+                                        )
+                                    )
+                                    if valid
+                                    else "null"
+                                )
+                                kept += len(compact)
+                                if kept > _DECODE_LIMIT:
+                                    raise ValueError("compact page limit")
+                            finally:
+                                if tracing:
+                                    decode_ms += (time.perf_counter() - tick) * 1000
+                        page.append(
+                            (stamp, (compact, size or 0) if compact is not None else None, True)
+                        )
+                except (sqlite3.OperationalError, ValueError, UnicodeError, RecursionError):
+                    page = [
+                        (tuple(row), None, True)
+                        for row in conn.execute(
+                            "select "
+                            + _METADATA_COLUMNS
+                            + " from main.session_message "
+                            + where
+                            + " order by rowid limit "
+                            + str(_READ_BATCH),
+                            params,
+                        )
+                    ]
+                    debug.event("usage.scan_fallback", rows=len(page))
+                finally:
+                    if cursor is not None:
+                        cursor.close()
+            if tracing:
+                timings[0] += (time.perf_counter() - started) * 1000 - decode_ms
+                timings[1] += decode_ms
+            if not page:
+                return
+            yield from page
+            if len(page) < _READ_BATCH:
+                return
+            last = page[-1][0][0]
+
     @debug.timed("usage.prepare", activity=True)
     def prepare(
         self, conn: sqlite3.Connection, legacy: bool, refresh: bool = False, scope=None
@@ -656,8 +751,10 @@ class UsageCache:
             )
             if not self._sql_projection and sqlite3.sqlite_version_info >= (3, 35, 0):
                 self._sql_projection = "members"
+        full_scan = not self.rows and scope is None and self._sql_projection == "members"
         debug.event(
             "usage.decode_strategy",
+            scan_mode="combined_full" if full_scan else "metadata_changed",
             streamed_oversized=hasattr(conn, "blobopen"),
             compact_threshold=_DECODE_LIMIT,
             legacy_reread=legacy,
@@ -703,16 +800,17 @@ class UsageCache:
                 + " from (select ? as rowid, ? as id, ? as session_id, ? as type, ? as time_created, ? as data) m"
             )
             # No data/JSON/length(data) here: don't visit overflow pages on a hit.
-            metadata = debug.query_rows(
-                conn,
-                "select rowid,id,session_id,type,time_created,time_updated,seq from main.session_message"
-                + scoped,
-                params,
-                label="usage.native_metadata",
-            )
-            for row, prefetched, attempted in self._native_rows(
-                conn, metadata, cutoff, tracing, batch_timings
-            ):
+            if full_scan:
+                native = self._full_native_rows(conn, tracing, batch_timings)
+            else:
+                metadata = debug.query_rows(
+                    conn,
+                    "select " + _METADATA_COLUMNS + " from main.session_message" + scoped,
+                    params,
+                    label="usage.native_metadata",
+                )
+                native = self._native_rows(conn, metadata, cutoff, tracing, batch_timings)
+            for row, prefetched, attempted in native:
                 stamp = tuple(row)
                 old = self.rows.get(stamp[0])
                 if self._reusable(stamp, cutoff):
