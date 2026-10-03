@@ -6,7 +6,8 @@ import sqlite3
 import tempfile
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, mock_open, patch
 
 from opentab import diagnostics as debug
 
@@ -16,7 +17,7 @@ def _records(path):
 
 
 def test_debug_disabled_does_not_create_files_or_read_clocks():
-    @debug.timed("test.operation")
+    @debug.timed("test.operation", activity=True)
     def operation():
         return 42
 
@@ -24,10 +25,12 @@ def test_debug_disabled_does_not_create_files_or_read_clocks():
         debug.time, "perf_counter", side_effect=AssertionError("clock")
     ), patch.object(debug.paths, "state_dir", side_effect=AssertionError("path")), patch.object(
         debug, "_code_fingerprint", side_effect=AssertionError("source read")
-    ):
+    ), patch.object(debug, "_activity", side_effect=AssertionError("counter read")), patch.object(
+        debug.time, "process_time", side_effect=AssertionError("cpu clock")
+    ), patch.object(debug.time, "thread_time", side_effect=AssertionError("thread clock")):
         with debug.session():
             assert operation() == 42
-            with debug.span("test.phase"):
+            with debug.span("test.phase", activity=True):
                 debug.event("test.event")
             assert debug.identity("private") is None
             debug.query_plan(None, "must not prepare", label="test.plan")
@@ -262,3 +265,162 @@ def test_debug_memory_distinguishes_current_residency_from_high_water():
         end = next(r for r in _records(filename) if r["event"] == "test.release.end")
         assert end["rss_change_mib"] == -100.0
         assert end["rss_mib"] == 100.0 and end["peak_rss_mib"] == 500.0
+
+
+def test_debug_activity_emits_process_deltas_only_for_opted_in_span():
+    @debug.timed("test.activity", activity=True)
+    def operation():
+        with debug.span("test.nested"):
+            return [1, 2]
+
+    before = {
+        "process_io_read_bytes": 4096,
+        "process_io_rchar": 10000,
+        "process_io_syscr": 50,
+        "process_io_write_bytes": 0,
+        "process_minor_faults": 10,
+        "process_major_faults": 1,
+        "process_block_in": 8,
+        "process_block_out": 0,
+        "process_voluntary_context_switches": 20,
+        "process_involuntary_context_switches": 5,
+    }
+    after = {key: value + index for index, (key, value) in enumerate(before.items())}
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        filename = os.path.join(tmp, "activity.jsonl")
+        with debug.session(filename=filename), patch.object(
+            debug, "_activity", side_effect=[before, after]
+        ) as sample:
+            assert operation() == [1, 2]
+            assert sample.call_count == 2
+        rows = _records(filename)
+        end = next(r for r in rows if r["event"] == "test.activity.end")
+        assert end["rows"] == 2
+        for index, key in enumerate(before):
+            assert end[key + "_delta"] == index
+        for row in rows:
+            if row is not end:
+                assert not any(key.endswith("_delta") for key in row)
+
+
+def test_debug_activity_ordinary_spans_bypass_sampling():
+    @debug.timed("test.ordinary")
+    def operation():
+        return 42
+
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        with debug.session(filename=os.path.join(tmp, "ordinary.jsonl")), patch.object(
+            debug, "_activity", side_effect=AssertionError("counter read")
+        ):
+            with debug.span("test.ordinary_span"):
+                assert operation() == 42
+
+
+def test_debug_activity_missing_and_reset_counters_are_omitted():
+    snapshots = [
+        {"process_io_rchar": 100, "process_io_read_bytes": 4096},
+        {"process_io_rchar": 50, "process_major_faults": 0},
+        {},
+        {"process_io_read_bytes": 0},
+    ]
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        filename = os.path.join(tmp, "missing.jsonl")
+        with debug.session(filename=filename), patch.object(
+            debug, "_activity", side_effect=snapshots
+        ):
+            with debug.span("test.reset", activity=True):
+                pass
+            with debug.span("test.missing", activity=True):
+                pass
+        for row in _records(filename):
+            assert not any(key.endswith("_delta") for key in row)
+
+
+def test_debug_activity_snapshot_validates_allowlisted_numeric_sources():
+    usage = SimpleNamespace(
+        ru_minflt=10, ru_majflt=2, ru_inblock=8, ru_oublock=3, ru_nvcsw=7, ru_nivcsw=4
+    )
+    resource = SimpleNamespace(RUSAGE_SELF=0, getrusage=Mock(return_value=usage))
+    text = (
+        "read_bytes: 4096\nrchar: 10000\nsyscr: 50\nwrite_bytes: 8192\n"
+        "private_source_path: /home/private/database\nprivate_payload\n"
+    )
+    with patch.dict("sys.modules", resource=resource), patch.object(
+        debug.sys, "platform", "linux"
+    ), patch("builtins.open", mock_open(read_data=text)) as opened:
+        counters = debug._activity()
+        opened.assert_called_once_with("/proc/self/io", encoding="ascii")
+        resource.getrusage.assert_called_once_with(resource.RUSAGE_SELF)
+    assert counters == {
+        "process_io_read_bytes": 4096,
+        "process_io_rchar": 10000,
+        "process_io_syscr": 50,
+        "process_io_write_bytes": 8192,
+        "process_minor_faults": 10,
+        "process_major_faults": 2,
+        "process_block_in": 8,
+        "process_block_out": 3,
+        "process_voluntary_context_switches": 7,
+        "process_involuntary_context_switches": 4,
+    }
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        filename = os.path.join(tmp, "private.jsonl")
+        with debug.session(filename=filename), patch.object(
+            debug, "_activity", return_value=counters
+        ):
+            with debug.span("test.private", activity=True):
+                pass
+        logged = Path(filename).read_text()
+        for secret in ("private_source_path", "/home/private", "private_payload", "/proc/self/io"):
+            assert secret not in logged
+
+
+def test_debug_activity_snapshot_errors_malformed_data_and_unsupported_platform():
+    resource = SimpleNamespace(RUSAGE_SELF=0, getrusage=Mock(side_effect=OSError("private error")))
+    with patch.dict("sys.modules", resource=resource), patch.object(debug.sys, "platform", "linux"):
+        for failure in (OSError("private path"), UnicodeError("private content")):
+            with patch("builtins.open", side_effect=failure):
+                assert debug._activity() == {}
+        for text in (
+            "read_bytes: -1\nrchar: NaN\nsyscr: 1.5\nwrite_bytes: private content\n",
+            "read_bytes: 5\nread_bytes: 6\nread_bytes: 7\n",
+            "rchar: " + "1" * 16384,
+        ):
+            with patch("builtins.open", mock_open(read_data=text)):
+                assert debug._activity() == {}
+        with patch("builtins.open", mock_open(read_data="read_bytes: invalid\nrchar: 9\n")):
+            assert debug._activity() == {"process_io_rchar": 9}
+    with patch.dict("sys.modules", resource=None), patch.object(
+        debug.sys, "platform", "win32"
+    ), patch("builtins.open", side_effect=AssertionError("proc read")):
+        assert debug._activity() == {}
+
+
+def test_debug_activity_partial_resource_support_preserves_available_counters():
+    resource = SimpleNamespace(
+        RUSAGE_SELF=0,
+        getrusage=Mock(
+            return_value=SimpleNamespace(ru_minflt=12, ru_majflt=-1, ru_inblock="unknown")
+        ),
+    )
+    with patch.dict("sys.modules", resource=resource), patch.object(
+        debug.sys, "platform", "darwin"
+    ), patch("builtins.open", side_effect=AssertionError("proc read")):
+        assert debug._activity() == {"process_minor_faults": 12}
+
+
+def test_debug_activity_read_failures_do_not_break_the_accounted_operation():
+    resource = SimpleNamespace(RUSAGE_SELF=0, getrusage=Mock(side_effect=OSError("private error")))
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        filename = os.path.join(tmp, "unavailable.jsonl")
+        with debug.session(filename=filename), patch.dict(
+            "sys.modules", resource=resource
+        ), patch.object(debug, "_memory", return_value={}), patch.object(
+            debug.sys, "platform", "linux"
+        ), patch.object(debug, "open", side_effect=OSError("private source path"), create=True):
+            with debug.span("test.unavailable", activity=True) as info:
+                info["rows"] = 3
+        end = next(r for r in _records(filename) if r["event"] == "test.unavailable.end")
+        assert end["rows"] == 3 and "error_type" not in end
+        assert not any(key.endswith("_delta") for key in end)
+        assert "private" not in Path(filename).read_text()

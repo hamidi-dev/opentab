@@ -152,8 +152,53 @@ def _memory() -> dict:
     return result
 
 
+def _activity() -> dict:
+    """Best-effort process-wide counters, never source paths or error text."""
+    result = {}
+    try:
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        for attribute, label in (
+            ("ru_minflt", "minor_faults"),
+            ("ru_majflt", "major_faults"),
+            ("ru_inblock", "block_in"),
+            ("ru_oublock", "block_out"),
+            ("ru_nvcsw", "voluntary_context_switches"),
+            ("ru_nivcsw", "involuntary_context_switches"),
+        ):
+            value = getattr(usage, attribute, None)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                result["process_" + label] = value
+    except (ImportError, OSError, ValueError, AttributeError, TypeError, OverflowError):
+        pass
+    if sys.platform == "linux":
+        try:
+            with open("/proc/self/io", encoding="ascii") as handle:
+                text = handle.read(16385)
+            if len(text) > 16384:
+                return result
+            seen = set()
+            for line in text.splitlines():
+                name, separator, value = line.partition(":")
+                if not separator or name not in ("read_bytes", "rchar", "syscr", "write_bytes"):
+                    continue
+                label = "process_io_" + name
+                # Reject duplicates and malformed values independently of other counters.
+                if name in seen:
+                    result.pop(label, None)
+                    continue
+                seen.add(name)
+                value = value.strip()
+                if value and value.isascii() and value.isdecimal():
+                    result[label] = int(value)
+        except (OSError, UnicodeError, ValueError):
+            pass
+    return result
+
+
 @contextlib.contextmanager
-def span(name: str, **fields):
+def span(name: str, *, activity: bool = False, **fields):
     sink = _sink
     result = {}
     if sink is None:
@@ -163,6 +208,7 @@ def span(name: str, **fields):
     cpu_started = time.process_time()
     thread_started = time.thread_time()
     before = _memory()
+    activity_before = _activity() if activity else {}
     seq = sink.emit(name + ".start", {**fields, **before})
     token = _parent.set(seq)
     try:
@@ -179,6 +225,12 @@ def span(name: str, **fields):
         thread_cpu_ms = (time.thread_time() - thread_started) * 1000
         _parent.reset(token)
         after = _memory()
+        activity_deltas = {}
+        if activity:
+            activity_after = _activity()
+            for key, value in activity_before.items():
+                if key in activity_after and activity_after[key] >= value:
+                    activity_deltas[key + "_delta"] = activity_after[key] - value
         if "rss_mib" in before and "rss_mib" in after:
             after["rss_change_mib"] = round(after["rss_mib"] - before["rss_mib"], 3)
         sink.emit(
@@ -192,11 +244,12 @@ def span(name: str, **fields):
                 "thread_cpu_ms": round(thread_cpu_ms, 3),
                 "wall_minus_thread_cpu_ms": round(max(0, duration_ms - thread_cpu_ms), 3),
                 **after,
+                **activity_deltas,
             },
         )
 
 
-def timed(name: str, *, count_rows: bool = True):
+def timed(name: str, *, count_rows: bool = True, activity: bool = False):
     """Time a call without inspecting its arguments or logging its return value."""
 
     def decorate(fn):
@@ -204,7 +257,7 @@ def timed(name: str, *, count_rows: bool = True):
         def wrapped(*args, **kwargs):
             if not enabled():
                 return fn(*args, **kwargs)
-            with span(name) as info:
+            with span(name, activity=activity) as info:
                 result = fn(*args, **kwargs)
                 if count_rows and isinstance(result, (list, tuple)):
                     info["rows"] = len(result)
