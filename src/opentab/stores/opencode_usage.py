@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import time
+from itertools import islice
 
 from opentab import diagnostics as debug
 from opentab.stores.opencode_v2 import usage_columns
@@ -30,8 +31,47 @@ _SCALAR_SQL = (
     + ") end, json_type(case when json_valid(data) then data else '{}' end, '$.time') "
     "from main.session_message where rowid=?"
 )
+# json_each decodes member names even on JSON1 versions whose path lookup cannot
+# match escaped keys. Bound the source BEFORE JSON parsing, and keep
+# discarded content inside SQLite. MATERIALIZED requires SQLite 3.35+; older
+# libraries retain the full-read fallback. Only the small kept values cross into
+# Python, where nested keys/duplicate members retain compact_usage's semantics.
+_MEMBER_SQL = (
+    "with bounded as materialized ("
+    "select length(cast(data as blob)) as size, "
+    "case when typeof(data)='text' and length(cast(data as blob))<=? then data end as data "
+    "from main.session_message where rowid=?"
+    "), objects as materialized ("
+    # Old JSON1 validates strict JSON in json_each itself. JSON5-capable libraries
+    # need an explicit strict check; discarded malformed content must stay invalid.
+    # Checking the root marker avoids an additional whole-document json_type parse.
+    "select size, case when substr(ltrim(data,char(32,9,10,13)),1,1)='{' "
+    # JSON1 treats literal NUL as end-of-input. Compare byte lengths through %s
+    # (which also stops at NUL) to reject a truncated suffix, including Unicode.
+    # instr(data,char(0)) scans byte-by-byte and dominated the old-engine profile.
+    "and length(cast(printf('%s',data) as blob))=size "
+    + ("and json_valid(data) " if sqlite3.sqlite_version_info >= (3, 42, 0) else "")
+    + "then data end as data from bounded"
+    ") select v.size,v.data is not null,j.key,j.value,j.type "
+    "from objects v left join json_each(v.data) j on j.key in ("
+    + ",".join("'" + key + "'" for key in _FIELDS)
+    + ")"
+)
 _DECODE_LIMIT = 8 * 1024 * 1024
 _MAX_DEPTH = 1000 if sqlite3.sqlite_version_info >= (3, 42, 0) else 2000
+_READ_BATCH = 64
+_MEMBER_BATCH_SQL = (
+    "select rowid,size,obj is not null, "
+    "(select json_group_array(json_array(key,value,type)) from json_each(obj) where key in ("
+    + ",".join("'" + key + "'" for key in _FIELDS)
+    + ")) from (select rowid,length(cast(data as blob)) as size, "
+    "case when typeof(data)='text' and length(cast(data as blob))<=? "
+    "and substr(ltrim(data,char(32,9,10,13)),1,1)='{' "
+    "and length(cast(printf('%s',data) as blob))=length(cast(data as blob)) "
+    + ("and json_valid(data) " if sqlite3.sqlite_version_info >= (3, 42, 0) else "")
+    + "then data end as obj from main.session_message "
+    "where rowid in ({placeholders})) order by rowid"
+)
 
 
 def _first_keys(pairs):
@@ -362,7 +402,7 @@ def _read_usage(conn, rowid, tracing, sql_projection=False):
                 ):
                     compact = compact_usage_stream(blob.read)
                 return compact, size, (fetched - started) * 1000, True, False
-        if sql_projection:
+        if sql_projection is True:
             # A single multi-path extraction keeps discarded content out of Python.
             # Only bounded cells use SQLite's JSON parser; oversized cells retain
             # streaming validation. Preserve missing versus explicit-null time:
@@ -391,6 +431,22 @@ def _read_usage(conn, rowid, tracing, sql_projection=False):
                 # Non-finite numbers and runtime-specific JSON/UTF handling keep
                 # the established full-read validator rather than losing usage.
                 pass
+    if sql_projection == "members":
+        try:
+            rows = conn.execute(_MEMBER_SQL, [_DECODE_LIMIT, rowid]).fetchall()
+            fetched = time.perf_counter() if tracing else 0
+            size = rows[0][0] or 0
+            if size <= _DECODE_LIMIT:
+                compact = (
+                    _compact_members((key, value, kind) for _, _, key, value, kind in rows)
+                    if rows[0][1]
+                    else "null"
+                )
+                return compact, size, (fetched - started) * 1000, False, True
+        except (sqlite3.OperationalError, ValueError, UnicodeError, RecursionError):
+            # Non-finite values and engine-specific JSON behavior need the original
+            # validator. Oversized cells also fall through on pre-Blob Python.
+            pass
     data = conn.execute("select data from main.session_message where rowid=?", [rowid]).fetchone()[
         0
     ]
@@ -408,6 +464,71 @@ def _read_usage(conn, rowid, tracing, sql_projection=False):
     else:
         compact = compact_usage(data)
     return compact, size, (fetched - started) * 1000, False, False
+
+
+def _compact_members(members):
+    fields = {}
+    for key, value, kind in members:
+        if key is None or key in fields:
+            continue
+        if kind in ("object", "array") and isinstance(value, str):
+            value = json.loads(
+                value, object_pairs_hook=_first_keys, parse_constant=_invalid_constant
+            )
+        elif kind in ("true", "false"):
+            value = kind == "true"
+        fields[key] = value
+    return json.dumps(fields, allow_nan=False)
+
+
+def _read_usage_batch(conn, rowids, tracing, timings):
+    """Stream compact projections in rowid order, on the caller's read snapshot.
+
+    No raw bodies are returned or materialized for an entire batch. A malformed
+    row can abort json_each; discard that batch and use the established per-row
+    validator. Also bound retained compact output for unusually large kept fields.
+    """
+    sql = _MEMBER_BATCH_SQL.replace("{placeholders}", ",".join("?" for _ in rowids))
+    result = {}
+    cursor = None
+    started = time.perf_counter() if tracing else 0
+    decode_ms = 0.0
+    kept = 0
+    with debug.span("usage.batch", rows=len(rowids)):
+        try:
+            cursor = conn.execute(sql, [_DECODE_LIMIT, *rowids])
+            for rowid, size, valid, raw in cursor:
+                if (size or 0) > _DECODE_LIMIT:
+                    continue  # Blob streaming/full-read scanner, never discard usage.
+                tick = time.perf_counter() if tracing else 0
+                try:
+                    compact = (
+                        _compact_members(
+                            json.loads(
+                                raw, object_pairs_hook=_first_keys, parse_constant=_invalid_constant
+                            )
+                        )
+                        if valid
+                        else "null"
+                    )
+                    kept += len(compact)
+                    if kept > _DECODE_LIMIT:
+                        result.clear()
+                        break
+                    result[rowid] = (compact, size or 0)
+                finally:
+                    if tracing:
+                        decode_ms += (time.perf_counter() - tick) * 1000
+        except (sqlite3.OperationalError, ValueError, UnicodeError, RecursionError):
+            result.clear()
+        finally:
+            if cursor is not None:
+                cursor.close()
+    if tracing:
+        timings[0] += (time.perf_counter() - started) * 1000 - decode_ms
+        timings[1] += decode_ms
+        debug.event("usage.batch_result", projected=len(result), fallback=len(rowids) - len(result))
+    return result
 
 
 class UsageCache:
@@ -473,6 +594,31 @@ class UsageCache:
             "rows": list(self.rows.values()),
         }
 
+    def _reusable(self, stamp, cutoff):
+        old = self.rows.get(stamp[0])
+        return (
+            old is not None
+            and old[0] == tuple(stamp)
+            and isinstance(stamp[5], (int, float))
+            and 0 < stamp[5] < cutoff
+        )
+
+    def _native_rows(self, conn, metadata, cutoff, tracing, timings):
+        if self._sql_projection != "members":
+            for row in metadata:
+                yield row, None, False
+            return
+        while True:
+            rows = list(islice(metadata, _READ_BATCH))
+            if not rows:
+                return
+            targets = [row[0] for row in rows if not self._reusable(row, cutoff)]
+            batch = self._sql_projection == "members" and len(targets) >= 8
+            projected = _read_usage_batch(conn, targets, tracing, timings) if batch else {}
+            attempted = set(targets) if batch else set()
+            for row in rows:
+                yield row, projected.get(row[0]), row[0] in attempted
+
     @debug.timed("usage.prepare")
     def prepare(
         self, conn: sqlite3.Connection, legacy: bool, refresh: bool = False, scope=None
@@ -499,8 +645,8 @@ class UsageCache:
         )
         tracing = debug.enabled()
         if self._sql_projection is None:
-            # Older JSON1 engines cannot match escaped object keys as Python does.
-            # Probe the actual library, not the Python version or a new minimum.
+            # Probe the actual library, not the Python version. Older JSON1 path
+            # lookup misses escaped keys; member iteration handles those instead.
             self._sql_projection = (
                 hasattr(conn, "blobopen")
                 and conn.execute(
@@ -508,14 +654,23 @@ class UsageCache:
                 ).fetchone()[0]
                 == 1
             )
+            if not self._sql_projection and sqlite3.sqlite_version_info >= (3, 35, 0):
+                self._sql_projection = "members"
         debug.event(
             "usage.decode_strategy",
             streamed_oversized=hasattr(conn, "blobopen"),
             compact_threshold=_DECODE_LIMIT,
             legacy_reread=legacy,
-            sql_scalar_projection=self._sql_projection,
+            sql_scalar_projection=bool(self._sql_projection),
+            sql_projection_mode="members"
+            if self._sql_projection == "members"
+            else "paths"
+            if self._sql_projection
+            else "none",
+            batch_rows=_READ_BATCH if self._sql_projection == "members" else 1,
         )
         fetch_ms = decode_ms = project_ms = insert_ms = 0.0
+        batch_timings = [0.0, 0.0]
         decoded = large = legacy_rows = 0
         streamed_rows = unusable_rows = projected_rows = 0
         reread_reasons = {} if tracing else None
@@ -548,21 +703,19 @@ class UsageCache:
                 + " from (select ? as rowid, ? as id, ? as session_id, ? as type, ? as time_created, ? as data) m"
             )
             # No data/JSON/length(data) here: don't visit overflow pages on a hit.
-            for row in debug.query_rows(
+            metadata = debug.query_rows(
                 conn,
                 "select rowid,id,session_id,type,time_created,time_updated,seq from main.session_message"
                 + scoped,
                 params,
                 label="usage.native_metadata",
+            )
+            for row, prefetched, attempted in self._native_rows(
+                conn, metadata, cutoff, tracing, batch_timings
             ):
                 stamp = tuple(row)
                 old = self.rows.get(stamp[0])
-                if (
-                    old is not None
-                    and old[0] == stamp
-                    and isinstance(stamp[5], (int, float))
-                    and 0 < stamp[5] < cutoff
-                ):
+                if self._reusable(stamp, cutoff):
                     values = old[1]
                     reused += 1
                 else:
@@ -578,9 +731,13 @@ class UsageCache:
                         )
                         reread_reasons[reason] = reread_reasons.get(reason, 0) + 1
                     tick = time.perf_counter() if tracing else 0
-                    compact, size, fetched_ms, streamed, projected = _read_usage(
-                        conn, stamp[0], tracing, self._sql_projection
-                    )
+                    if prefetched is not None:
+                        compact, size = prefetched
+                        fetched_ms, streamed, projected = 0.0, False, True
+                    else:
+                        compact, size, fetched_ms, streamed, projected = _read_usage(
+                            conn, stamp[0], tracing, False if attempted else self._sql_projection
+                        )
                     if tracing:
                         now = time.perf_counter()
                         elapsed = (now - tick) * 1000
@@ -626,6 +783,8 @@ class UsageCache:
                 "insert into temp.opentab_message_usage values (?,?,?,?,?,?,?,?,?,?,?,?)", pending
             )
             if tracing:
+                fetch_ms += batch_timings[0]
+                decode_ms += batch_timings[1]
                 insert_ms += (time.perf_counter() - tick) * 1000
                 debug.event(
                     "usage.native_summary",
