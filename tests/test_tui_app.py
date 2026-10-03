@@ -1504,6 +1504,52 @@ def test_filter_applies_to_projects():
     assert {p.directory for p in app.zoom_projects()} == {"/tmp/auth-service", "/tmp/auth-ui"}
 
 
+def test_project_filter_preserves_selected_sort_in_sidebar_and_zoom():
+    app = app_with(
+        [
+            workflow(
+                "short",
+                "2026-06-01 12:00:00",
+                cost=3.99,
+                tokens=600,
+                directory="/tmp/opentab-review",
+            ),
+            workflow(
+                "main",
+                "2026-06-01 12:00:00",
+                cost=6266.23,
+                tokens=500,
+                directory="/home/mo/SoftwareProjects/opentab",
+            ),
+            workflow(
+                "plugin",
+                "2026-06-01 12:00:00",
+                cost=108.25,
+                tokens=400,
+                directory="/home/mo/SoftwareProjects/herdr-opentab",
+            ),
+            workflow(
+                "fuzzy", "2026-06-01 12:00:00", cost=0.55, tokens=300, directory="/tmp/open-tab"
+            ),
+            workflow(
+                "other", "2026-06-01 12:00:00", cost=9999, tokens=900, directory="/tmp/unrelated"
+            ),
+        ]
+    )
+    app.query = "opentab"
+    app.focus = "months"
+    for rows in (app.projects, app.zoom_projects()):
+        assert [p.cost for p in rows] == [6266.23, 108.25, 3.99, 0.55]
+
+    app.apply_header_sort("cost", "project")  # reverse while the filter is active
+    for rows in (app.projects, app.zoom_projects()):
+        assert [p.cost for p in rows] == [0.55, 3.99, 108.25, 6266.23]
+
+    app.apply_header_sort("tokens", "project")
+    for rows in (app.projects, app.zoom_projects()):
+        assert [p.tokens for p in rows] == [600, 500, 400, 300]
+
+
 def test_project_list_s_opens_project_sort_picker():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.set_browse_mode("projects")
