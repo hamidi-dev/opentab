@@ -69,6 +69,12 @@ Events cover:
   `usage.batch_result` report its time and projected/fallback counts. Batch SQL and
   compact decoding contribute to the native summary's fetch/decode totals; they
   are not attributed to individual `usage.slow_row` events.
+  `scan_mode: combined_full` identifies an empty, all-history member-strategy build:
+  `usage.scan_page` combines metadata and bounded JSON extraction per rowid page,
+  and `usage.scan_fallback` records a page retried through the per-row validator.
+  Its SQL work is included in `payload_fetch_ms`, rather than a separate metadata
+  scan. `metadata_changed` retains metadata-only validation and keyed changed-row
+  reads for restored/in-memory accounting, scoped reads and other decode strategies.
 - Changes separates reader opening, metadata validation, snapshot queries, native
   edit queries and selected patch-body reads. `opencode.changes_strategy` records
   the requested optimization; `sql.plan` records the **observed** plan, including
@@ -198,6 +204,20 @@ oversized source cell as a Python string before bounded-batch validation; this
 older-runtime allocation is unresolved. Neither runtime discards accounting fields.
 The source cell's JSON is validated even when most of its content is discarded.
 SQLite's source mapping and page cache are bounded to 64 MiB and 16 MiB per reader.
+
+An empty all-history build using the member strategy reads metadata and bounded
+accounting fields together in rowid-keyset pages. This avoids a separate message
+table scan followed by payload lookups. Each page limits both row count and retained
+compact output; malformed JSON or an oversized compact page falls back before any
+partial page is adopted. Oversized source cells retain the existing per-row path.
+All pages share the revision refresh's read snapshot. Restored/in-memory rows and
+scoped reads keep metadata validation followed by changed-payload reads, so a full
+rebuild optimization never forces unchanged bodies into an incremental refresh.
+
+Pricing-bucket validation fuses numeric checks and accumulation, retaining the same
+array shapes, finiteness checks, ownership subsets, aggregate reconciliation and
+tolerance. It still validates cached/remote numeric data before use; faster cache
+loading does not skip malformed-payload checks.
 
 ## Lazy session reads
 

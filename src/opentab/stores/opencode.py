@@ -5,6 +5,7 @@ import argparse
 import difflib
 import hashlib
 import json
+import math
 import ntpath
 import os
 import posixpath
@@ -169,6 +170,29 @@ class _ChangeRequest:
             store.conn.close()
 
 
+def _cost_residual(difference: int | float | None, magnitude: int | float) -> int | float | None:
+    """Ignore at most eight ULPs of native/message cost reconciliation noise.
+
+    SQL supplies the difference so its numeric coercion, overflow and NULL
+    semantics stay intact. The scale is the actual larger operand magnitude,
+    never a dollar floor: a genuine tiny standalone cost must survive. Requiring
+    difference < magnitude also preserves standalone subnormal costs, for which
+    even one representable amount can be within eight ULPs of zero.
+    """
+    if difference is None:
+        return None
+    if difference <= 0:
+        return 0
+    if (
+        math.isfinite(difference)
+        and math.isfinite(magnitude)
+        and difference < magnitude
+        and difference <= 8 * math.ulp(magnitude)
+    ):
+        return 0
+    return difference
+
+
 class Store:
     has_v2 = False
     _usage_cache = None
@@ -190,6 +214,7 @@ class Store:
         # CombinedStore may move this connection between threads, never use it concurrently.
         self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function("opentab_cost_residual", 2, _cost_residual, deterministic=True)
         self._tune(self.conn)
         self.has_v2 = install_views(self.conn)
         self._usage_cache = UsageCache(db) if self.has_v2 else None
@@ -798,7 +823,11 @@ class Store:
         ), residuals as (
         select s.id as session_id, tree.root_id, tree.depth, 0 as runs,
                'unknown (session aggregate)' as model_name,
-               max(0, coalesce(s.cost, 0) - coalesce(usage.cost, 0)) as cost,
+                opentab_cost_residual(
+                  coalesce(s.cost, 0) - coalesce(usage.cost, 0),
+                  max(abs(cast(coalesce(s.cost, 0) as real)),
+                      abs(cast(coalesce(usage.cost, 0) as real)))
+                ) as cost,
                max(0, coalesce(s.tokens_input, 0) - coalesce(usage.input, 0)) as input,
                max(0, coalesce(s.tokens_output, 0) - coalesce(usage.output, 0)) as output,
                max(0, coalesce(s.tokens_reasoning, 0) - coalesce(usage.reasoning, 0)) as reasoning,

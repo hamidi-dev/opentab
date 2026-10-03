@@ -403,12 +403,27 @@ def test_opencode_usage_batches_preserve_accounting_and_fall_back_for_malformed_
                 queries = []
                 candidate.conn.set_trace_callback(queries.append)
                 assert _read(candidate) == expected
-                batches = [q for q in queries if q.startswith("select rowid,size,obj is not null")]
-                assert len(batches) == 2  # the final seven changed rows use the single-row path
+                scans = [
+                    q
+                    for q in queries
+                    if q.startswith(
+                        "select rowid,id,session_id,type,time_created,time_updated,seq,size,obj is not null"
+                    )
+                ]
+                assert len(scans) == 3  # bounded full-scan pages, no separate metadata scan
                 if not malformed:
                     assert not any(
                         q.startswith("select data from main.session_message") for q in queries
                     )
+                # A revision refresh still batches only changed payloads rather
+                # than repeating the combined all-history source scan.
+                queries.clear()
+                writer.execute("update session_message set time_updated=time_updated+1")
+                writer.commit()
+                assert _read(candidate) == expected
+                batches = [q for q in queries if q.startswith("select rowid,size,obj is not null")]
+                assert len(batches) == 2  # final seven changed rows use single-row reads
+                assert not any(q in scans for q in queries)
             finally:
                 baseline.conn.close()
                 candidate.conn.close()
@@ -453,12 +468,124 @@ def test_opencode_usage_batches_share_the_metadata_snapshot_during_source_writes
             return _read_usage_batch(conn, rowids, tracing, timings)
 
         store._usage_cache._sql_projection = "members"
+        # Exercise the metadata + changed-row path as after a sidecar restore.
+        store._usage_cache.rows = dict(expected)
         with patch("opentab.stores.opencode_usage._read_usage_batch", side_effect=concurrent_write):
             store._usage_cache.prepare(store.conn, False)
         assert wrote and store._usage_cache.rows == expected
         store._usage_cache.prepare(store.conn, False)
         assert store._usage_cache.reused == 128
         assert store._usage_cache.rows != expected
+
+
+def test_opencode_usage_full_scan_pages_share_snapshot_and_preserve_negative_rowids():
+    from opentab.stores.opencode_usage import _compact_members
+
+    with _v2_db() as (writer, store):
+        writer.execute("pragma journal_mode=wal")
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(str(i), "root", "assistant", i + 1, {"tokens": {"input": i + 1}})
+                for i in range(129)
+            ],
+        )
+        writer.execute("update session_message set rowid=-9223372036854775808 where id='0'")
+        writer.commit()
+        baseline = Store(store.db, argparse.Namespace(demo=False))
+        try:
+            baseline._usage_cache._sql_projection = False
+            baseline._usage_cache.prepare(baseline.conn, False)
+            expected = dict(baseline._usage_cache.rows)
+        finally:
+            baseline.conn.close()
+        wrote = False
+
+        def concurrent_write(members):
+            nonlocal wrote
+            if not wrote:
+                writer.execute(
+                    "update session_message set data=?,time_updated=time_updated+1000 where id='128'",
+                    ['{"tokens":{"input":777}}'],
+                )
+                writer.commit()
+                wrote = True
+            return _compact_members(members)
+
+        store._usage_cache._sql_projection = "members"
+        with patch("opentab.stores.opencode_usage._compact_members", side_effect=concurrent_write):
+            store._usage_cache.prepare(store.conn, False)
+        assert wrote and store._usage_cache.rows == expected
+        assert min(store._usage_cache.rows) == -9223372036854775808
+        store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.reused == 128
+        assert store._usage_cache.rows != expected
+
+
+def test_opencode_usage_full_scan_bounds_json_and_compact_pages_before_fallback():
+    from opentab.stores.opencode_usage import _MEMBER_SCAN_SQL
+
+    for deterministic in (False, True):
+        with _v2_db() as (writer, store):
+            writer.execute(
+                "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+            )
+            writer.executemany(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                [
+                    _message(
+                        "large",
+                        "root",
+                        "assistant",
+                        1,
+                        {"tokens": {"input": 23}, "content": "x" * 4096},
+                    ),
+                    *[
+                        _message(
+                            str(i),
+                            "root",
+                            "assistant",
+                            i + 2,
+                            {"model": {"id": "m" * 500}, "tokens": {"input": 7}},
+                        )
+                        for i in range(8)
+                    ],
+                ],
+            )
+            writer.commit()
+            expected = _reference(store.db)
+            sizes = []
+
+            def observe(value, sizes=sizes):
+                sizes.append(len(value) if isinstance(value, (str, bytes)) else 0)
+                return value
+
+            store.conn.create_function("observe", 1, observe, deterministic=deterministic)
+            store._usage_cache._sql_projection = "members"
+            with patch("opentab.stores.opencode_usage._DECODE_LIMIT", 1024), patch(
+                "opentab.stores.opencode_usage._MEMBER_SCAN_SQL",
+                _MEMBER_SCAN_SQL.replace("json_each(obj)", "json_each(observe(obj))"),
+            ), patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as fallback:
+                assert _read(store) == expected
+            # Oversized source JSON never reaches json_each, and a page whose
+            # kept fields exceed the cap is retried without losing any accounting.
+            assert sizes and max(sizes) <= 1024
+            assert fallback.call_count == 9
+
+
+def test_opencode_usage_scoped_first_read_never_uses_full_scan():
+    with _v2_db() as (writer, store):
+        _populate_v2(writer)
+        store._usage_cache._sql_projection = "members"
+        with patch.object(
+            store._usage_cache, "_full_native_rows", side_effect=AssertionError("unscoped read")
+        ):
+            store._usage_cache.prepare(store.conn, False, scope={"root"})
+        assert store._usage_cache.rows
+        assert {stamp[2] for stamp, _ in store._usage_cache.rows.values()} == {"root"}
 
 
 def test_opencode_usage_persistent_cache_reads_only_changed_native_messages():
@@ -761,9 +888,13 @@ def test_opencode_usage_malformed_persistent_projection_rebuilds_without_losing_
         fresh = Store(store.db, argparse.Namespace(demo=False))
         try:
             fresh.restore_accounting_cache(payload)
-            with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
-                assert _read(fresh) == expected
-            assert parse.call_count == 7  # a fresh process rejects rather than trusting it
+            assert fresh._usage_cache.rows == {}  # corrupt sidecar was rejected
+            assert _read(fresh) == expected
+            # Either decoder strategy must rebuild all source values; the member
+            # strategy can now do so without seven separate payload lookups.
+            assert fresh._usage_cache.reused == 0
+            assert len(fresh._usage_cache.rows) == 7
+            assert fresh._usage_cache.rows == store._usage_cache.rows
         finally:
             fresh.conn.close()
 

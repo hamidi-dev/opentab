@@ -73,75 +73,89 @@ def _valid_pricing(row: dict) -> bool:
     totals = {k: [0.0] * 6 for k in ("tok", "unpriced", "root_unpriced")}
     root_totals = [0.0] * 6
     root_complete = True
+    numeric_types = (int, float)
+    isfinite = math.isfinite
+    inferred_fields = (
+        ("inferred_cache_write", "tok"),
+        ("root_inferred_cache_write", "root_tok"),
+        ("unpriced_inferred_cache_write", "unpriced"),
+        ("root_unpriced_inferred_cache_write", "root_unpriced"),
+    )
     for bucket in buckets:
         if not isinstance(bucket, dict):
             return False
         value = bucket.get("context")
         if value is not None and (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
+            (
+                type(value) not in numeric_types
+                and (isinstance(value, bool) or not isinstance(value, numeric_types))
+            )
+            or not isfinite(value)
             or value < 0
         ):
             return False
         for key in totals:
             tok = bucket.get(key)
-            if (
-                not isinstance(tok, list)
-                or len(tok) != 6
-                or any(
-                    isinstance(v, bool)
-                    or not isinstance(v, (int, float))
-                    or not math.isfinite(v)
-                    or v < 0
-                    for v in tok
-                )
-            ):
+            if not isinstance(tok, list) or len(tok) != 6:
                 return False
+            # Validate and accumulate together, preserving bucket order and float
+            # addition semantics without a generator and replacement list per split.
+            total = totals[key]
+            for i, v in enumerate(tok):
+                if (
+                    (
+                        type(v) not in numeric_types
+                        and (isinstance(v, bool) or not isinstance(v, numeric_types))
+                    )
+                    or not isfinite(v)
+                    or v < 0
+                ):
+                    return False
+                total[i] += v
             if tok[5] > tok[4] + 1e-6:
                 return False
-            totals[key] = [a + b for a, b in zip(totals[key], tok)]
+        tok = bucket["tok"]
+        unpriced = bucket["unpriced"]
+        root_unpriced = bucket["root_unpriced"]
         root = bucket.get("root_tok")
         root_complete = root_complete and root is not None
-        if root is not None and (
-            not isinstance(root, list)
-            or len(root) != 6
-            or any(
-                isinstance(v, bool)
-                or not isinstance(v, (int, float))
-                or not math.isfinite(v)
-                or v < 0
-                for v in root
-            )
-            or any(root[i] > bucket["tok"][i] + 1e-6 for i in range(6))
-            or root[5] > root[4] + 1e-6
-        ):
-            return False
         if root is not None:
-            root_totals = [a + b for a, b in zip(root_totals, root)]
-            if any(bucket["root_unpriced"][i] > root[i] + 1e-6 for i in range(6)):
+            if not isinstance(root, list) or len(root) != 6:
                 return False
-        for prefix, key in (
-            ("", "tok"),
-            ("root_", "root_tok"),
-            ("unpriced_", "unpriced"),
-            ("root_unpriced_", "root_unpriced"),
-        ):
-            value = bucket.get(prefix + "inferred_cache_write", 0)
+            for i, v in enumerate(root):
+                if (
+                    (
+                        type(v) not in numeric_types
+                        and (isinstance(v, bool) or not isinstance(v, numeric_types))
+                    )
+                    or not isfinite(v)
+                    or v < 0
+                    or v > tok[i] + 1e-6
+                    or root_unpriced[i] > v + 1e-6
+                ):
+                    return False
+                root_totals[i] += v
+            if root[5] > root[4] + 1e-6:
+                return False
+        elif "root_tok" in bucket:
+            # Missing legacy ownership is allowed; explicit null was rejected by
+            # the inferred-write input bound and remains malformed.
+            return False
+        for field, key in inferred_fields:
+            value = bucket.get(field, 0)
             if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
+                (
+                    type(value) not in numeric_types
+                    and (isinstance(value, bool) or not isinstance(value, numeric_types))
+                )
+                or not isfinite(value)
                 or value < 0
-                or value > bucket.get(key, [0] * 6)[0] + 1e-6
+                or value > (bucket[key][0] if key in bucket else 0) + 1e-6
             ):
                 return False
-        if any(
-            bucket["root_unpriced"][i] > bucket["unpriced"][i] + 1e-6
-            or bucket["unpriced"][i] > bucket["tok"][i] + 1e-6
-            for i in range(6)
-        ):
-            return False
+        for i in range(6):
+            if root_unpriced[i] > unpriced[i] + 1e-6 or unpriced[i] > tok[i] + 1e-6:
+                return False
     expected = [*model_row_split(row), model_row_1h_write(row)]
     if any(not math.isfinite(v) or v < 0 for v in expected):
         return False

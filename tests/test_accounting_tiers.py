@@ -223,6 +223,156 @@ def test_malformed_or_inconsistent_portable_buckets_are_rejected():
         assert not valid_pricing(row)
 
 
+def _validation_row():
+    bucket = {
+        "context": 123,
+        "tok": [100, 20, 3, 40, 50, 10],
+        "unpriced": [80, 10, 2, 30, 40, 8],
+        "root_unpriced": [60, 5, 1, 20, 30, 6],
+        "root_tok": [70, 15, 2, 25, 35, 7],
+        "inferred_cache_write": 20,
+        "root_inferred_cache_write": 10,
+        "unpriced_inferred_cache_write": 15,
+        "root_unpriced_inferred_cache_write": 5,
+    }
+    row = {"pricing": [bucket]}
+    for key, prefix in (
+        ("tok", ""),
+        ("unpriced", "unpriced_"),
+        ("root_unpriced", "root_unpriced_"),
+        ("root_tok", "root_"),
+    ):
+        row.update({prefix + field: value for field, value in zip(FIELDS, bucket[key])})
+    return row
+
+
+def test_pricing_validation_rejects_non_numeric_and_overflow_at_every_bucket_boundary():
+    invalid = (None, True, False, "1", [], {}, -1e-12, float("nan"), float("inf"), 10**400)
+    assert valid_pricing(_validation_row())
+    for key in ("tok", "unpriced", "root_unpriced", "root_tok"):
+        for value in invalid:
+            for i in range(6):
+                row = _validation_row()
+                row["pricing"][0][key][i] = value
+                assert not valid_pricing(row), (key, i, value)
+        for value in (None, [], [0] * 5, [0] * 7, (0,) * 6, {}):
+            row = _validation_row()
+            row["pricing"][0][key] = value
+            assert not valid_pricing(row), (key, value)
+    for key in (
+        "context",
+        "inferred_cache_write",
+        "root_inferred_cache_write",
+        "unpriced_inferred_cache_write",
+        "root_unpriced_inferred_cache_write",
+    ):
+        for value in invalid:
+            if key == "context" and value is None:
+                continue
+            row = _validation_row()
+            row["pricing"][0][key] = value
+            assert not valid_pricing(row), (key, value)
+
+
+def test_pricing_validation_checks_each_ownership_and_billing_subset():
+    for subset, whole, prefix in (
+        ("root_tok", "tok", "root_"),
+        ("unpriced", "tok", "unpriced_"),
+        ("root_unpriced", "unpriced", "root_unpriced_"),
+        ("root_unpriced", "root_tok", "root_unpriced_"),
+    ):
+        for i in range(6):
+            row = _validation_row()
+            bucket = row["pricing"][0]
+            bucket[subset][i] = bucket[whole][i] + 2e-6
+            # Keep totals reconciled: rejection must come from the subset boundary.
+            row[prefix + FIELDS[i]] = bucket[subset][i]
+            assert not valid_pricing(row), (subset, whole, i)
+    for key, prefix in (
+        ("tok", ""),
+        ("unpriced", "unpriced_"),
+        ("root_unpriced", "root_unpriced_"),
+        ("root_tok", "root_"),
+    ):
+        row = _validation_row()
+        bucket = row["pricing"][0]
+        bucket[key][5] = bucket[key][4] + 2e-6
+        row[prefix + "cache_write_1h"] = bucket[key][5]
+        assert not valid_pricing(row), key
+    for field, key in (
+        ("inferred_cache_write", "tok"),
+        ("root_inferred_cache_write", "root_tok"),
+        ("unpriced_inferred_cache_write", "unpriced"),
+        ("root_unpriced_inferred_cache_write", "root_unpriced"),
+    ):
+        row = _validation_row()
+        bucket = row["pricing"][0]
+        bucket[field] = bucket[key][0] + 2e-6
+        assert not valid_pricing(row), field
+
+
+def test_pricing_validation_preserves_legacy_root_completeness_and_optional_fields():
+    row = _validation_row()
+    bucket = row["pricing"][0]
+    del bucket["root_tok"]
+    del bucket["root_inferred_cache_write"]
+    assert not valid_pricing(row)  # Advertised full-root totals require every bucket.
+    for field in FIELDS:
+        del row["root_" + field]
+    assert valid_pricing(row)
+    bucket["root_inferred_cache_write"] = 0
+    assert valid_pricing(row)
+    bucket["root_inferred_cache_write"] = 2e-6
+    assert not valid_pricing(row)
+    bucket["root_inferred_cache_write"] = 0
+    bucket["root_tok"] = None
+    assert not valid_pricing(row)  # Explicit null is different from an absent legacy split.
+
+    row = _validation_row()
+    for field in FIELDS:
+        for prefix in ("root_", "unpriced_", "root_unpriced_"):
+            del row[prefix + field]
+    # Optional aggregate reconciliation is enabled by its input key only.
+    row["unpriced_output"] = "ignored without input"
+    row["root_unpriced_output"] = "ignored without input"
+    row["root_output"] = "ignored without input"
+    assert valid_pricing(row)
+    row["unpriced_input"] = 80
+    assert not valid_pricing(row)
+    assert valid_pricing({"input": "ignored without pricing"})
+    assert valid_pricing({"pricing": []})
+    assert not valid_pricing({"pricing": [], "input": 1})
+
+
+def test_pricing_validation_reconciles_every_aggregate_and_preserves_tolerance():
+    for prefix in ("", "root_", "unpriced_", "root_unpriced_"):
+        for field in FIELDS:
+            row = _validation_row()
+            row[prefix + field] += 0.5e-6
+            assert valid_pricing(row), (prefix, field)
+            row[prefix + field] += 1.5e-6
+            assert not valid_pricing(row), (prefix, field)
+    # Overflow during conversion must reject rather than escape to a cache caller.
+    row = _validation_row()
+    row["input"] = 10**400
+    assert not valid_pricing(row)
+
+
+def test_pricing_validation_accepts_numeric_subclasses_without_accepting_bool():
+    class Count(int):
+        pass
+
+    class Amount(float):
+        pass
+
+    for number in (Count, Amount):
+        row = _validation_row()
+        bucket = row["pricing"][0]
+        for key, value in bucket.items():
+            bucket[key] = [number(v) for v in value] if isinstance(value, list) else number(value)
+        assert valid_pricing(row)
+
+
 def test_token_cost_parts_include_reasoning_at_the_selected_output_rate():
     with tier_prices() as name:
         row = {
