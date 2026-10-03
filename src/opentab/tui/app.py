@@ -280,6 +280,28 @@ class App:
         "last_activity",
     )
     harness_sort_options = ("cost", "tokens", "sessions", "harness")
+    model_sort_options = (
+        "cost",
+        "tokens",
+        "runs",
+        "model",
+        "input",
+        "cache_read",
+        "cache_write",
+        "output",
+        "reasoning",
+    )
+    source_sort_options = (
+        "cost",
+        "tokens",
+        "sessions",
+        "harness",
+        "input",
+        "cache_read",
+        "cache_write",
+        "output",
+        "reasoning",
+    )
     subagent_sort_options = ("cost", "tokens", "date", "title", "model", "agent", "depth")
     prices_sort_options = ("model", "eff", "use", "input", "output", "cache_read", "cache_write")
     # A ranked tab offers only visible columns; cost is the common fallback.
@@ -561,10 +583,14 @@ class App:
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         self.harness_sort_by = "cost"
+        self.model_sort_by = "cost"
+        self.source_sort_by = "cost"
         self.subagent_sort_by = "cost"
         self.sort_reverse = False
         self.project_sort_reverse = False
         self.harness_sort_reverse = False
+        self.model_sort_reverse = False
+        self.source_sort_reverse = False
         self.subagent_sort_reverse = False
         self.ignored_projects: set[str] = set()
         self.ignored_sessions: set[str] = set()
@@ -5207,7 +5233,7 @@ class App:
 
     def zoom_source_rows(self) -> list[tuple[str, dict[str, float | int]]]:
         # The navigable Sources tab of a zoomed scope (merged view), grouped by harness.
-        return self.source_rows(self._zoom_picker_scope("source"))
+        return self.sorted_spend_rows(self.source_rows(self._zoom_picker_scope("source")), "source")
 
     def models_tab_workflows(self) -> list[Workflow]:
         # The sessions the Models tab covers -- the SAME scope machine_models /
@@ -5273,14 +5299,14 @@ class App:
         return rows
 
     def zoom_model_rows(self) -> list[tuple[str, dict[str, float | int]]]:
-        # The Models tab's rows in display order -- cost-ranked by aggregate_models and
+        # The Models tab's rows in display order -- sorted independently and
         # narrowed by `f` on model names, exactly as Renderer._models_tab renders them.
         # model_pick_index is a plain ordinal into this list (the _turn_groups pattern:
         # App owns the list, the renderer only maps a clicked LINE back to an ordinal).
         rows = self.aggregate_models(self.compose_zoom_drills(self.models_tab_workflows()))
         if self.query:
             rows = [r for r in rows if fuzzy_score(self.query, str(r[0])) is not None]
-        return rows
+        return self.sorted_spend_rows(rows, "model")
 
     def zoom_selected_model(self) -> str | None:
         rows = self.zoom_model_rows()
@@ -5476,6 +5502,46 @@ class App:
     def in_harness_sort_context(self) -> bool:
         return self.view == "browse" and self.browse_mode == "harnesses"
 
+    def spend_sort_target(self) -> str | None:
+        if self.view == "session" or (
+            self.view == "browse" and self.browse_mode in ("projects", "harnesses")
+        ):
+            return None
+        if self.on_models_tab:
+            return "model"
+        if self.on_sources_tab:
+            return "source"
+        return None
+
+    def spend_sort_key(self, target: str) -> str:
+        key = getattr(self, f"{target}_sort_by")
+        return key if key in getattr(self, f"{target}_sort_options") else "cost"
+
+    def sorted_spend_rows(self, rows: list, target: str) -> list:
+        key = self.spend_sort_key(target)
+        desc = self.sort_descending(key, getattr(self, f"{target}_sort_reverse"))
+        # Unknown token categories stay last in either direction. Stable ties keep
+        # the aggregate's cost/token ranking, shared by the renderer and drill cursor.
+        if key in ("model", "harness"):
+            return sorted(rows, key=lambda row: row[0].casefold(), reverse=desc)
+        known = [row for row in rows if row[1].get(key) is not None]
+        missing = [row for row in rows if row[1].get(key) is None]
+        return sorted(known, key=lambda row: row[1][key], reverse=desc) + missing
+
+    def _resort_spend(self, target: str, key: str, reverse: bool) -> None:
+        if key not in getattr(self, f"{target}_sort_options"):
+            return
+        rows = self.zoom_model_rows if target == "model" else self.zoom_source_rows
+        selected = self.zoom_selected_model() if target == "model" else self.zoom_selected_source()
+        setattr(self, f"{target}_sort_by", key)
+        setattr(self, f"{target}_sort_reverse", reverse)
+        self._reanchor(
+            "model_pick_index" if target == "model" else "source_index",
+            selected,
+            [name for name, _ in rows()],
+        )
+        self.scroll = 0
+
     def in_prices_sort_context(self) -> bool:
         # The P overlay's model list (not its per-model session drill-in) is sortable
         # by column, so it gets its own sort state (prices_sort/prices_sort_reverse).
@@ -5560,6 +5626,7 @@ class App:
             or self.in_trend_sort_context()
             or self.in_harness_sort_context()
             or self.in_project_sort_context()
+            or self.spend_sort_target() is not None
             or (self.view != "session" and self.on_sessions_tab)
             or self.in_subagent_sort_context()
         )
@@ -5595,6 +5662,9 @@ class App:
             return self.project_sort_key()
         if self.in_subagent_sort_context():
             return self.subagent_sort_key()
+        target = self.spend_sort_target()
+        if target:
+            return self.spend_sort_key(target)
         if not self.current_sort_options():
             return None
         return self.session_sort_key()
@@ -5617,17 +5687,20 @@ class App:
             return self.harness_sort_options
         if self.in_project_sort_context():
             return self.project_sort_options
+        target = self.spend_sort_target()
+        if target:
+            return getattr(self, f"{target}_sort_options")
         return self.current_sort_options()
 
     def open_sort_menu(self) -> None:
         # `s` no longer cycles blindly; it opens a small picker the user can j/k
         # through and Enter to apply (Esc cancels), mirroring the `H` source menu.
         if not self.can_sort_current_view():
-            self.notify("sort: only session, project, subagent, or Trends ranking lists", "error")
+            self.notify("sort: choose a sortable table first", "error")
             return
         options = self.sort_menu_options()
         if not options:
-            self.notify("sort: only session, project, subagent, or Trends ranking lists", "error")
+            self.notify("sort: choose a sortable table first", "error")
             return
         current = self.effective_sort_by()
         self.sort_menu_index = options.index(current) if current in options else 0
@@ -5644,6 +5717,10 @@ class App:
             return
         if self.in_trend_sort_context():
             self._resort_trends(value, reverse=False)
+            return
+        target = self.spend_sort_target()
+        if target:
+            self._resort_spend(target, value, reverse=False)
             return
         if self.in_harness_sort_context():
             self.harness_sort_by = value
@@ -5687,6 +5764,14 @@ class App:
         # target ("prices"/"project"/"session") says which list was clicked, so it
         # works even when a project list and a session list show sortable headers on
         # screen at once. The choice persists on exit via save_state, like the `s` picker.
+        if target in ("model", "source"):
+            reverse = (
+                not getattr(self, f"{target}_sort_reverse")
+                if key == self.spend_sort_key(target)
+                else False
+            )
+            self._resort_spend(target, key, reverse)
+            return
         if target == "prices":
             if key not in self.prices_sort_options:
                 return
@@ -7259,13 +7344,33 @@ class App:
         # Spend grouped by the tool it came from, cost-sorted -- the Sources tab's
         # rows and the per-scope Sources detail tables.
         by_source: dict[str, dict[str, float | int]] = defaultdict(
-            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
+            lambda: {
+                "cost": 0.0,
+                "tokens": 0,
+                "sessions": 0,
+                "input": 0,
+                "output": 0,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+            }
         )
+        incomplete = set()
+        fields = ("input", "output", "reasoning", "cache_read", "cache_write")
         for w in workflows:
             item = by_source[w.source or "unknown"]
             item["cost"] = float(item["cost"]) + w.total_cost
             item["tokens"] = int(item["tokens"]) + w.total_tokens
             item["sessions"] = int(item["sessions"]) + 1
+            rows = self.model_mix(w.id)  # Already-loaded rollups only; keep startup lazy.
+            if w.total_tokens and not rows:
+                incomplete.add(w.source or "unknown")
+            for row in rows:
+                for key, value in zip(fields, model_row_split(row)):
+                    item[key] += int(value)
+        for source in incomplete:
+            for key in fields:
+                by_source[source][key] = None
         return sorted(
             by_source.items(),
             key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
@@ -9168,6 +9273,8 @@ class App:
                 "cache_read": 0,
                 "cache_write": 0,
                 "output": 0,
+                "input": 0,
+                "reasoning": 0,
                 "list_parts": (0.0,) * 5,
             }
         )
@@ -9180,6 +9287,9 @@ class App:
                 item["cache_read"] = int(item["cache_read"]) + int(row["cache_read"] or 0)
                 item["cache_write"] = int(item["cache_write"]) + int(row["cache_write"] or 0)
                 item["output"] = int(item["output"]) + int(row["output"] or 0)
+                inp, _, reasoning, _, _ = model_row_split(row)
+                item["input"] += int(inp)
+                item["reasoning"] += int(reasoning)
                 item["list_parts"] = tuple(
                     a + b for a, b in zip(item["list_parts"], self.model_row_economics(row).cost)
                 )

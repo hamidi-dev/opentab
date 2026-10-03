@@ -140,6 +140,10 @@ dimension being picked. `compose_zoom_drills()` provides the corresponding
 partition filtering for the Models table. Models deliberately filters model
 names, not session titles; `zoom_model_rows()` and the renderer use matching
 aggregation and filtering so a cursor ordinal refers to the row actually drawn.
+Models and Harnesses detail tables use `sorted_spend_rows` for both display and
+drill selection. Their independent model/source sort preferences leave sidebar
+and Trends rankings separate. Sorting reanchors by name; unavailable harness
+token categories stay last in either direction.
 
 Each drill couples a value with a picker cursor. Clearing helpers reset the pair;
 `project_index` needs special care because in Projects mode it is the **sidebar**
@@ -280,6 +284,13 @@ Sessions preview and picker share `session_columns`, `session_header_text`, and
 session columns use the same pane budget in both views: Models, Project, then
 Worked drop as width shrinks, protecting the title. Models uses `_model_table`
 in both views: zoom adds a cursor, not a replacement table with fewer columns.
+Model tables show total tokens plus Input (uncached), CacheR, CacheW and Output;
+Reason appears when the scope has separately recorded reasoning. Narrow panes
+use compact counts, while wide panes also attribute cost to each category using
+per-model list-rate weights (including request tiers), scaled to the displayed cost.
+Harness spend tables show the same token categories from already-loaded model
+rollups, shortening the spend bar to fit. Missing model breakdowns display `-`,
+and recorded session totals remain independent of the available categories.
 
 `paint_cursor_row` reverses only the interior, preserving the box rules and the
 selection marker. It uses `write`, not `write_rich`, so colored numeric spans

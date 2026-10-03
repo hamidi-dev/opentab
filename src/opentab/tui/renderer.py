@@ -79,6 +79,7 @@ from opentab.tui.components.tables import (
     ProjectRow,
     SessionHeadings,
     SessionRow,
+    group_token_columns,
     picker_box_width,
     picker_frame,
     picker_row,
@@ -198,6 +199,7 @@ from opentab.util import (
     CONTEXT_COMPACT_RATIO,
     context_size,
     fuzzy_score,
+    model_row_split,
     unicode_screen,
 )
 
@@ -1658,6 +1660,12 @@ class Renderer:
         desc = self.sort_descending(key, self.harness_sort_reverse)
         return f"{label} {'v' if desc else '^'}"
 
+    def spend_sort_heading(self, target: str, key: str, label: str) -> str:
+        if self.spend_sort_key(target) != key:
+            return label
+        desc = self.sort_descending(key, getattr(self.app, f"{target}_sort_reverse"))
+        return f"{label} {'v' if desc else '^'}"
+
     def subagent_sort_heading(self, key: str, label: str) -> str:
         if self.subagent_sort_key() != key:
             return label
@@ -2265,10 +2273,25 @@ class Renderer:
         total = sum(float(it["cost"]) for _, it in rows)
         peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
         namew, barw = self._group_widths(rows, col, inner_w)
-        header = self._group_header(col, namew, barw)
+        token_columns = group_token_columns(rows)
+        header = self._group_header(col, namew, barw, token_columns=token_columns)
+        if region_kind == "zoomsource":
+            headings = self._source_sort_headings(token_columns)
+            token_columns = tuple((key, headings[key]) for key, _ in token_columns)
+            namew, barw = table_group_widths(rows, col, inner_w, token_columns=token_columns)
+            header = table_group_header(col, namew, barw, headings, token_columns)
         idx, start, count = picker_window(len(rows), sel_index, h)
         shown = rows[start : start + count]
         body_y, cx, inner = self.draw_picker_frame(stdscr, cy, x, w, title, header, len(shown))
+        if region_kind == "zoomsource":
+            self._register_sort_header(
+                body_y - 2,
+                cx,
+                header,
+                self.SOURCE_SORT_COLUMNS + group_token_columns(rows),
+                "source",
+                inner,
+            )
         self._add_rows_region(region_kind, body_y, x, x + w - 1, start, len(shown))
         for off, (source, it) in enumerate(shown):
             marker = ">" if start + off == idx else " "
@@ -2280,7 +2303,9 @@ class Renderer:
                 x,
                 cx,
                 inner,
-                self._group_row(source, it, marker, namew, barw, peak, total),
+                self._group_row(
+                    source, it, marker, namew, barw, peak, total, token_columns=token_columns
+                ),
                 start + off == idx,
                 cost,
                 tok,
@@ -2718,9 +2743,7 @@ class Renderer:
         rows = self.compose_zoom_drills(
             self.harness_scope(harness, include_ignored=self.show_ignored_projects)
         )
-        return self._models_tab(
-            self._agg_rows(self.aggregate_models(rows)), "# Harness Model Spend", width
-        )
+        return self._models_tab(self.aggregate_models(rows), "# Harness Model Spend", width)
 
     def harness_projects(self, harness: HarnessSummary, width: int) -> list[str]:
         rows = self.harness_scope(harness, include_ignored=self.show_ignored_projects)
@@ -2861,7 +2884,7 @@ class Renderer:
     def machine_models(self, machine: MachineSummary, width: int) -> list[str]:
         agg = self.aggregate_models(self.compose_zoom_drills(self.machine_scope(machine)))
         title = "# Fleet Model Spend" if machine.fleet else "# Machine Model Spend"
-        return self._models_tab(self._agg_rows(agg), title, width)
+        return self._models_tab(agg, title, width)
 
     def machine_sources(self, machine: MachineSummary, width: int) -> list[str]:
         return self.source_table(self.scoped_sessions(self.machine_scope(machine)), width)
@@ -3352,37 +3375,64 @@ class Renderer:
         count_label: str = "Msgs",
         price_split: bool = True,
         selectable: bool = False,
+        sortable: bool = False,
     ) -> list[str]:
-        # rows: (name, count, cost, tokens, cache_read, cache_write, output).
+        # rows: (name, count, cost, tokens, cache_read, cache_write, output,
+        #        list_parts, input, reasoning). Legacy rows omit the last three fields.
         # `selectable` only adds a cursor; browse and zoom must retain identical columns.
         # Size the count column from its TOTAL, which is at least as wide as any row.
-        cw_ = max(4, len(count_label), len(str(sum(int(r[1]) for r in rows))) if rows else 0)
-        longest = max([len(str(r[0])) for r in rows] + [len(name_label)])
+        def heading(key: str, label: str) -> str:
+            return self.spend_sort_heading("model", key, label) if sortable else label
+
+        count_heading = heading("runs", count_label)
+        name_heading = heading("model", name_label)
+        cw_ = max(4, len(count_heading), len(str(sum(int(r[1]) for r in rows))) if rows else 0)
+        longest = max([len(str(r[0])) for r in rows] + [len(name_heading)])
         # Keep the common 2-cell marker gutter so stacked table columns align.
         lead = "  "
         inner = max(1, width - self.BOX_CHROME - len(lead))
-        # Wide panes attribute Cost across CacheR/CacheW/Output. Require both recorded
-        # dollars and the 20-cell model-name floor; $0 rows have nothing to attribute.
-        split = price_split and any(float(r[2]) > 0 for r in rows) and inner - 80 - cw_ >= 20
+        counts = [self._model_token_counts(row) for row in rows]
+        labels = ["Input", "CacheR", "CacheW", "Output"]
+        if any(tok[4] for tok in counts):
+            labels.append("Reason")
+        token_columns = tuple(
+            zip(("input", "cache_read", "cache_write", "output", "reasoning"), labels)
+        )
+        labels = [heading(key, label) for key, label in token_columns]
+        # Prefer complete counts over dollar subcolumns. Reserve a readable model name
+        # before enabling wide cells; compact counts keep Input visible in small panes.
+        n = len(labels)
+        split_block = cw_ + 10 + 5 + 9 + n * 14 + (4 + n) * 2
+        split = price_split and any(float(r[2]) > 0 for r in rows) and inner - split_block >= 20
         # Split cells need two-space gutters; the narrow fallback needs every spare cell.
         sep = "  " if split else " "
-        block = 80 if split else 57
-        mw = min(longest, max(20, inner - block - cw_))
+        tw = (
+            9 if inner - (cw_ + 10 + 5 + 9 + n * 9 + 4 + n) >= 20 else max(6, max(map(len, labels)))
+        )
+        block = split_block if split else cw_ + 10 + 5 + 9 + n * tw + 4 + n
+        mw = min(longest, max(1, inner - block))
         total_cost = sum(float(r[2]) for r in rows)
         if split:
             # Split cells use fixed token and dollar sub-columns.
-            tail_head = sep.join(f"{h:>6}{'':8}" for h in ("CacheR", "CacheW", "Output"))
+            tail_head = sep.join(f"{h:>{max(6, len(h))}}{'':{14 - max(6, len(h))}}" for h in labels)
         else:
-            tail_head = sep.join((f"{'CacheR':>9}", f"{'CacheW':>9}", f"{'Output':>8}"))
+            tail_head = sep.join(f"{h:>{tw}}" for h in labels)
         header = (
-            f"{lead}{name_label:{mw}}{sep}{count_label:>{cw_}}{sep}{'Cost':>10}{sep}"
-            f"{'Share':>5}{sep}{'Tokens':>9}{sep}{tail_head}"
+            f"{lead}{name_heading:{mw}}{sep}{count_heading:>{cw_}}{sep}{heading('cost', 'Cost'):>10}{sep}"
+            f"{'Share':>5}{sep}{heading('tokens', 'Tokens'):>9}{sep}{tail_head}"
         )
         body = []
-        for row in rows:
-            name, runs, cost, tok, cr, cw, out = row[:7]
+        dollars = []
+
+        def token_tail(tok, amounts):
             if split:
-                c1, c2, c3 = self._price_split_cells(
+                return sep.join(self._split_cell(t, d) for t, d in zip(tok[:n], amounts))
+            return sep.join(f"{human_tokens(t):>{tw}}" for t in tok[:n])
+
+        for row, token_counts in zip(rows, counts):
+            name, runs, cost, tok, cr, cw, out = row[:7]
+            amounts = (
+                self._price_split_dollars(
                     str(name),
                     float(cost),
                     int(tok),
@@ -3390,16 +3440,14 @@ class Renderer:
                     int(cw),
                     int(out),
                     row[7] if len(row) > 7 else None,
+                    inp=token_counts[0],
+                    reasoning=token_counts[4],
                 )
-                tail = sep.join((c1, c2, c3))
-            else:
-                tail = sep.join(
-                    (
-                        f"{human_tokens(int(cr)):>9}",
-                        f"{human_tokens(int(cw)):>9}",
-                        f"{human_tokens(int(out)):>8}",
-                    )
-                )
+                if split
+                else (0.0,) * 5
+            )
+            dollars.append(amounts)
+            tail = token_tail(token_counts, amounts)
             body.append(
                 f"{lead}{pad(shorten(name, mw), mw)}{sep}{int(runs):>{cw_}}{sep}{money(float(cost)):>10}{sep}"
                 f"{pct(float(cost), total_cost):>5}{sep}"
@@ -3409,30 +3457,11 @@ class Renderer:
         if len(rows) > 1:
             # Sum attributed dollars per row at each model's own rates. A single row is
             # already its total, and aggregate Share is definitionally blank.
-            truns, ttok, tcr, tcw, tout = (sum(int(r[i]) for r in rows) for i in (1, 3, 4, 5, 6))
-            if split:
-                dollars = (0.0, 0.0, 0.0)
-                for row in rows:
-                    name, _, cost, tok, cr, cw, out = row[:7]
-                    row_d = self._price_split_dollars(
-                        str(name),
-                        float(cost),
-                        int(tok),
-                        int(cr),
-                        int(cw),
-                        int(out),
-                        row[7] if len(row) > 7 else None,
-                    )
-                    dollars = tuple(a + b for a, b in zip(dollars, row_d))
-                tail = sep.join(self._split_cell(n, d) for n, d in zip((tcr, tcw, tout), dollars))
-            else:
-                tail = sep.join(
-                    (
-                        f"{human_tokens(tcr):>9}",
-                        f"{human_tokens(tcw):>9}",
-                        f"{human_tokens(tout):>8}",
-                    )
-                )
+            truns, ttok = (sum(int(r[i]) for r in rows) for i in (1, 3))
+            tail = token_tail(
+                tuple(sum(col) for col in zip(*counts)),
+                tuple(sum(col) for col in zip(*dollars)),
+            )
             total = (
                 f"{lead}{pad('TOTAL', mw)}{sep}{truns:>{cw_}}{sep}{money(total_cost):>10}{sep}{'':>5}{sep}"
                 f"{human_tokens(ttok):>9}{sep}{tail}"
@@ -3450,6 +3479,17 @@ class Renderer:
             # Preserve a non-color selection cue for screenshots and accessibility.
             body[picked] = ">" + body[picked][1:]
         lines = self._ruled_box(title, header, body, total, notes, width)
+        if sortable:
+            self._line_sort_headers[self.BOX_HEADER_LINE] = (
+                (
+                    ("model", name_label),
+                    ("runs", count_label),
+                    ("cost", "Cost"),
+                    ("tokens", "Tokens"),
+                )
+                + token_columns,
+                "model",
+            )
         self._model_row_at = {}
         self._model_cursor_line = None
         if selectable and self._ruled_body_start is not None:
@@ -3504,6 +3544,13 @@ class Renderer:
         return list(sectioned_box(title, groups, width, notes, self.box_glyphs()).lines)
 
     @staticmethod
+    def _model_token_counts(row: tuple) -> tuple[int, int, int, int, int]:
+        _, _, _, total, cr, cw, out = row[:7]
+        reason = int(row[9]) if len(row) > 9 else 0
+        inp = int(row[8]) if len(row) > 8 else max(0, int(total) - cr - cw - out - reason)
+        return inp, int(cr), int(cw), int(out), reason
+
+    @staticmethod
     def _price_split_dollars(
         name: str,
         cost: float,
@@ -3512,51 +3559,40 @@ class Renderer:
         cw: int,
         out: int,
         parts: tuple | None = None,
-    ) -> tuple[float, float, float]:
+        *,
+        inp: int | None = None,
+        reasoning: int = 0,
+    ) -> tuple[float, float, float, float, float]:
         # Weight token categories at list rates, then scale to recorded Cost. This is exact
         # for list-price estimates and proportional for historical recorded costs.
         if parts is not None:
-            raw = (parts[0] + parts[2], parts[3], parts[4], parts[1])
+            raw = (parts[0], parts[3], parts[4], parts[1], parts[2])
         else:
             ir, orr, crr, cwr = model_price(name)
-            inp = max(0, tok - cr - cw - out)
-            raw = (inp * ir, cr * crr, cw * cwr, out * orr)
+            if inp is None:
+                inp = max(0, tok - cr - cw - out - reasoning)
+            raw = (inp * ir, cr * crr, cw * cwr, out * orr, reasoning * orr)
         total = sum(raw)
         scale = cost / total if cost > 0 and total > 0 else 0.0
-        return (raw[1] * scale, raw[2] * scale, raw[3] * scale)
+        return tuple(value * scale for value in raw)
 
     @staticmethod
     def _split_cell(tokens_n: int, dollars: float) -> str:
         label = f"({money_label(dollars)})" if dollars > 0 else ""
         return f"{human_tokens(tokens_n):>6}{label:>8}"
 
-    @staticmethod
-    def _price_split_cells(
-        name: str,
-        cost: float,
-        tok: int,
-        cr: int,
-        cw: int,
-        out: int,
-        parts: tuple | None = None,
-    ) -> tuple[str, str, str]:
-        d = Renderer._price_split_dollars(name, cost, tok, cr, cw, out, parts)
-        return (
-            Renderer._split_cell(cr, d[0]),
-            Renderer._split_cell(cw, d[1]),
-            Renderer._split_cell(out, d[2]),
-        )
-
     def _models_tab(self, rows: list[tuple], title: str, width: int) -> list[str]:
-        # Filter model names without fuzzy re-ranking; cost order remains meaningful.
-        # Zoom adds only a cursor to this same table.
+        # Share the sort with zoom_model_rows so Enter opens the row being drawn.
+        rows = self.sorted_spend_rows(rows, "model")
         if self.query:
             rows = [r for r in rows if fuzzy_score(self.query, str(r[0])) is not None]
             if not rows:
                 self._model_row_at = {}
                 self._model_cursor_line = None
                 return [title, f"No models match the filter: {self.query}"]
-        return self._model_table(rows, title, width, selectable=self.view == "zoom")
+        return self._model_table(
+            self._agg_rows(rows), title, width, selectable=self.view == "zoom", sortable=True
+        )
 
     @staticmethod
     def _agg_rows(aggregate: list[tuple[str, dict]]) -> list[tuple]:
@@ -3570,6 +3606,8 @@ class Renderer:
                 it["cache_write"],
                 it["output"],
                 it.get("list_parts"),
+                it["input"],
+                it["reasoning"],
             )
             for m, it in aggregate
         ]
@@ -3585,6 +3623,8 @@ class Renderer:
                 r["cache_write"],
                 r["output"],
                 self.app.model_row_economics(r).cost if "pricing" in r else None,
+                int(model_row_split(r)[0]),
+                int(r.get("reasoning") or 0),
             )
             for r in model_rows
         ]
@@ -3859,7 +3899,7 @@ class Renderer:
 
     def month_models(self, month: MonthSummary, width: int) -> list[str]:
         agg = self.aggregate_models(self.compose_zoom_drills(self.workflows_for_month(month.month)))
-        return self._models_tab(self._agg_rows(agg), "# Monthly Model Spend", width)
+        return self._models_tab(agg, "# Monthly Model Spend", width)
 
     def month_sources(self, month: MonthSummary, width: int) -> list[str]:
         return self.source_table(
@@ -3943,7 +3983,7 @@ class Renderer:
 
     def year_models(self, year: YearSummary, width: int) -> list[str]:
         agg = self.aggregate_models(self.compose_zoom_drills(self.workflows_for_year(year.year)))
-        return self._models_tab(self._agg_rows(agg), "# Yearly Model Spend", width)
+        return self._models_tab(agg, "# Yearly Model Spend", width)
 
     def year_sources(self, year: YearSummary, width: int) -> list[str]:
         return self.source_table(
@@ -4055,7 +4095,7 @@ class Renderer:
                 )
             )
         )
-        return self._models_tab(self._agg_rows(agg), "# Project Model Spend", width)
+        return self._models_tab(agg, "# Project Model Spend", width)
 
     def project_sources(self, project: ProjectSummary, width: int) -> list[str]:
         return self.source_table(
@@ -5902,6 +5942,16 @@ class Renderer:
         # internal key. Everything else takes the flat table above.
         if self.app.in_trend_sort_context():
             return self.app.trend_sort_labels().get(key, self.SORT_LABELS.get(key, key))
+        if not self.app.in_prices_sort_context() and self.app.spend_sort_target():
+            labels = {
+                "runs": "Messages",
+                "input": "Input",
+                "output": "Output",
+                "cache_read": "Cache read",
+                "cache_write": "Cache write",
+                "reasoning": "Reasoning",
+            }
+            return labels.get(key, self.SORT_LABELS.get(key, key))
         return self.SORT_LABELS.get(key, key)
 
     def draw_sort_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -6825,9 +6875,28 @@ class Renderer:
         # the trend cursor + Enter drill) and the per-month/day/project "Harnesses"
         # detail tabs (a scoped slice, plain). Subscription rows (Claude Code,
         # Codex) cost $0 until "$" reprices their tokens, so the bar reacts live.
+        sortable = self.view != "session" and self.on_sources_tab and not self.trends
+        rows = self.source_rows(workflows)
+        if sortable:
+            rows = self.sorted_spend_rows(rows, "source")
         return self._group_table(
-            self.source_rows(workflows), width, "harness", "Harness", limit, selectable
+            rows, width, "harness", "Harness", limit, selectable, source_sort=sortable
         )
+
+    SOURCE_SORT_COLUMNS = (
+        ("harness", "Harness"),
+        ("cost", "Cost"),
+        ("tokens", "Tokens"),
+        ("sessions", "Sess"),
+    )
+
+    def _source_sort_headings(self, token_columns: tuple) -> dict[str, str]:
+        return {
+            {"harness": "name", "sessions": "count"}.get(key, key): self.spend_sort_heading(
+                "source", key, label
+            )
+            for key, label in self.SOURCE_SORT_COLUMNS + token_columns
+        }
 
     def machine_table(
         self,
@@ -6863,7 +6932,14 @@ class Renderer:
     # the same reason it is on the Models ranking: it is Cost as a percentage.
     _GROUP_SORT_COLUMNS = (("cost", "Cost"), ("tokens", "Tokens"), ("count", "Sess"))
 
-    def _group_header(self, col: str, namew: int, barw: int, sort_tab: str | None = None) -> str:
+    def _group_header(
+        self,
+        col: str,
+        namew: int,
+        barw: int,
+        sort_tab: str | None = None,
+        token_columns: tuple = (),
+    ) -> str:
         headings = (
             {
                 key: self.trend_sort_heading(key, label, sort_tab)
@@ -6872,7 +6948,7 @@ class Renderer:
             if sort_tab
             else None
         )
-        return table_group_header(col, namew, barw, headings)
+        return table_group_header(col, namew, barw, headings, token_columns)
 
     @staticmethod
     def _group_row(
@@ -6884,8 +6960,9 @@ class Renderer:
         peak: float,
         total: float,
         display=shorten,
+        token_columns: tuple = (),
     ) -> str:
-        return table_group_row(name, it, marker, namew, barw, peak, total, display)
+        return table_group_row(name, it, marker, namew, barw, peak, total, display, token_columns)
 
     def _group_table(
         self,
@@ -6898,6 +6975,7 @@ class Renderer:
         sort_tab: str | None = None,
         height: int | None = None,
         display=shorten,
+        source_sort: bool = False,
     ) -> list[str]:
         if selectable:
             self.app.trend_row_index = max(0, min(self.app.trend_row_index, len(all_rows) - 1))
@@ -6937,12 +7015,19 @@ class Renderer:
             cursor=self.app.trend_row_index,
             selectable=selectable,
             height=height,
-            headings=None,
+            headings=self._source_sort_headings(group_token_columns(all_rows))
+            if source_sort
+            else None,
             show_api_prices=self.show_api_prices,
             price_key=self._key("trends", "api_prices"),
             display=display,
         )
         self._box_headers.add(layout.lines[layout.header_line])
+        if source_sort:
+            self._line_sort_headers[layout.header_line] = (
+                self.SOURCE_SORT_COLUMNS + group_token_columns(all_rows),
+                "source",
+            )
         if selectable:
             self.app.trend_row_index = layout.cursor
             self._trend_rows_at = (

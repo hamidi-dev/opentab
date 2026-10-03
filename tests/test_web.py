@@ -1215,6 +1215,74 @@ assert.equal(all(view, 'svg').length, 0);
     assert result.returncode == 0, result.stderr
 
 
+def test_web_model_and_harness_token_columns_execute_shipped_javascript():
+    from opentab.web.report import _model_row
+
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for browser accounting parity"
+    row = _model_row(
+        {
+            "model_name": "test/model",
+            "runs": 1,
+            "cost": 1,
+            "tokens_total": 9999,
+            "input": 123,
+            "output": 789,
+            "reasoning": 456,
+            "cache_read": 234,
+            "cache_write": 345,
+        }
+    )
+    assert row["input"] == 123 and row["reasoning"] == 456
+    payload = {
+        "meta": {"source": "test"},
+        "workflows": [
+            {"id": "a", "source": "OpenCode", "real": 1, "api": 2, "tokens": 9999},
+            {"id": "b", "source": "Gemini", "real": 1, "api": 2, "tokens": 9999},
+        ],
+        "models": {"a": [row], "b": [row]},
+        "nodes": {},
+    }
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    result = subprocess.run(
+        [node, "-"],
+        input=_WEB_DOM_JS
+        + "document.getElementById('opentab-data').textContent = "
+        + json.dumps(json.dumps(payload))
+        + ";\n"
+        + shipped
+        + r"""
+function all(el, tag) { return [...(el.tag === tag ? [el] : []), ...el.children.flatMap(n => all(n, tag))]; }
+const scope = DATA.workflows, models = modelAgg(scope);
+assert.equal(models[0].input, 246);
+assert.equal(models[0].reasoning, 912);
+for (const view of [modelsTable('models', scope.flatMap(w => DATA.models[w.id])), sourcesTable('sources', scope)]) {
+  const head = all(view, 'thead')[0].textContent;
+  assert.ok(head.includes('Input') && head.includes('Reason'));
+  assert.ok(!view.textContent.includes('NaN'));
+  const total = all(view, 'tfoot')[0].textContent;
+  assert.ok(total.includes('246') && total.includes('912'));
+}
+const session = modelsTable('session', DATA.models.a);
+assert.ok(all(session, 'tbody')[0].textContent.includes('123'));
+assert.ok(all(session, 'tbody')[0].textContent.includes('456'));
+MODE = 'api';
+assert.equal(modelAgg(scope)[0].input, 246);
+assert.equal(sourceRows(scope)[0].input, 123);
+DATA.models.b = [];
+assert.equal(sourceRows(scope)[1].input, null);
+assert.equal(tokenTotals(sourceRows(scope)).input, '-');
+DATA.models.a[0].reasoning = 0;
+assert.ok(!tokenColumns(modelAgg(scope)).some(c => c.key === 'reasoning'));
+""",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_web_harness_browse_executes_shipped_javascript():
     node = shutil.which("node")
     if node is None:
@@ -1229,6 +1297,7 @@ def test_web_harness_browse_executes_shipped_javascript():
         [
             between("function groupBy(", "function scopeStats("),
             between("function sourceRows(", "function machineRows("),
+            between("function modelAgg(", "// Shared with pricing.model_matches"),
             between("function msubFilter(", "const MMETA"),
             between("function go(", "function isoToday("),
             between("function filterRange(", "function applyRange("),

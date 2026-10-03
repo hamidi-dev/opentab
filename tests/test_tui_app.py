@@ -1426,11 +1426,11 @@ def test_drill_in_preserves_visible_sessions_tab():
     assert app.on_sessions_tab
 
 
-def test_sort_only_changes_on_sessions_tab():
+def test_sort_is_unavailable_on_overview_but_available_on_sessions():
     app = app_with([workflow("june", "2026-06-01 12:00:00")])
     app.focus = "months"
     app.view = "browse"
-    app.tab = app.month_tabs.index("Models")
+    app.tab = app.month_tabs.index("Overview")
     app.sort_by = "cost"
 
     # On a non-sortable tab the picker won't open and the sort is untouched.

@@ -878,8 +878,12 @@ function projectRows(ws) {
        last: g.reduce((a, w) => w.date > a ? w.date : a, '') }));
 }
 function sourceRows(ws) {
-  return [...groupBy(ws, w => w.source || META.source)].map(([source, g]) =>
-    ({ source, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens) }));
+  return [...groupBy(ws, w => w.source || META.source)].map(([source, g]) => {
+    const rows = modelAgg(g), complete = g.every(w => !w.tokens || (DATA.models[w.id] || []).length);
+    return { source, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens),
+      ...Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output', 'reasoning'].map(k =>
+        [k, complete ? sum(rows, r => r[k]) : null])) };
+  });
 }
 function machineRows(ws) {
   return [...groupBy(ws, w => w.machine || 'unknown')].map(([machine, g]) =>
@@ -891,9 +895,10 @@ function modelAgg(ws) {
     const rows = DATA.models[w.id]; if (!rows) continue;
     for (const r of rows) {
       let a = m.get(r.model);
-      if (!a) { a = { model: r.model, runs: 0, real: 0, api: 0, tokens: 0, cacheRead: 0, cacheWrite: 0, output: 0 }; m.set(r.model, a); }
+      if (!a) { a = { model: r.model, runs: 0, real: 0, api: 0, tokens: 0, cacheRead: 0, cacheWrite: 0, output: 0, input: 0, reasoning: 0 }; m.set(r.model, a); }
       a.runs += r.runs; a.real += r.real; a.api += r.api; a.tokens += r.tokens;
       a.cacheRead += r.cacheRead; a.cacheWrite += r.cacheWrite; a.output += r.output;
+      a.input += r.input; a.reasoning += r.reasoning;
     }
   }
   return [...m.values()];
@@ -1447,6 +1452,16 @@ function statTiles(ws) {
     ['active days', st.days.toLocaleString('en-US')],
   ]);
 }
+function tokenColumns(rows) {
+  const columns = [['input', 'Input'], ['cacheRead', 'CacheR'], ['cacheWrite', 'CacheW'], ['output', 'Output']];
+  if (rows.some(r => r.reasoning > 0)) columns.push(['reasoning', 'Reason']);
+  return columns.map(([key, label]) => ({ key, label, align: 'r',
+    fmt: r => r[key] == null ? '-' : hTok(r[key]), cls: 'dim' }));
+}
+function tokenTotals(rows) {
+  return Object.fromEntries(tokenColumns(rows).map(({key}) =>
+    [key, rows.some(r => r[key] == null) ? '-' : hTok(sum(rows, r => r[key]))]));
+}
 function modelsTable(id, rows, collapse, onRow) {
   const totalCost = sum(rows, mCost), totalTok = sum(rows, r => r.tokens);
   // Share always means cost share; a zero-cost table has no denominator.
@@ -1457,13 +1472,10 @@ function modelsTable(id, rows, collapse, onRow) {
     { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
     { key: 'share', label: 'Share', align: 'r', sortVal: r => share(r) || 0, fmt: r => share(r) === null ? '-' : [pct(share(r), 1), h('span', { class: 'bar' }, h('i', { style: '--w:' + Math.round(100 * share(r)) + '%' }))] },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
-    { key: 'cacheRead', label: 'CacheR', align: 'r', fmt: r => hTok(r.cacheRead), cls: 'dim' },
-    { key: 'cacheWrite', label: 'CacheW', align: 'r', fmt: r => hTok(r.cacheWrite), cls: 'dim' },
-    { key: 'output', label: 'Output', align: 'r', fmt: r => hTok(r.output), cls: 'dim' },
+    ...tokenColumns(rows),
   ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25, onRow: onRow || null,
     totals: { model: 'TOTAL', runs: String(sum(rows, r => r.runs)), cost: moneyCell(totalCost),
-      tokens: hTok(totalTok), cacheRead: hTok(sum(rows, r => r.cacheRead)),
-      cacheWrite: hTok(sum(rows, r => r.cacheWrite)), output: hTok(sum(rows, r => r.output)) } });
+      tokens: hTok(totalTok), ...tokenTotals(rows) } });
 }
 // Token economics needs more precision than the shared display percentage.
 function tokShare(v, tot) {
@@ -1737,7 +1749,10 @@ function sourcesTable(id, ws, onRow) {
     { key: 'sessions', label: 'Sessions', align: 'r' },
     { key: 'cost', label: 'Cost', align: 'r', fmt: r => barCell(r.cost, peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
-  ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: onRow || null });
+    ...tokenColumns(rows),
+  ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: onRow || null,
+    totals: { source: 'TOTAL', sessions: String(sum(rows, r => r.sessions)),
+      cost: moneyCell(sum(rows, r => r.cost)), tokens: hTok(sum(rows, r => r.tokens)), ...tokenTotals(rows) } });
 }
 function machinesTable(id, ws, onRow) {
   const rows = machineRows(ws);
