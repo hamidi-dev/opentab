@@ -55,6 +55,11 @@ compare all discovered harnesses in one report.
 
 ## Drilling a model
 
+Models and Harnesses tables show Input (uncached), CacheR, CacheW and Output
+beside total tokens, plus Reason when separately recorded reasoning is present.
+These columns are sortable and included in totals. Missing harness model
+breakdowns display `-`; token categories do not replace recorded session totals.
+
 Clicking a row of the **Models** tab drills into that model inside the scope you're
 looking at, exactly as the TUI does — the tab strip becomes **Economics** (what it cost
 here, split by token type) and **Sessions** (the sessions that used it, with **Model

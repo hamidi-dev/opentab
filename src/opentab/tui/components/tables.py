@@ -161,14 +161,43 @@ class GroupTableLayout:
     cursor: int
 
 
+def group_token_columns(rows) -> tuple[tuple[str, str], ...]:
+    if not any("input" in item for _, item in rows):
+        return ()
+    columns = (
+        ("input", "Input"),
+        ("cache_read", "CacheR"),
+        ("cache_write", "CacheW"),
+        ("output", "Output"),
+    )
+    if any(item.get("reasoning") for _, item in rows):
+        columns += (("reasoning", "Reason"),)
+    return columns
+
+
+def group_token_tail(item, columns) -> str:
+    return "".join(
+        f" {human_tokens(int(item[key])) if item.get(key) is not None else '-':>{max(6, len(label))}}"
+        for key, label in columns
+    )
+
+
 def group_widths(
     rows: Sequence[tuple[str, object]],
     column: str,
     width: int,
     display=shorten,
+    token_columns=None,
 ) -> tuple[int, int]:
     """Size the shared grouped-spend name and bar columns."""
-    cap = max(10, width - GROUP_FIXED - 3)
+    columns = group_token_columns(rows) if token_columns is None else token_columns
+    fixed = (
+        GROUP_FIXED - 3 + sum(1 + max(6, len(label)) for _, label in columns)
+        if columns
+        else GROUP_FIXED
+    )
+    min_bar = 0 if columns else 3
+    cap = max(1 if columns else 10, width - fixed - min_bar)
     name_width = min(
         max(
             [display_width(display(name, cap)) for name, _item in rows]
@@ -176,7 +205,7 @@ def group_widths(
         ),
         cap,
     )
-    return name_width, max(3, min(20, width - name_width - GROUP_FIXED))
+    return name_width, max(min_bar, min(20, width - name_width - fixed))
 
 
 def group_header(
@@ -184,6 +213,7 @@ def group_header(
     name_width: int,
     bar_width: int,
     headings: Mapping[str, str] | None = None,
+    token_columns: tuple[tuple[str, str], ...] = (),
 ) -> str:
     labels = {
         "name": column,
@@ -192,10 +222,11 @@ def group_header(
         "count": "Sess",
     }
     labels.update(headings or {})
+    costw, tokw, countw = (10, 8, 6) if token_columns else (11, 9, 7)
     return (
-        f"  {labels['name']:<{name_width}}  {'':{bar_width}} {labels['cost']:>11} "
-        f"{'Share':>5} {labels['tokens']:>9} {labels['count']:>7}"
-    )
+        f"  {shorten(labels['name'], name_width):<{name_width}}  {'':{bar_width}} {labels['cost']:>{costw}} "
+        f"{'Share':>5} {labels['tokens']:>{tokw}} {labels['count']:>{countw}}"
+    ) + "".join(f" {labels.get(key, label):>6}" for key, label in token_columns)
 
 
 def group_row(
@@ -207,13 +238,15 @@ def group_row(
     peak: float,
     total: float,
     display=shorten,
+    token_columns: tuple[tuple[str, str], ...] = (),
 ) -> str:
     bar = "█" * max(0, round((float(item["cost"]) / peak) * bar_width))
+    costw, tokw, countw = (10, 8, 6) if token_columns else (11, 9, 7)
     return (
         f"{marker} {display(name, name_width):{name_width}}  {bar:<{bar_width}} "
-        f"{money(float(item['cost'])):>11} {pct(float(item['cost']), total):>5} "
-        f"{human_tokens(int(item['tokens'])):>9} {int(item['sessions']):>7}"
-    )
+        f"{money(float(item['cost'])):>{costw}} {pct(float(item['cost']), total):>5} "
+        f"{human_tokens(int(item['tokens'])):>{tokw}} {int(item['sessions']):>{countw}}"
+    ) + group_token_tail(item, token_columns)
 
 
 def group_row_budget(height: int, count: int, notes: int = 0) -> int:
@@ -291,21 +324,32 @@ def group_table_layout(
     total_cost = sum(float(item["cost"]) for _name, item in scope)
     peak = max((float(item["cost"]) for _name, item in scope), default=0.0) or 1.0
     inner = max(1, width - BOX_CHROME)
-    name_width, bar_width = group_widths(visible, column, inner, display)
+    # Use the whole scope so a nonzero Reason column cannot disappear on scrolling.
+    token_columns = group_token_columns(scope)
+    token_columns = tuple((key, (headings or {}).get(key, label)) for key, label in token_columns)
+    name_width, bar_width = group_widths(scope, column, inner, display, token_columns)
     body = tuple(
-        group_row(name, item, " ", name_width, bar_width, peak, total_cost, display)
+        group_row(name, item, " ", name_width, bar_width, peak, total_cost, display, token_columns)
         for name, item in visible
     )
     total_row = None
     if len(scope) > 1:
+        costw, tokw, countw = (10, 8, 6) if token_columns else (11, 9, 7)
         total_row = (
-            f"  {pad('TOTAL', name_width)}  {'':{bar_width}} {money(total_cost):>11} {'':>5} "
-            f"{human_tokens(sum(int(item['tokens']) for _name, item in scope)):>9} "
-            f"{sum(int(item['sessions']) for _name, item in scope):>7}"
+            f"  {pad(shorten('TOTAL', name_width), name_width)}  {'':{bar_width}} {money(total_cost):>{costw}} {'':>5} "
+            f"{human_tokens(sum(int(item['tokens']) for _name, item in scope)):>{tokw}} "
+            f"{sum(int(item['sessions']) for _name, item in scope):>{countw}}"
         )
+        totals = {
+            key: sum(int(item[key]) for _, item in scope)
+            if all(item.get(key) is not None for _, item in scope)
+            else None
+            for key, _ in token_columns
+        }
+        total_row += group_token_tail(totals, token_columns)
     box = ruled_box(
         title,
-        group_header(column, name_width, bar_width, headings),
+        group_header(column, name_width, bar_width, headings, token_columns),
         body,
         total_row,
         notes,

@@ -41,6 +41,11 @@ compaction.
 
 ## Move around
 
+The **Models** and **Harnesses** detail tables support `s` sorting by name, cost,
+total tokens, message/session count, and individual token categories. Click a
+column header to sort; click it again to reverse. Each table remembers its sort
+independently, and reordering keeps the selected model or harness under the cursor.
+
 | Key | Action |
 |-----|--------|
 | `t` / `p` / `u` / `m` | Switch to Time / Projects / Harnesses / Machines browse mode. Harnesses opens on `∑ All harnesses`, then one row per loaded harness; Machines opens on `∑ all machines` (the whole fleet as one scope), then one row per box (just this one until you [pull](machines.md) another) |

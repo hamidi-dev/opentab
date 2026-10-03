@@ -82,6 +82,8 @@ def _model_row(r: dict) -> dict:
         "cacheRead": int(r.get("cache_read") or 0),
         "cacheWrite": int(r.get("cache_write") or 0),
         "output": int(r.get("output") or 0),
+        "input": int(inp),
+        "reasoning": int(reasoning),
         # Full pricing split; the sixth value is a subset of cacheWrite, not extra tokens.
         # Per-model rows are the only exact baseline for sessions that switched models.
         "tok": [int(inp), int(out), int(reasoning), int(cr), int(cw), int(model_row_1h_write(r))],

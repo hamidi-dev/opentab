@@ -638,12 +638,23 @@ def test_harness_sort_is_validated_and_persisted_in_state():
     ot.apply_state(
         app,
         app.args,
-        {"harness_sort_by": "bogus", "harness_sort_reverse": True},
+        {
+            "harness_sort_by": "bogus",
+            "harness_sort_reverse": True,
+            "model_sort_by": "bogus",
+            "model_sort_reverse": True,
+            "source_sort_by": [],
+            "source_sort_reverse": True,
+        },
     )
     assert app.harness_sort_by == "cost" and app.harness_sort_reverse
+    assert app.model_sort_by == app.source_sort_by == "cost"
+    assert not app.model_sort_reverse and not app.source_sort_reverse
 
     app.harness_sort_by = "harness"
     app.harness_sort_reverse = True
+    app.model_sort_by, app.model_sort_reverse = "cache_read", True
+    app.source_sort_by, app.source_sort_reverse = "input", True
     old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["XDG_STATE_HOME"] = tmp
@@ -658,6 +669,8 @@ def test_harness_sort_is_validated_and_persisted_in_state():
                 os.environ["XDG_STATE_HOME"] = old_xdg
     assert restored.harness_sort_by == "harness"
     assert restored.harness_sort_reverse is True
+    assert (restored.model_sort_by, restored.model_sort_reverse) == ("cache_read", True)
+    assert (restored.source_sort_by, restored.source_sort_reverse) == ("input", True)
 
 
 def test_machines_browse_mode_is_restored_fleet_or_not():

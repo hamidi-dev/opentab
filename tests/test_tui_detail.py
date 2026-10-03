@@ -39,6 +39,7 @@ def test_top_models_is_a_ruled_box_with_full_model_columns():
         "Cost",
         "Share",
         "Tokens",
+        "Input",
         "CacheR",
         "CacheW",
         "Output",
@@ -96,6 +97,64 @@ def test_the_models_filter_still_narrows_model_names_in_a_zoom():
     assert len(app.renderer._model_row_at) == 1  # the cursor indexes the FILTERED rows
 
 
+def test_models_sort_menu_headers_and_drill_use_the_same_order():
+    app = _models_tab_app()
+    app.focus = "years"
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = 1
+    assert app.zoom_selected_model() == "haiku"
+    app.handle_key(None, ord("s"))
+    assert app.sort_menu and app.sort_menu_options() == app.model_sort_options
+    app.sort_menu_index = app.sort_menu_options().index("model")
+    app.handle_key(None, 10)
+    assert [name for name, _ in app.zoom_model_rows()] == ["haiku", "opus"]
+    assert app.model_pick_index == 0 and app.sort_by == "cost"
+    rnd = app.renderer
+    lines = rnd.year_models(app.selected_year_summary, 130)
+    assert "haiku" in lines[rnd._model_cursor_line]
+    header_index = rnd.BOX_HEADER_LINE
+    header = lines[header_index]
+    assert "Model ^" in header
+    rnd._register_line_sort_header(4, 2, header_index, header, 130)
+    assert rnd.sort_hit(4, 2 + header.index("Model")) == ("model", "model")
+    app.apply_header_sort(*rnd.sort_hit(4, 2 + header.index("Model")))
+    assert app.model_pick_index == 1 and app.zoom_selected_model() == "haiku"
+    assert [name for name, _ in app.zoom_model_rows()] == ["opus", "haiku"]
+    app.query = "haiku"
+    lines = rnd.year_models(app.selected_year_summary, 130)
+    assert "haiku" in lines[rnd._model_cursor_line] and not any("opus" in line for line in lines)
+    app.handle_key(None, 10)
+    assert app.zoom_model == "haiku" and app.active_tab_name() == "Economics"
+    assert {w.id for w in app.current_sessions()} == {"c"}
+    app.drill_out()
+    assert app.zoom_selected_model() == "haiku"
+
+
+def test_model_token_sort_headers_keep_numeric_order_at_each_width():
+    app = _models_tab_app()
+    app._model_by_root["b"][0].update(cache_read=23, cache_write=45, output=67, reasoning=89)
+    app._model_by_root["c"][1].update(cache_read=123, cache_write=145, output=167, reasoning=189)
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Models")
+    for key, label in (
+        ("cache_read", "CacheR"),
+        ("cache_write", "CacheW"),
+        ("output", "Output"),
+        ("reasoning", "Reason"),
+    ):
+        app.apply_sort_choice(key)
+        assert app.zoom_model_rows()[0][0] == "haiku"
+        assert "price" not in app.renderer.sort_label(key).lower()
+        for width in (100, 140, 220):
+            lines = app.renderer.month_models(app.selected_month_summary, width)
+            header, first = _cells(lines)[:2]
+            assert f"{label} v" in header and "haiku" in first
+            assert all(len(line) <= width for line in lines)
+        app.apply_header_sort(key, "model")
+        assert app.zoom_model_rows()[0][0] == "opus"
+
+
 def test_a_shrinking_model_list_never_strands_the_cursor_off_screen():
     app = _models_tab_app()
     app.drill_in()
@@ -111,7 +170,8 @@ def test_a_shrinking_model_list_never_strands_the_cursor_off_screen():
 def test_model_table_splits_cost_across_token_categories_in_wide_panes():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
-    row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
+    row = _cells(app.renderer._model_table(rows, "# Top Models", 140))[1]
+    assert "50.0k ($0.50)" in row
     assert "800.0k ($0.80)" in row
     assert "100.0k ($1.25)" in row
     assert "50.0k ($2.50)" in row
@@ -120,7 +180,8 @@ def test_model_table_splits_cost_across_token_categories_in_wide_panes():
 def test_model_table_split_scales_to_the_recorded_cost():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 10.10, 1_000_000, 800_000, 100_000, 50_000)]
-    row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
+    row = _cells(app.renderer._model_table(rows, "# Top Models", 140))[1]
+    assert "50.0k ($1.00)" in row
     assert "800.0k ($1.60)" in row
     assert "100.0k ($2.50)" in row
     assert "50.0k ($5.00)" in row
@@ -132,18 +193,19 @@ def test_model_table_split_cells_align_under_their_labels():
         ("anthropic/claude-fable-5", 92, 20.60, 13_400_000, 13_100_000, 194_700, 99_200),
         ("anthropic/claude-opus-4-8", 1, 0.05, 23_500, 15_000, 1_900, 57),
     ]
-    header, first, second = _cells(app.renderer._model_table(rows, "# Model Mix", 120))[:3]
-    for label in ("CacheR", "CacheW", "Output"):
+    header, first, second = _cells(app.renderer._model_table(rows, "# Model Mix", 140))[:3]
+    for label in ("Input", "CacheR", "CacheW", "Output"):
         i = header.index(label)
-        assert first[i + 5] != " " and second[i + 5] != " "  # tokens end under the label
-        assert first[i + 13] == ")" and second[i + 13] == ")"
+        end = i + len(label) - 1
+        assert first[end] != " " and second[end] != " "  # tokens end under the label
+        assert first[end + 8] == ")" and second[end + 8] == ")"
     assert "( " not in first and "( " not in second  # parens hug the amount
 
 
 def test_model_table_split_needs_width_dollars_and_models():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
-    # Narrow pane: plain token counts, exactly the classic layout (still fits the box).
+    # Narrow pane: complete plain token counts still fit the box.
     narrow = app.renderer._model_table(rows, "# Top Models", 90)
     assert not any("(" in ln for ln in narrow)
     assert "800.0k" in _cells(narrow)[1]
@@ -189,9 +251,10 @@ def test_model_table_total_row_sums_every_column():
 def test_model_table_total_row_sums_attributed_dollars_at_each_rows_rates():
     app = app_with([])
     row = ("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)
-    total = _cells(app.renderer._model_table([row, row], "# Top Models", 120))[-1]
+    total = _cells(app.renderer._model_table([row, row], "# Top Models", 140))[-1]
     assert total.split()[0] == "TOTAL"
     assert "$10.10" in total
+    assert "100.0k ($1.00)" in total
     assert "1.6M ($1.60)" in total
     assert "200.0k ($2.50)" in total
     assert "100.0k ($5.00)" in total
@@ -201,7 +264,7 @@ def test_model_table_total_split_dollars_keep_the_compact_label_convention():
     # money_label intentionally drops cents once this attribution crosses $10.
     app = app_with([])
     row = ("anthropic/claude-fable-5", 10, 5.05, 100_000, 0, 0, 100_000)
-    _, first, second, total = _cells(app.renderer._model_table([row, row], "# Top Models", 120))
+    _, first, second, total = _cells(app.renderer._model_table([row, row], "# Top Models", 140))
     assert "($5.05)" in first and "($5.05)" in second
     assert "($10)" in total and "$10.10" in total  # cells compact, Cost exact
 
@@ -230,8 +293,109 @@ def test_tools_table_total_row_stays_unsplit():
 def test_model_table_split_gives_columns_a_two_space_gutter():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
-    row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
+    row = _cells(app.renderer._model_table(rows, "# Top Models", 140))[1]
     assert ")  " in row  # a "(...)" cell is followed by a two-space gutter, not one
+
+
+def test_models_preserve_explicit_input_reasoning_and_complete_cost_attribution():
+    app = app_with([workflow("a", "2026-05-02 10:00:00")])
+    row = _model_row("test/model", 3.0, 9999)
+    row.update(input=123, output=789, reasoning=456, cache_read=234, cache_write=345)
+    app._model_by_root = {"a": [row]}
+    mixed = app.renderer._mix_rows([row])
+    aggregated = app.renderer._agg_rows(app.aggregate_models(app.all_workflows))
+    assert mixed[0][8:] == aggregated[0][8:] == (123, 456)
+    for width in (80, 110, 160):
+        lines = app.renderer._model_table(mixed, "# Models", width, price_split=False)
+        header, body = _cells(lines)
+        assert header.split()[-5:] == ["Input", "CacheR", "CacheW", "Output", "Reason"]
+        assert body.split()[-5:] == ["123", "234", "345", "789", "456"]
+        assert all(len(line) <= width for line in lines)
+    # Tier-aware list parts stay separate, including Reasoning at its output rate.
+    parts = (0.1, 0.2, 0.3, 0.4, 0.5)
+    dollars = app.renderer._price_split_dollars(
+        "test/model", 3.0, 9999, 234, 345, 789, parts, inp=123, reasoning=456
+    )
+    assert dollars == (0.2, 0.8, 1.0, 0.4, 0.6)
+    assert sum(dollars) == 3.0
+    mixed[0] = (*mixed[0][:7], parts, *mixed[0][8:])
+    header, body = _cells(app.renderer._model_table(mixed, "# Models", 160))
+    assert "Reason" in header and "456 ($0.60)" in body and "123 ($0.20)" in body
+
+
+def test_harness_breakdown_matches_model_categories_in_preview_and_picker():
+    a, b = (workflow(s, "2026-05-02 10:00:00", tokens=9999) for s in ("a", "b"))
+    a.source, b.source = "OpenCode", "Gemini"
+    app = app_with([a, b])
+    row = _model_row("test/model", 1.0, 9999)
+    row.update(
+        input=123, output=789, reasoning=456, cache_read=234, cache_write=345, cache_write_1h=100
+    )
+    app._model_by_root = {"a": [row], "b": [dict(row)]}
+    # Already-loaded model rollups supply categories, independently of recorded totals.
+    rows = app.source_rows(app.all_workflows)
+    assert all(it["input"] == 123 and it["reasoning"] == 456 for _, it in rows)
+    for width in (80, 110, 160):
+        lines = app.renderer.source_table(app.all_workflows, width)
+        cells = _cells(lines)
+        assert cells[0].split()[-5:] == ["Input", "CacheR", "CacheW", "Output", "Reason"]
+        assert cells[1].split()[-5:] == ["123", "234", "345", "789", "456"]
+        assert cells[-1].split()[-5:] == ["246", "468", "690", "1.6k", "912"]
+        assert all(len(line) <= width for line in lines)
+    screen = FakeScreen(30, 114)
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        app.renderer._draw_dimension_picker(screen, 0, 0, 30, 114, rows, 1, "Harness", "zoomsource")
+    text = screen_text(screen)
+    assert all(label in text for label in ("Input", "CacheR", "CacheW", "Output", "Reason"))
+    assert "456" in text
+    # Unknown usage is not falsely reported as zero or inferred from a session total.
+    app._model_by_root.pop("b")
+    missing = dict(app.source_rows(app.all_workflows))["Gemini"]
+    assert missing["tokens"] == 9999 and missing["input"] is None
+    assert _cells(app.renderer.source_table(app.all_workflows, 110))[-1].split()[-5:] == ["-"] * 5
+
+
+def test_harness_detail_sort_keeps_preview_picker_and_drill_together():
+    a, b, c = (
+        workflow(s, "2026-05-02 10:00:00", cost=cost, tokens=tok)
+        for s, cost, tok in (("a", 9, 90), ("b", 1, 900), ("c", 3, 300))
+    )
+    a.source, b.source, c.source = "OpenCode", "Codex", "Gemini"
+    app = app_with([a, b, c])
+    app.store.combined = True
+    app._model_by_root = {"a": [_model_row("opus", 9, 90)], "b": [_model_row("haiku", 1, 900)]}
+    app._model_by_root["a"][0]["cache_read"] = 12
+    app._model_by_root["b"][0]["cache_read"] = 123
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Harnesses")
+    app.source_index = 2
+    assert app.zoom_selected_source() == "Codex"
+    app.handle_key(None, ord("s"))
+    assert app.sort_menu and app.sort_menu_options() == app.source_sort_options
+    app.sort_menu_index = app.sort_menu_options().index("cache_read")
+    app.handle_key(None, 10)
+    assert [name for name, _ in app.zoom_source_rows()] == ["Codex", "OpenCode", "Gemini"]
+    assert app.source_index == 0 and app.harness_sort_by == app.sort_by == "cost"
+    rnd = app.renderer
+    for width in (100, 140):
+        lines = rnd.source_table(app.all_workflows, width)
+        assert "CacheR v" in _cells(lines)[0] and "Codex" in _cells(lines)[1]
+        assert all(len(line) <= width for line in lines)
+        screen = FakeScreen(30, width + 8)
+        rnd.sort_regions = []
+        with patch.object(ot.curses, "color_pair", return_value=0):
+            rnd.draw_sources_picker(screen, 0, 0, 30, width + 8)
+        y, x, _, key, target = next(r for r in rnd.sort_regions if r[3] == "cache_read")
+        assert "".join(screen.cells[(y, x + offset)] for offset in range(6)) == "CacheR"
+        assert (key, target) == ("cache_read", "source")
+    app.apply_header_sort(key, target)
+    assert [name for name, _ in app.zoom_source_rows()] == ["OpenCode", "Codex", "Gemini"]
+    assert app.source_index == 1 and app.zoom_selected_source() == "Codex"
+    app.handle_key(None, 10)
+    assert app.zoom_source == "Codex" and {w.id for w in app.current_sessions()} == {"b"}
+    app.drill_out()
+    assert app.zoom_selected_source() == "Codex"
 
 
 def test_top_sessions_overview_box_caps_the_leaderboard_at_twenty():

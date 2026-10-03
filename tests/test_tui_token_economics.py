@@ -33,7 +33,7 @@ def test_monthly_economics_and_api_cost_use_request_tiers_and_same_model_target_
         assert not econ.tier_context_missing
         table_row = app.renderer._mix_rows([row])[0]
         parts = app.renderer._price_split_dollars(name, 3.25, 502000, 0, 0, 2000, table_row[7])
-        assert parts == (0, 0, 0.05)
+        assert parts == (3.2, 0, 0, 0.05, 0)
         row.pop("pricing")
         econ = app.token_economics(app.loaded)
         assert econ.tier_context_missing

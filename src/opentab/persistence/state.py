@@ -159,6 +159,8 @@ def save_state(app: App) -> None:
         "sort_by": app.sort_by,
         "project_sort_by": app.project_sort_by,
         "harness_sort_by": app.harness_sort_by,
+        "model_sort_by": app.model_sort_by,
+        "source_sort_by": app.source_sort_by,
         "subagent_sort_by": app.subagent_sort_by,
         "prices_sort": app.prices_sort,
         "trend_sort": app.trend_sort,
@@ -166,6 +168,8 @@ def save_state(app: App) -> None:
         "sort_reverse": app.sort_reverse,
         "project_sort_reverse": app.project_sort_reverse,
         "harness_sort_reverse": app.harness_sort_reverse,
+        "model_sort_reverse": app.model_sort_reverse,
+        "source_sort_reverse": app.source_sort_reverse,
         "subagent_sort_reverse": app.subagent_sort_reverse,
         "prices_sort_reverse": app.prices_sort_reverse,
         "trend_sort_reverse": app.trend_sort_reverse,
@@ -277,6 +281,13 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.project_sort_by = state["project_sort_by"]
     if state.get("harness_sort_by") in app.harness_sort_options:
         app.harness_sort_by = state["harness_sort_by"]
+    for target in ("model", "source"):
+        field = f"{target}_sort_by"
+        if state.get(field) in getattr(app, f"{target}_sort_options"):
+            setattr(app, field, state[field])
+            reverse = f"{target}_sort_reverse"
+            if isinstance(state.get(reverse), bool):
+                setattr(app, reverse, state[reverse])
     if state.get("subagent_sort_by") in app.subagent_sort_options:
         app.subagent_sort_by = state["subagent_sort_by"]
     if state.get("prices_sort") in app.prices_sort_options:
