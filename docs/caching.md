@@ -61,9 +61,14 @@ Events cover:
   summaries count streamed and unusable projections as well as reused/decoded rows.
   `sql_scalar_projection` reports the bounded native-row fast path; native summaries
   split reread rows into `sql_projected`, `streamed` and `python_full_decode`.
-  SQL scalar extraction is included in `payload_fetch_ms`; subsequent Python
+  `sql_projection_mode` distinguishes `paths`, `members`, and `none` (the full-read
+  fallback). SQL scalar extraction is included in `payload_fetch_ms`; subsequent Python
   decoding sees only those fields. Compare the whole refresh as well as each phase
   when evaluating this change: moving work into SQLite changes its timing bucket.
+  The member strategy's `batch_rows` caps each changed-row batch; `usage.batch` and
+  `usage.batch_result` report its time and projected/fallback counts. Batch SQL and
+  compact decoding contribute to the native summary's fetch/decode totals; they
+  are not attributed to individual `usage.slow_row` events.
 - Changes separates reader opening, metadata validation, snapshot queries, native
   edit queries and selected patch-body reads. `opencode.changes_strategy` records
   the requested optimization; `sql.plan` records the **observed** plan, including
@@ -167,7 +172,8 @@ OpenCode v2 accounting materializes a scalar-only temporary table, avoiding the
 full message JSON normalization needed by detail readers. Worked-time events and
 the deferred model aggregation share these rows. Native aggregate residuals reuse
 the same numeric usage, rather than running another whole-history message scan.
-Small messages use the standard JSON decoder one at a time; messages over 8 MiB
+Small messages use accounting-only SQL projections when supported, otherwise the
+standard JSON decoder one at a time; messages over 8 MiB
 use a validating scanner that skips inline content without decoding it into an
 object tree. Only accounting fields reach the temporary table or persistent cache.
 On Python 3.11+, oversized TEXT cells stream through SQLite's read-only Blob API
@@ -211,11 +217,28 @@ On Blob-capable interpreters, changed native messages up to the 8 MiB decode bou
 can use one multi-path SQLite extraction of the seven accounting fields. Python
 then decodes only that projection, avoiding object creation and duplicate-key
 callbacks for discarded inline content. The actual SQLite library must pass an
-escaped-key lookup probe; older JSON1 semantics keep the established reader.
+escaped-key lookup probe. Without that capability or Python's Blob API, SQLite
+3.35+ instead uses filtered `json_each` member iteration: it handles escaped
+top-level names even on SQLite 3.37, and Python normalizes only the kept values.
+First duplicate keys (including nested ones) retain the full-reader behavior.
+At least eight changed rows are projected together, up to 64 per batch in rowid
+order, rather than fetching each full payload separately. Both metadata and payloads
+use the same connection/read snapshot, including when another connection commits.
+The query streams only compact results; retained projections are capped at 8 MiB
+per batch. Malformed JSON or unsupported values fall back to the established
+per-row validator, and smaller incremental refreshes use the single-row projection.
+Old JSON1 validates the discarded content once in `json_each`; JSON5-capable
+libraries additionally enforce strict JSON. Literal NUL truncation is rejected.
 Missing `time` stays distinct from explicit JSON null because only absence allows
 the native timestamp fallback. Non-finite/unsupported projected values also fall
 back to the existing validator. Oversized messages retain bounded Blob streaming;
 this optimization does not push giant cells through SQLite's JSON materialization.
+On pre-Blob interpreters the member path checks byte length before parsing JSON;
+oversized cells still use the existing full-read scanner, with an additional size
+check. That check can itself read/allocate the source cell inside SQLite. These
+projections reduce Python transfer/decoding, not the disk bytes needed to inspect
+inline JSON during a full rebuild. Libraries older than SQLite 3.35 retain the
+established reader without requiring a runtime upgrade.
 
 Changes uses separate worker-owned connections for both file lists and keyed diffs.
 Those connections receive the same read tuning as the main store. Its snapshot

@@ -178,6 +178,8 @@ def test_opencode_usage_sql_projection_preserves_values_and_skips_inline_python_
         '{"tokens":{"input":true,"cache":{"read":false}},"time":[null,1]}',
         '{"content":NaN,"tokens":{"input":5}}',
         '{"content":[1,],"cost":5}',
+        '{"tokens":{"input":7}} trailing',
+        ' \t\r\n{"tokens":{"input":9}} \n',
         "{}",
         "[]",
         "null",
@@ -228,6 +230,235 @@ def test_opencode_usage_streaming_validates_skipped_depth_and_delimiters():
             assert json.loads(compact_usage(raw))["tokens"]["input"] == 7, content
         for content in ("[[[1]]]", '{"a":{"b":{}}}', "[1,]", '{"a":1,}', "[}", '"bad\\q"'):
             assert compact_usage('{"content":' + content + ',"cost":1}') == "null", content
+
+
+def test_opencode_usage_member_projection_preserves_old_reader_accounting():
+    from opentab.stores.opencode_v2 import usage_columns
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("create table session_message(data)")
+    cases = [
+        '{"content":[{"private":"' + "x" * 100000 + '"}],"tokens":{"input":7},"cost":1.5}',
+        '{"mod\\u0065l":{"i\\u0064":"escaped","providerID":"p"},"tok\\u0065ns":{"input":11}}',
+        '{"tok\\u0065ns":{"input":null},"tokens":{"input":99},"time":null}',
+        '{"tokens":{"in\\u0070ut":7,"input":8},"model":{"id":"first","id":"last"}}',
+        '{"tokens":{"input":true,"cache":{"read":false}},"time":[null,1]}',
+        '{"model":{"id":"a\\u0000b","providerID":"\\ud83d\\ude00"},"tokens":{"input":9007199254740993}}',
+        '{"cost":1e999,"tokens":{"input":7}}',
+        '{"cost":-0.0,"time":{"created":0}}',
+        '{"time":{},"time":{"created":99}}',
+        '{"time":"scalar"}',
+        '{"tokens":{"input":7}}\x00trailing',
+        '{"content":NaN,"tokens":{"input":5}}',
+        '{"content":[1,],"cost":5}',
+        '{"tokens":{"input":7}} trailing',
+        ' \t\r\n{"tokens":{"input":9}} \n',
+        "{}",
+        "[]",
+        "null",
+        "42",
+        None,
+        b'{"tokens":{"input":5}}',
+    ]
+    projection = (
+        "select "
+        + ",".join(usage_columns(True))
+        + (
+            " from (select 1 as rowid,'m' as id,'s' as session_id,"
+            "'assistant' as type,123 as time_created,? as data) m"
+        )
+    )
+    loads = json.loads
+    try:
+        for raw in cases:
+            rid = conn.execute("insert into session_message values(?)", [raw]).lastrowid
+            expected = _read_usage(conn, rid, False)[0]
+            lengths = []
+
+            def track(value, *args, lengths=lengths, **kwargs):
+                lengths.append(len(value))
+                return loads(value, *args, **kwargs)
+
+            with patch("opentab.stores.opencode_usage.json.loads", side_effect=track):
+                actual, _, _, streamed, projected = _read_usage(conn, rid, False, "members")
+            assert (
+                conn.execute(projection, [actual]).fetchone()
+                == conn.execute(projection, [expected]).fetchone()
+            ), raw
+            if raw is cases[0] or raw is cases[1]:
+                assert projected and not streamed
+                assert lengths and max(lengths) < 1000, lengths
+    finally:
+        conn.close()
+
+
+def test_opencode_usage_member_projection_bounds_json_before_parsing_on_old_python():
+    from opentab.stores.opencode_usage import _MEMBER_BATCH_SQL, _MEMBER_SQL, _read_usage_batch
+
+    # Observe parser inputs with both optimizer-visible and opaque functions.
+    class OlderConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, *args):
+            return self.conn.execute(*args)
+
+    for deterministic in (False, True):
+        conn = sqlite3.connect(":memory:")
+        seen = []
+
+        def observe(value, seen=seen):
+            seen.append(len(value) if isinstance(value, (str, bytes)) else 0)
+            return value
+
+        try:
+            conn.create_function("observe", 1, observe, deterministic=deterministic)
+            conn.execute("create table session_message(data)")
+            conn.execute(
+                "insert into session_message values(?)",
+                [json.dumps({"tokens": {"input": 23}, "content": "x" * 4096})],
+            )
+            with patch("opentab.stores.opencode_usage._DECODE_LIMIT", 1024), patch(
+                "opentab.stores.opencode_usage._MEMBER_SQL",
+                _MEMBER_SQL.replace("json_each(v.data)", "json_each(observe(v.data))"),
+            ):
+                compact, size, _, streamed, projected = _read_usage(
+                    OlderConnection(conn), 1, False, "members"
+                )
+            assert json.loads(compact)["tokens"]["input"] == 23
+            assert size > 1024 and not streamed and not projected
+            assert seen and max(seen) <= 1024, seen
+            seen.clear()
+            with patch("opentab.stores.opencode_usage._DECODE_LIMIT", 1024), patch(
+                "opentab.stores.opencode_usage._MEMBER_BATCH_SQL",
+                _MEMBER_BATCH_SQL.replace("json_each(obj)", "json_each(observe(obj))"),
+            ):
+                assert _read_usage_batch(conn, [1], False, [0.0, 0.0]) == {}
+            assert seen and max(seen) <= 1024, seen
+        finally:
+            conn.close()
+
+
+def test_opencode_usage_old_python_selects_member_projection_without_raw_fetch():
+    class OlderConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __getattr__(self, name):
+            if name == "blobopen":
+                raise AttributeError(name)
+            return getattr(self.conn, name)
+
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        expected = _reference(store.db)
+        store.conn = OlderConnection(store.conn)
+        queries = []
+        store.conn.set_trace_callback(queries.append)
+        assert _read(store) == expected
+        assert store._usage_cache._sql_projection == "members"
+        assert not any(q.startswith("select data from main.session_message") for q in queries)
+
+
+def test_opencode_usage_batches_preserve_accounting_and_fall_back_for_malformed_rows():
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        for i in range(128):
+            writer.execute(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                _message(
+                    "batch-" + str(i),
+                    "root",
+                    "compaction" if i % 3 == 0 else "assistant",
+                    1000 + i,
+                    {
+                        "model": {"id": "batch"},
+                        "tokens": {"input": i + 1},
+                        "content": [{"text": "x" * 10000}],
+                    },
+                ),
+            )
+        writer.commit()
+        for malformed in (False, True):
+            if malformed:
+                writer.execute(
+                    "update session_message set data=?,time_updated=time_updated+1 where id='batch-0'",
+                    ['{"content":[1,],"tokens":{"input":9000}}'],
+                )
+                writer.execute(
+                    "update session_message set data=? where id='batch-1'",
+                    ['{"tokens":{"input":9000}}\x00invalid'],
+                )
+                writer.execute(
+                    "update session_message set data=? where id='batch-2'",
+                    ['{"tok\\u0065ns":{"in\\u0070ut":7,"input":9},"tokens":{"input":99}}'],
+                )
+                writer.commit()
+            baseline = Store(store.db, argparse.Namespace(demo=False))
+            candidate = Store(store.db, argparse.Namespace(demo=False))
+            try:
+                baseline._usage_cache._sql_projection = False
+                candidate._usage_cache._sql_projection = "members"
+                expected = _read(baseline)
+                queries = []
+                candidate.conn.set_trace_callback(queries.append)
+                assert _read(candidate) == expected
+                batches = [q for q in queries if q.startswith("select rowid,size,obj is not null")]
+                assert len(batches) == 2  # the final seven changed rows use the single-row path
+                if not malformed:
+                    assert not any(
+                        q.startswith("select data from main.session_message") for q in queries
+                    )
+            finally:
+                baseline.conn.close()
+                candidate.conn.close()
+
+
+def test_opencode_usage_batches_share_the_metadata_snapshot_during_source_writes():
+    from opentab.stores.opencode_usage import _read_usage_batch
+
+    with _v2_db() as (writer, store):
+        writer.execute("pragma journal_mode=wal")
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(
+                    "batch-" + str(i), "root", "assistant", i + 1, {"tokens": {"input": i + 1}}
+                )
+                for i in range(129)
+            ],
+        )
+        writer.commit()
+        baseline = Store(store.db, argparse.Namespace(demo=False))
+        try:
+            baseline._usage_cache._sql_projection = False
+            baseline._usage_cache.prepare(baseline.conn, False)
+            expected = dict(baseline._usage_cache.rows)
+        finally:
+            baseline.conn.close()
+        wrote = False
+
+        def concurrent_write(conn, rowids, tracing, timings):
+            nonlocal wrote
+            if not wrote:
+                writer.execute(
+                    "update session_message set data=?,time_updated=time_updated+1000 where id='batch-128'",
+                    ['{"tokens":{"input":777}}'],
+                )
+                writer.commit()
+                wrote = True
+            return _read_usage_batch(conn, rowids, tracing, timings)
+
+        store._usage_cache._sql_projection = "members"
+        with patch("opentab.stores.opencode_usage._read_usage_batch", side_effect=concurrent_write):
+            store._usage_cache.prepare(store.conn, False)
+        assert wrote and store._usage_cache.rows == expected
+        store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.reused == 128
+        assert store._usage_cache.rows != expected
 
 
 def test_opencode_usage_persistent_cache_reads_only_changed_native_messages():
@@ -540,6 +771,17 @@ def test_opencode_usage_malformed_persistent_projection_rebuilds_without_losing_
 def test_opencode_usage_tui_and_web_preserve_deferred_models_and_exact_usage():
     with _v2_db(legacy=True) as (writer, store):
         _populate_v2(writer)
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(
+                    "web-batch-" + str(i), "root", "assistant", 1000 + i, {"tokens": {"input": 7}}
+                )
+                for i in range(8)
+            ],
+        )
+        writer.commit()
+        store._usage_cache._sql_projection = "members"
         args = argparse.Namespace(demo=False, since=None, until=None, days=None)
         cached = CachedStore(store, "opencode|" + store.db, args)
         with patch.object(cached, "model_breakdown", wraps=cached.model_breakdown) as models:
