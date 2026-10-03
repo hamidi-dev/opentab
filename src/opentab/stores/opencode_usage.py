@@ -619,7 +619,7 @@ class UsageCache:
             for row in rows:
                 yield row, projected.get(row[0]), row[0] in attempted
 
-    @debug.timed("usage.prepare")
+    @debug.timed("usage.prepare", activity=True)
     def prepare(
         self, conn: sqlite3.Connection, legacy: bool, refresh: bool = False, scope=None
     ) -> None:

@@ -124,6 +124,22 @@ SQLite computation from host contention without changing cache behavior.
 Virtualized clocks can also disagree; treat CPU/wall differences as diagnostic
 evidence rather than exact I/O-wait accounting.
 
+Only the outer `usage.prepare` span additionally samples process activity. Its end
+record includes available `process_io_read_bytes_delta`, `process_io_rchar_delta`,
+`process_io_syscr_delta` and `process_io_write_bytes_delta` from Linux `/proc/self/io`.
+`read_bytes` is OS storage accounting, not SQLite-requested bytes; `rchar` and
+`syscr` include cached reads and reads by all threads. Available `getrusage` counters
+are emitted as `process_minor_faults_delta`, `process_major_faults_delta`,
+`process_block_in_delta`, `process_block_out_delta`,
+`process_voluntary_context_switches_delta` and
+`process_involuntary_context_switches_delta`. Block counters count operations, not
+bytes. All these deltas are **process-wide**, include nested work, concurrent threads
+and diagnostic overhead, and must not be summed with nested spans. They can help
+investigate waiting, but neither they nor wall-minus-CPU attribute time to disk.
+Missing, unsupported, malformed or reset counters are omitted rather than reported
+as zero or negative deltas. Ordinary spans do not sample activity, and disabled
+debugging reads no counters or clocks.
+
 Logging is off by default. Logs contain static operation/reason labels, runtime
 versions, counts and timing metadata; source paths and session IDs are run-local
 salted hashes. SQL, arguments, prompts, titles, model names, tool output, notes,
