@@ -945,10 +945,8 @@ class App:
         ]
         projects = self.sorted_projects(projects)
         if self.query:
-            scored = [(fuzzy_score(self.query, p.directory), p) for p in projects]
-            ranked = [(s, p) for s, p in scored if s is not None]
-            ranked.sort(key=lambda pair: -pair[0])  # stable: ties keep the sort order
-            projects = [p for _, p in ranked]
+            # Filter membership without overriding the selected column's order.
+            projects = [p for p in projects if fuzzy_score(self.query, p.directory) is not None]
         return projects
 
     def include_ignored_for_project(self, project: ProjectSummary) -> bool:
