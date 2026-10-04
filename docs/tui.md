@@ -449,22 +449,25 @@ position: remote nodes may lack IDs, and labels can repeat. Sorting and repricin
 preserve identity. Reload reanchors an open execution by its exact, unique node ID
 within the same unambiguous session, harness and machine; missing or ambiguous
 identities fall back to the overview. Other snapshot replacements reset the drill.
-An open execution prompt list reloads lazily; deeper prompt/trace drills reset rather
+An open execution turn list reloads lazily; trace drills reset rather
 than reuse stale ordinals. Cached raw content is always discarded. Row maps and cursor
 follow are rebuilt with table geometry and cleared in execution detail. No raw
 content is needed for these metrics, and no node-to-turn join is inferred. Shares
 use node sums; model groupings are explicitly representative, not per-model accounting.
 
-The nested reader keeps **Subagents** as the actual active tab while reusing the
-prompt/turn UI: execution list -> detail -> execution prompts -> prompt turns ->
-trace. `Esc` reverses the stack and restores execution detail/list selection and
-scroll. `j`/`k` retain prompt and turn cursors, then scroll the trace; `g`/`G` select
-first/last in the prompts overview but scroll the pane in prompt/trace detail.
-`[`/`]` move between sibling turns of the same prompt and `z` toggles full content.
-The execution detail's select hint resolves the configured binding, not a hardcoded
-Enter key.
+The nested reader keeps **Subagents** as the actual active tab: execution list ->
+execution turns -> trace. Opening a supported execution immediately queues its
+timeline; the pure layout combines a compact node summary, bounded prompt previews
+and turn tables grouped by consecutive prompt runs. Row maps address absolute
+execution-turn indices across sections. `reading_turn_list` lets shared cursor,
+trace and mouse routing handle this flat execution scope without a synthetic prompt
+drill. `Esc` restores turn/list selection and scroll, with no hidden detail steps.
+`j`/`k` and `g`/`G` select turns, then scroll inside a trace; `[`/`]` move through
+execution turns including follow-ups. `z` expands full prompts and execution
+accounting in the list, or full content inside a trace. Expanded state and prompt
+content participate in the layout cache key. Hints resolve configured bindings.
 
-Opening execution prompts queues optional `node_timeline(root_id, node_id)` on the
+Opening an execution queues optional `node_timeline(root_id, node_id)` on the
 exact owning leaf after a loading frame. Only that execution's rows and prompts
 are used, at `depth=0` with unchanged content keys; `None` is unavailable and `[]`
 is valid empty. Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support it;

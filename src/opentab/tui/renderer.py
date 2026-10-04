@@ -4361,6 +4361,8 @@ class Renderer:
         self._subagent_cursor_line = None
         nodes = self.session_node_rows(workflow.id)
         rows = self.app.subagent_rows(workflow)
+        if self.app.active_subagent_turns and self.app.subagent_turns_unavailable():
+            self.app._clear_subagent_turns()
         if self.app.active_subagent_turns:
             return self.detail_turns(workflow, width)
         if not any(row["depth"] > 0 for row in nodes):
@@ -4369,6 +4371,11 @@ class Renderer:
             (row for row in rows if row["_node_index"] == self.app.active_subagent_drill), None
         )
         if selected is not None:
+            # Tab changes discard raw content but retain the execution selection.
+            # Reopen its flat reader, not the old intermediate detail step.
+            if self.app._on_subagents_tab() and not self.app.subagent_turns_unavailable():
+                self.app.open_subagent_turns()
+                return self.detail_turns(workflow, width)
             return self._subagent_detail(selected, nodes, width)
         priced = self._priced_nodes(nodes)
         totals = self.whatif_session_totals(workflow)
@@ -4426,7 +4433,9 @@ class Renderer:
         )
         return self._adopt_subagent_layout(layout)
 
-    def _subagent_detail(self, row: dict, nodes: list[dict], width: int) -> list[str]:
+    def _subagent_detail(
+        self, row: dict, nodes: list[dict], width: int, *, include_intro: bool = True
+    ) -> list[str]:
         priced = self._priced_nodes(nodes)
         unavailable = self.app.subagent_turns_unavailable()
         prompt = self.app.subagent_prompt_text()
@@ -4446,6 +4455,7 @@ class Renderer:
             colored=self._token_series_ok,
             target=target,
             target_cost=self.whatif_node_price(row, target) if target else 0.0,
+            include_intro=include_intro,
         )
         return self._adopt_subagent_layout(layout)
 
@@ -4885,6 +4895,10 @@ class Renderer:
             self.session_supports_trace(workflow.id),
             unicode_screen(),
             scoped,
+            self.app.subagent_expanded if scoped else False,
+            self.app.subagent_prompt_text() if scoped else None,
+            self._key("main", "trace_expand") if scoped else None,
+            self.whatif_model if scoped else None,
         )
         cached = self._turn_layout_cache
         if cached is None or cached[0] != key:
@@ -4907,9 +4921,7 @@ class Renderer:
         # draw() clears paint metadata each frame; selection is deliberately not cached.
         self._box_headers.update(headers)
         self._token_runs.update(token_runs)
-        cursor = (
-            self.app._turn_cursor if self.app.active_turn_drill is None else self.app._trace_cursor
-        )
+        cursor = self.app._trace_cursor if self.app.reading_turn_list else self.app._turn_cursor
         self._turn_cursor_line = cursor_lines.get(cursor)
         return lines
 
@@ -4917,10 +4929,35 @@ class Renderer:
         scoped = self.app.active_subagent_turns
         label = "Execution turns" if scoped else "Turns"
         if scoped:
-            if self.app._subagent_turns_error:
-                return self._subagent_wrap([f"# {label}", self.app._subagent_turns_error], width)
+            if self.app.active_trace_drill is not None:
+                traced = self.detail_turn_trace(workflow, width)
+                if traced:
+                    return traced
+                self.app.trace_drill = None
+            rows = self.reader_turn_rows(workflow.id)
+            nodes = self.session_node_rows(workflow.id)
+            node = self._priced_nodes([nodes[self.app.active_subagent_drill]])[0]
+            status = self.app._subagent_turns_error
             if self.app._subagent_turn_rows is None:
-                return [f"# {label}", "Loading execution turns..."]
+                status = "Loading execution turns..."
+            layout = turns_view.build_execution_turns(
+                node=node,
+                rows=rows,
+                costs=self.turn_costs(rows),
+                prompt=self.app.subagent_prompt_text(),
+                width=width,
+                glyphs=self.box_glyphs(),
+                expanded=self.app.subagent_expanded,
+                expand_key=self._key("main", "trace_expand"),
+                status=status,
+            )
+            self._box_headers.update(layout.box_headers)
+            self._turn_header_at = layout.row_map
+            self._turn_cursor_line = layout.cursor_lines.get(self.app._trace_cursor)
+            lines = layout.lines
+            if self.app.subagent_expanded:
+                lines += [""] + self._subagent_detail(node, nodes, width, include_intro=False)
+            return lines
         elif not self.session_supports_turns(workflow.id):
             return [
                 "# Turns",

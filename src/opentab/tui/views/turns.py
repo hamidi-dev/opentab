@@ -15,11 +15,12 @@ from opentab.presentation.formatting import (
     pad,
     pct,
     shorten,
+    wrap_cells,
 )
 from opentab.presentation.heatmap import BLOCKS_UP
 from opentab.tui.components.boxes import BOX_CHROME, ruled_box, sectioned_box
 from opentab.tui.components.token_cards import token_breakdown_card
-from opentab.tui.trace import TraceLine, build_event_body, wrapped
+from opentab.tui.trace import TraceLine, build_event_body, format_block, wrapped
 from opentab.util import (
     TRACE_EVENTS_CAP,
     agent_mix_label,
@@ -244,7 +245,7 @@ def build_turn_trace(
     position = siblings.index(index) + 1
     prefix = f"Turn {position} of {len(siblings)}"
     if scoped:
-        prefix = f"Execution turn {index + 1} · {position} of {len(siblings)} in prompt"
+        prefix = f"Execution turn {position} of {len(siblings)}"
     prompt = " ".join(str(row.get("prompt_title") or "").split()) or "(no prompt)"
     room = max(12, width - display_width(prefix) - 3)
     head = f"{prefix} · {shorten(prompt, room)}"
@@ -499,6 +500,118 @@ def build_turn_drill(
         {ordinal: line for line, ordinal in row_map.items()},
         token_runs,
     )
+
+
+def build_execution_turns(
+    *,
+    node: Mapping,
+    rows: Sequence[Mapping],
+    costs: Sequence[float],
+    prompt: str,
+    width: int,
+    glyphs: Mapping[str, str],
+    expanded: bool,
+    expand_key: str,
+    status: str = "",
+) -> TurnLayout:
+    """One execution, with prompt sections and directly selectable turns."""
+    inner = max(1, width - BOX_CHROME)
+    title = str(node.get("title") or "(untitled)")
+    model = str(node.get("model_name") or "unknown").rsplit("/", 1)[-1]
+    meta = (
+        f"{node.get('agent') or 'unknown'} · {model} · "
+        f"{money(node['cost'])} · {human_tokens(node['tokens_total'])} tokens"
+    )
+    title_lines = wrap_cells(title, inner)
+    if not expanded:
+        title_lines = [shorten(" ".join(title.split()), inner)]
+    lines = list(
+        sectioned_box(
+            "# Execution", [title_lines + wrap_cells(meta, inner)], width, [], glyphs
+        ).lines
+    )
+    groups = turn_group_rows(rows, costs)
+    row_map: dict[int, int] = {}
+    headers: set[str] = set()
+    # Even an empty or unavailable timeline retains the separately recorded prompt.
+    sections = groups or [{"full": prompt, "indices": []}]
+    index_width = max(2, len(str(len(rows))))
+    # Keep usage visible on narrow screens; model names are already in the header.
+    available = inner - 2 - index_width - 1 - 9 - 1 - 9 - 1
+    model_width = min(24, available // 3) if available >= 32 else 0
+    content_width = max(1, available - (model_width + 1 if model_width else 0))
+
+    def table_row(index: str, model: str, content: str, tokens: str, cost: str) -> str:
+        return (
+            f"  {index:>{index_width}} "
+            + (f"{pad(shorten(model, model_width), model_width)} " if model_width else "")
+            + f"{pad(shorten(content, content_width), content_width)} {tokens:>9} {cost:>9}"
+        )
+
+    for number, group in enumerate(sections, 1):
+        text = (
+            prompt if number == 1 and node.get("depth") else group["full"] or "(no recorded prompt)"
+        )
+        if expanded:
+            prompt_lines = format_block(text, "", inner, len(text.splitlines()))
+        else:
+            # Word-wrap the short prose preview; expansion preserves raw spacing.
+            sample = text[: inner * 4]
+            paragraphs = sample.splitlines()
+            prompt_lines = [
+                line
+                for paragraph in paragraphs[:4]
+                for line in (wrap_cells(paragraph, inner) or [""])
+            ]
+            if len(sample) < len(text) or len(paragraphs) > 4 or len(prompt_lines) > 3:
+                prompt_lines = prompt_lines[:2] + wrap_cells(
+                    f"… {expand_key}: full prompt & details", inner
+                )
+        heading = "# Received prompt" if node.get("depth") else "# Prompt 1"
+        if number > 1:
+            heading = f"# Follow-up prompt {number}"
+        lines += [""] + list(
+            sectioned_box(heading, [prompt_lines or ["(empty prompt)"]], width, [], glyphs).lines
+        )
+        indices = group["indices"]
+        if not indices:
+            continue
+        if expanded and number == 1 and group["full"] and group["full"].strip() != text.strip():
+            # The first retained child message can predate the first accounted turn.
+            # Keep that turn's actual prompt accessible as well.
+            lines += [""] + list(
+                sectioned_box(
+                    "# First recorded turn's prompt",
+                    [format_block(group["full"], "", inner, len(group["full"].splitlines()))],
+                    width,
+                    [],
+                    glyphs,
+                ).lines
+            )
+        header = table_row("#", "Model", "Content", "Tokens", "Cost")
+        body = [
+            table_row(
+                str(index + 1),
+                str(rows[index].get("model_name") or "-").rsplit("/", 1)[-1],
+                turn_read_mark(rows[index]) or tool_call_label(rows[index].get("tools")) or "—",
+                human_tokens(rows[index].get("tokens_total") or 0),
+                money(costs[index]),
+            )
+            for index in indices
+        ]
+        lines.append("")
+        offset = len(lines)
+        box = ruled_box("# Turns", header, body, None, [], width, glyphs)
+        lines += box.lines
+        if box.header_line is not None:
+            headers.add(box.lines[box.header_line])
+        start = offset + (box.body_start or 0)
+        row_map.update({start + ordinal: index for ordinal, index in enumerate(indices)})
+    if status:
+        lines += [""] + wrap_cells(status, width)
+    elif not rows:
+        lines += ["", "No turns recorded for this execution."]
+    return TurnLayout(lines, headers, row_map, {index: line for line, index in row_map.items()}, {})
 
 
 def build_turns(

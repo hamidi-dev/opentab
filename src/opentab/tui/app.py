@@ -548,7 +548,7 @@ class App:
         self._subagent_turn_rows: list[dict] | None = None
         self._subagent_turns_loading: tuple | None = None
         self._subagent_turns_error = ""
-        self._subagent_detail_scroll = 0
+        self.subagent_expanded = False
         self._subagent_trace: dict | None = None
         # The third level: one turn's trace, addressed by its ABSOLUTE row index so it
         # survives the group's own ordering. Its cursor is a position within the drilled
@@ -2780,8 +2780,10 @@ class App:
         return True
 
     def drilled_turn_indices(self) -> list[int]:
-        """Absolute row indices of the turns the open prompt drill lists."""
+        """Absolute row indices in the visible prompt or execution turn list."""
         wf = self.current_session()
+        if wf is not None and self.active_subagent_turns:
+            return list(range(len(self.reader_turn_rows(wf.id))))
         i = self.active_turn_drill
         if wf is None or i is None:
             return []
@@ -2790,11 +2792,15 @@ class App:
 
     @property
     def active_trace_drill(self) -> int | None:
-        # A trace lives inside a prompt drill; when that closes, so does this. Gating on
-        # the drill rather than on a second session id keeps one ownership check.
-        if self.trace_drill is None or self.active_turn_drill is None:
+        # A trace belongs to a prompt or execution turn list. Closing that owner
+        # also closes the trace, without a second independently tracked session ID.
+        if self.trace_drill is None or not self.reading_turn_list:
             return None
         return self.trace_drill
+
+    @property
+    def reading_turn_list(self) -> bool:
+        return self.active_subagent_turns or self.active_turn_drill is not None
 
     def _move_trace_cursor(self, delta: int) -> bool:
         rows = self.drilled_turn_indices()
@@ -2982,17 +2988,19 @@ class App:
         self._subagent_turns = self._subagent_turns_loading = None
         self._subagent_turn_rows = self._subagent_trace = None
         self._subagent_turns_error = ""
+        self.subagent_expanded = False
 
     def open_subagent_turns(self) -> bool:
         if reason := self.subagent_turns_unavailable():
             self.notify(reason, "warn")
+            return True
+        if self.active_subagent_turns:
             return True
         self._clear_subagent_turns()
         self.turn_drill = self._turn_drill_session = self.trace_drill = None
         self._turn_cursor = self._trace_cursor = 0
         self._turn_follow = False
         self._clear_trace_expansion()
-        self._subagent_detail_scroll = self.scroll
         self._subagent_turns = (self._subagent_snapshot, self.active_subagent_drill)
         self._subagent_turns_loading = self._subagent_turns
         self._subagent_prompt = self._subagent_prompt_loading = None
@@ -3025,9 +3033,7 @@ class App:
     def close_subagent_turns(self) -> bool:
         if not self.active_subagent_turns:
             return False
-        self._clear_subagent_turns()
-        self.scroll = self._subagent_detail_scroll
-        return True
+        return self.close_subagent_drill()
 
     def subagent_rows(self, workflow: Workflow) -> list[dict]:
         nodes = self.session_node_rows(workflow.id)
@@ -3113,6 +3119,8 @@ class App:
         self._subagent_list_scroll = self.scroll
         self.scroll = 0
         self._subagent_follow = False
+        if not self.subagent_turns_unavailable():
+            self.open_subagent_turns()
         return True
 
     def close_subagent_drill(self) -> bool:
@@ -3199,7 +3207,7 @@ class App:
             return False
         # Inside a prompt Enter opens the selected turn; inside the reader it toggles
         # the output section at the viewport top (or the next below it).
-        if self.active_turn_drill is not None:
+        if self.reading_turn_list:
             if self.active_trace_drill is not None:
                 self.toggle_trace_output()
                 return True
@@ -3239,7 +3247,7 @@ class App:
     def close_turn_drill(self) -> bool:
         # Consume Esc only for this session's visible drill. Inactive drills belong to
         # another mode's remembered session and must remain untouched.
-        if self.active_turn_drill is None:
+        if self.active_subagent_turns or self.active_turn_drill is None:
             return False
         self.turn_drill = None
         self._turn_drill_session = None
@@ -3985,8 +3993,7 @@ class App:
             node_id = nodes[index].get("id")
             if node_id and sum(n.get("id") == node_id for n in nodes) == 1:
                 subagent = (wf.id, wf.source, wf.machine, node_id)
-        subagent_turns = self.active_subagent_turns
-        detail_scroll = self._subagent_detail_scroll if subagent_turns else self.scroll
+        detail_scroll = 0 if self.active_subagent_turns else self.scroll
         list_scroll = self._subagent_list_scroll
         self._clear_subagent_prompt()
         self._clear_trace_expansion()
@@ -4044,8 +4051,6 @@ class App:
                 ordinal = next(i for i, row in enumerate(rows) if row["_node_index"] == matches[0])
                 self.open_subagent_drill(ordinal)
                 self.scroll = detail_scroll
-                if subagent_turns and not self.subagent_turns_unavailable():
-                    self.open_subagent_turns()
         if notes_ok:
             self.notify("reloaded", "success")
 
@@ -6377,7 +6382,7 @@ class App:
                 if self._on_subagents_tab() and self._move_subagent_cursor(delta):
                     return
                 if self._on_turns_tab():
-                    if self.active_turn_drill is None:
+                    if not self.reading_turn_list:
                         if self._move_turn_cursor(delta):
                             return
                     elif self.active_trace_drill is None and self._move_trace_cursor(delta):
@@ -6678,7 +6683,7 @@ class App:
                 self._subagent_selected = rows[-1 if to_end else 0]["_node_index"]
                 self._subagent_follow = True
                 return
-        if self._on_turns_tab() and self.active_turn_drill is None:
+        if self._on_turns_tab() and not self.reading_turn_list:
             wf = self.current_session()
             groups = self.turn_runs(wf.id) if wf else []
             if groups:
@@ -8330,7 +8335,12 @@ class App:
             self.step_trace(-1 if act == "trace_prev" else 1)
             return True
         if act == "trace_expand":
-            self.toggle_trace_expansion()
+            if self.active_subagent_turns and self.active_trace_drill is None:
+                self.subagent_expanded = not self.subagent_expanded
+                self.scroll = 0
+                self._turn_follow = False
+            else:
+                self.toggle_trace_expansion()
             return True
         if act == "back":
             # A drilled prompt is the innermost scope on the Turns tab, so Esc leaves it
@@ -9037,7 +9047,7 @@ class App:
             # here. Inside a drilled prompt the SAME region carries that prompt's turns,
             # so a click there opens the turn's trace; the map is emptied while a trace
             # is open, so a click on its prose lands nowhere rather than on a stale row.
-            if self.active_turn_drill is not None:
+            if self.reading_turn_list:
                 self._trace_cursor = ordinal
                 self.open_trace_drill()
                 return

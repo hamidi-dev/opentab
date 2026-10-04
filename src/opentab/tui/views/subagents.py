@@ -422,6 +422,7 @@ def subagent_detail_layout(
     colored: bool,
     target: str = "",
     target_cost: float = 0.0,
+    include_intro: bool = True,
 ) -> SubagentLayout:
     children = [node for node in priced_nodes if node["depth"] > 0]
     inner = max(1, width - BOX_CHROME)
@@ -431,28 +432,32 @@ def subagent_detail_layout(
         f"Representative model: {row.get('model_name') or 'unknown'}",
         f"Started: {row.get('created_at') or 'not recorded'}",
     ]
-    lines = wrap_lines([f"# Subagent execution   {back_key}: back to executions", ""], width)
-    if turns_unavailable:
-        lines.extend(wrap_lines([turns_unavailable, ""], width))
-    elif select_key:
-        lines.extend(wrap_lines([f"{select_key}: open this execution's turns", ""], width))
-    lines.extend(sectioned_box("# Title", [wrap_lines([title], inner)], width, [], glyphs).lines)
-    lines.append("")
-    lines.extend(
-        sectioned_box(
-            "# Received prompt",
-            [format_block(prompt_text, "", inner, len(prompt_text.splitlines()))],
-            width,
-            wrap_lines(
-                [
-                    "First recorded child user message, not its title or the full system/context payload."
-                ],
+    lines = []
+    if include_intro:
+        lines = wrap_lines([f"# Subagent execution   {back_key}: back to executions", ""], width)
+        if turns_unavailable:
+            lines.extend(wrap_lines([turns_unavailable, ""], width))
+        elif select_key:
+            lines.extend(wrap_lines([f"{select_key}: open this execution's turns", ""], width))
+        lines.extend(
+            sectioned_box("# Title", [wrap_lines([title], inner)], width, [], glyphs).lines
+        )
+        lines.append("")
+        lines.extend(
+            sectioned_box(
+                "# Received prompt",
+                [format_block(prompt_text, "", inner, len(prompt_text.splitlines()))],
                 width,
-            ),
-            glyphs,
-        ).lines
-    )
-    lines.append("")
+                wrap_lines(
+                    [
+                        "First recorded child user message, not its title or the full system/context payload."
+                    ],
+                    width,
+                ),
+                glyphs,
+            ).lines
+        )
+        lines.append("")
     lines.extend(sectioned_box("# Execution", [wrap_lines(meta, inner)], width, [], glyphs).lines)
 
     total_cost = sum(node["cost"] for node in priced_nodes)

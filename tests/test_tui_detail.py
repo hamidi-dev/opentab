@@ -1768,16 +1768,12 @@ def _subagent_turns_app():
     return app
 
 
-def test_subagent_turns_enter_is_lazy_and_esc_restores_each_reader_level():
+def test_subagent_turns_one_enter_opens_execution_and_esc_returns_to_list():
     app = _subagent_turns_app()
     wf = app.current_session()
     app.scroll = 5
     app.handle_key(None, 10)
-    assert app.active_subagent_drill == 1 and not app.active_subagent_turns
-    app.renderer.detail_subagents(wf, 100)
-    app.load_subagent_prompt()
-    app.scroll = 17
-    app.handle_key(None, 10)
+    assert app.active_subagent_drill == 1
     assert app.active_subagent_turns and app.scroll == 0
     assert app._subagent_prompt is None and app._subagent_prompt_loading is None
     assert app._subagent_turn_rows is None and app._subagent_turns_loading is not None
@@ -1791,38 +1787,33 @@ def test_subagent_turns_enter_is_lazy_and_esc_restores_each_reader_level():
     app.load_subagent_turns()
     app.store.node_timeline.assert_called_once_with(wf.id, "child-1")
     assert app.reader_turn_rows(wf.id) is app._subagent_turn_rows
-    assert "2 prompts" in "\n".join(app.renderer.detail_subagents(wf, 120))
-    app.handle_key(None, 10)
-    assert app.active_turn_drill == 0 and app.active_trace_drill is None
-    child_prompt = "\n".join(app.renderer.detail_subagents(wf, 120))
-    assert "Child instructions 0" in child_prompt and "Prompt token breakdown" in child_prompt
-    assert "Category sum: 300,020" in child_prompt
+    app.load_subagent_prompt()
+    text = "\n".join(app.renderer.detail_subagents(wf, 120))
+    assert "Actual instructions for child-1" in text and "Follow-up prompt 2" in text
+    assert len(app.renderer._turn_header_at) == 3
+    assert app.active_turn_drill is None and app.active_trace_drill is None
+    app.store.node_turn_content.assert_not_called()
     app.handle_key(None, 10)
     assert app.active_trace_drill == 0
     app.handle_key(None, 27)
-    assert app.active_trace_drill is None and app.active_turn_drill == 0
-    app.handle_key(None, 27)
     assert app.active_turn_drill is None and app.active_subagent_turns
-    app.handle_key(None, 27)
-    assert not app.active_subagent_turns and app.active_subagent_drill == 1
-    assert app.scroll == 17
+    assert app.active_trace_drill is None
     app.handle_key(None, 27)
     assert app.active_subagent_drill is None and app.view == "session"
     assert app.scroll == 5 and app._subagent_selected == 1
 
 
-def test_subagent_turns_reuse_prompt_cursor_and_drilled_pane_navigation():
+def test_subagent_turns_select_across_prompt_sections_and_scroll_trace():
     app = _subagent_turns_app()
     app.open_subagent_drill()
     app.open_subagent_turns()
     app.load_subagent_turns()
-    for cursor in ("_turn_cursor", "_trace_cursor"):
-        keys = (("j", 1), ("k", 0), ("G", 1), ("g", 0))
-        for key, expected in keys:
-            app.handle_key(None, ord(key))
-            assert getattr(app, cursor) == expected, (cursor, key)
-            assert app._turn_follow
-        app.handle_key(None, 10)
+    keys = (("j", 1), ("j", 2), ("k", 1), ("G", 2), ("g", 0))
+    for key, expected in keys:
+        app.handle_key(None, ord(key))
+        assert app._trace_cursor == expected, key
+        assert app._turn_follow
+    app.handle_key(None, 10)
     assert app.active_trace_drill == 0
     with patch.object(app.renderer, "max_scroll", return_value=20):
         app.handle_key(FakeScreen(24, 120), ord("G"))
@@ -1833,22 +1824,50 @@ def test_subagent_turns_reuse_prompt_cursor_and_drilled_pane_navigation():
     app.store.turn_content.assert_not_called()
 
 
-def test_subagent_turns_restored_scroll_survives_received_prompt_loading_paint():
+def test_subagent_tab_return_reopens_flat_reader_and_click_targets_followup_turn():
+    app = _subagent_turns_app()
+    wf = app.current_session()
+    app.handle_key(None, 10)
+    app.load_subagent_turns()
+    app.handle_key(None, ord("l"))
+    assert not app.active_subagent_turns and app._subagent_turn_rows is None
+    app.handle_key(None, ord("h"))
+    app.renderer.detail_subagents(wf, 80)
+    assert app.active_subagent_turns and app._subagent_turn_rows is None
+    app.store.node_timeline.assert_called_once()
+    app.load_subagent_turns()
+    app.renderer.detail_subagents(wf, 80)
+    line = next(line for line, index in app.renderer._turn_header_at.items() if index == 2)
+    app._apply_click(("turnline", line), drill=False)
+    assert app.active_trace_drill == 2
+    app.handle_key(None, 27)
+    assert app._trace_cursor == 2 and app.active_subagent_turns
+    app.handle_key(None, 27)
+    assert app.active_subagent_drill is None
+
+
+def test_subagent_turns_bound_long_prompts_and_expand_details_in_place():
     app = _subagent_turns_app()
     app.store.node_prompt = lambda *_: "Long received instruction.\n" * 200
     app.open_subagent_drill()
-    app.subagent_prompt_text()
+    app.renderer.detail_subagents(app.current_session(), 80)
     app.load_subagent_prompt()
-    app.scroll = 80
-    app.open_subagent_turns()
     app.load_subagent_turns()
-    app.close_subagent_turns()
-    with patch.object(ot.curses, "color_pair", return_value=0):
-        app.renderer.draw_detail(FakeScreen(24, 120), 0, 0, 24, 120)
-        assert app._subagent_prompt_loading is not None and app.scroll == 80
-        app.load_subagent_prompt()
-        app.renderer.draw_detail(FakeScreen(24, 120), 0, 0, 24, 120)
-        assert app.scroll == 80
+    for width in (48, 76, 120, 180):
+        lines = app.renderer.detail_subagents(app.current_session(), width)
+        assert "full prompt & details" in "\n".join(lines)
+        assert min(app.renderer._turn_header_at) < 18
+        assert all(ot.display_width(line) <= width for line in lines)
+        assert "Recorded total:" not in "\n".join(lines)
+    app.handle_key(None, ord("z"))
+    assert app.subagent_expanded
+    text = "\n".join(app.renderer.detail_subagents(app.current_session(), 80))
+    assert text.count("Long received instruction.") == 200
+    assert "Recorded total: 1,250" in text and "Representative model:" in text
+    assert "First recorded turn's prompt" in text and "Child instructions 0" in text
+    app.handle_key(None, ord("z"))
+    assert not app.subagent_expanded and app.scroll == 0
+    app.store.node_turn_content.assert_not_called()
 
 
 def test_subagent_turns_trace_preview_full_and_siblings_never_read_root_content():
@@ -1882,7 +1901,8 @@ def test_subagent_turns_trace_preview_full_and_siblings_never_read_root_content(
     app.handle_key(None, ord("]"))
     assert app.active_trace_drill == 1 and app._trace_full is None
     app.handle_key(None, ord("]"))
-    assert app.active_trace_drill == 1  # never cross into the next prompt
+    assert app.active_trace_drill == 2  # follow-ups share the execution's turn list
+    app.handle_key(None, ord("["))
     app.handle_key(None, ord("z"))
     app.load_trace_expansion()
     app.store.node_turn_content.assert_called_with(wf.id, "child-1", "k1")
@@ -1934,8 +1954,7 @@ def test_subagent_reload_reopens_execution_prompts_lazily_without_stale_traces()
         assert app.store.node_turn_content.call_count == content_reads
         app.store.turn_content.assert_not_called()
         app.close_subagent_turns()
-        assert app.scroll == 17
-        app.close_subagent_drill()
+        assert app.active_subagent_drill is None
         assert app.scroll == 5 and app._subagent_selected == 2
 
 
@@ -2107,7 +2126,7 @@ def test_subagent_turns_render_regions_cursor_trace_styles_and_execution_header(
     app.load_subagent_turns()
     rnd = app.renderer
     with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
-        for level in ("prompts", "turns"):
+        for _ in range(2):
             app.handle_key(None, ord("G"))
             screen = AttrScreen(24, 120)
             rnd.regions = []
@@ -2120,8 +2139,6 @@ def test_subagent_turns_render_regions_cursor_trace_styles_and_execution_header(
             assert not screen.attrs[(y, 2)] & ot.curses.A_REVERSE
             assert not rnd._subagent_header_at
             app.handle_key(None, ord("g"))
-            if level == "prompts":
-                app.handle_key(None, 10)
         app.handle_key(None, 10)
         app.session_trace(wf.id)
         app.scroll = 4
@@ -2129,7 +2146,7 @@ def test_subagent_turns_render_regions_cursor_trace_styles_and_execution_header(
         rnd.draw_detail(screen, 0, 0, 30, 120)
         assert "Execution turn 1" in screen_text(screen)
         assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
-        assert "Inspect duplicate task" in rnd.breadcrumb() and "Prompt 1" in rnd.breadcrumb()
+        assert "Inspect duplicate task" in rnd.breadcrumb() and "Prompt 1" not in rnd.breadcrumb()
         rnd.draw_header(screen, 120)
         assert "Inspect duplicate task" in screen_text(screen)
         app.scroll = 0
@@ -2154,29 +2171,28 @@ def test_subagent_turns_render_regions_cursor_trace_styles_and_execution_header(
 
 def test_subagent_turns_remapped_enter_help_and_footer_match_each_action():
     app = _subagent_turns_app()
-    app.keymap = ot.tui.bindings.Keymap({("main", "select"): ["v"]})
-    app.open_subagent_drill()
+    app.keymap = ot.tui.bindings.Keymap(
+        {("main", "select"): ["v"], ("main", "trace_expand"): ["Z"]}
+    )
     enter = ot.keymap.BY_ID["enter"]
     assert enter.shown(app) and enter.label(app) == "v"
-    assert enter.text(app) == "open this execution's turns"
-    assert "v: open this execution's turns" in "\n".join(
-        app.renderer.detail_subagents(app.current_session(), 120)
-    )
-    with patch.object(ot.curses, "color_pair", return_value=0):
-        help_rows = app.renderer.help_lines(120)
-    assert any("open this execution's turns" in str(row) and "'v'" in str(row) for row in help_rows)
-    footer = str(ot.keymap.footer_parts(app))
-    assert "v turns" in footer and "Enter turns" not in footer
     app.handle_key(None, 10)
     assert not app.active_subagent_turns
     app.handle_key(None, ord("v"))
     assert app.active_subagent_turns and not enter.shown(app)
     app.load_subagent_turns()
-    assert enter.shown(app) and "prompt" in enter.text(app)
-    assert "back to execution detail" == ot.keymap.BY_ID["esc"].text(app)
-    assert "Esc execution" in str(ot.keymap.footer_parts(app))
-    app.handle_key(None, ord("v"))
+    app.renderer.detail_subagents(app.current_session(), 120)
+    app.load_subagent_prompt()
+    assert "Z: full prompt & details" in "\n".join(
+        app.renderer.detail_subagents(app.current_session(), 120)
+    )
+    assert "back to the executions" == ot.keymap.BY_ID["esc"].text(app)
+    assert "Esc executions" in str(ot.keymap.footer_parts(app))
     assert enter.text(app) == "open the selected turn"
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        help_rows = app.renderer.help_lines(120)
+    assert any("open the selected turn" in str(row) and "'v'" in str(row) for row in help_rows)
+    assert "Z details" in str(ot.keymap.footer_parts(app))
     app.handle_key(None, ord("v"))
     assert app.active_trace_drill == 0
     app.renderer.detail_subagents(app.current_session(), 120)
@@ -2225,7 +2241,7 @@ def test_subagent_turns_leave_session_timeline_context_and_export_scope_intact()
     app.open_subagent_drill()
     app.open_subagent_turns()
     app.load_subagent_turns()
-    for level in ("overview", "prompt", "trace"):
+    for level in ("turns", "trace"):
         assert app.session_turn_rows(wf.id) is root_rows
         assert app.renderer.detail_context(wf, 120) == root_context
         name, header, rows = app._export_dataset()
