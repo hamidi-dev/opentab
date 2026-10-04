@@ -349,7 +349,7 @@ copies the original text. The remappable action is `[main] copy_conversation`.
 | `$` | Toggle what-if prices — what unpriced usage would cost at API list rates |
 | `w` | Compare the current session at one model's list rates. Pick from used models or the catalog (`Tab` switches tiers, `f` filters, `Enter` selects, `Esc` cancels). Overview and Subagents show the comparison; other totals stay unchanged. Press `w` again to clear. See [Comparing models](pricing.md#comparing-models-with-w) for the arithmetic and limitations |
 | `H` | Harness picker (`Tab` Single / Multiple · `j`/`k` move · `Space` toggle in Multiple · `a` all/none · `Enter` apply · `Esc` cancel) |
-| `M` | Machine filter (fleet only) — narrow **every** view to one box; the harness picker's twin (`j`/`k` move · `Enter` arm/clear · `Esc` cancel) |
+| `M` | Machine picker (fleet) — narrow **every** view to selected machines (`Tab` Single / Multiple · `j`/`k` move · `Space` toggle in Multiple · `a` all/none · `Enter` apply · `Esc` cancel) |
 | `C` | Colour-theme picker — `j`/`k` live-preview · `Enter` keep · `Esc` revert (themes are shared with the web browser) |
 | `D` | Demo (anonymize for a shareable screen) — opens a multi-check picker of what to scramble: **Titles** (session / prompt / model / machine names), **Paths** (project directories), **Turns** (the expandable full prompt text), **Spend** (dollars + token magnitudes). Paths are separate from titles because a project tree is often the one label a demo *wants* real — leave it unchecked to keep real project names on an otherwise anonymised screen. `j`/`k` move · `Space` toggle a category · `a` all/none · `Enter` apply · `Esc` cancel. **While demo is on, `D` switches it straight back off** (one press, no picker); the categories are remembered, so `D` again re-offers them. From the CLI: `--demo` (all) or `--demo titles,spend` |
 | `Ctrl-P` | Hide your prompts without demo — every session's Turns swaps the prompts you typed (titles and full text) for stable fakes. Prompts the main agent wrote to subagents stay real: received prompts, a delegated execution's turns, and Hermes child rows. So do titles, paths, spend, traces and `Ctrl-F` search. A CSV export of Turns carries the fakes too. Not saved; `Ctrl-P` again shows them |
@@ -361,6 +361,11 @@ one and press `Enter` to apply. `Esc` discards pending changes. Tabs and rows ar
 clickable. Local combinations are restored on the next launch (when saving state
 is enabled); fleet selections filter the loaded machines for the current run.
 
+The machine picker uses the same **Single / Multiple** controls. Machine and
+harness selections compose: selected machines **and** selected harnesses. Choosing
+all machines clears the machine filter. Fleet filters last for the current run;
+reloading drops unavailable selections and clears a filter if none remain.
+
 The global toggles stay live inside Trends and Prices: `?`, `Ctrl-F`, `C`, `H`, `M` (fleet),
 and `D`. Help, What's New and notification history also accept `Ctrl-F`; Help accepts
 the theme, harness, machine and demo pickers too. Other
@@ -371,7 +376,7 @@ body describes the view underneath it; close Help before using that view's keys.
 session views (including traces and Changes diffs), Help, What's New,
 notification history, Trends drills and the Prices session drill. It keeps its
 existing special actions in the Prices model table (pin/unpin), Demo picker
-(toggle category), and the harness picker's Multiple tab (toggle harness).
+(toggle category), and the harness/machine pickers' Multiple tab (toggle item).
 Printable-input contexts, including filters, prompts, search
 fields and searchable pickers, still insert a literal space. Other menus and
 overlays keep their existing behavior.

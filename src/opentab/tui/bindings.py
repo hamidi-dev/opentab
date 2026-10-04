@@ -224,7 +224,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("reload", ("r",), "reload the data"),
             Action("refresh_machines", ("F",), "re-pull machine summaries over ssh (fleet)"),
             Action("harness", ("H",), "switch harness / filter harness (fleet)"),
-            Action("machine", ("M",), "filter every view to one machine (fleet)"),
+            Action("machine", ("M",), "filter every view to selected machines (fleet)"),
             Action("theme", ("C",), "colour theme picker"),
             Action("demo", ("D",), "anonymize for a screenshot"),
             Action("hide_prompts", ("ctrl-p",), "scramble prompt text without entering demo"),
@@ -425,7 +425,12 @@ REGISTRY: tuple[Context, ...] = (
         "menu.machine",
         "The M machine filter.",
         "menu",
-        (Action("advance", ("M",), "M again walks the list"),),
+        (
+            Action("advance", ("M",), "M again walks the list"),
+            Action("mode", ("tab", "h", "l", "left", "right"), "single ↔ multiple machines"),
+            Action("toggle", ("space", "x"), "check / uncheck a machine in Multiple"),
+            Action("check_all", ("a",), "check all · clear all in Multiple"),
+        ),
     ),
     Context(
         "menu.sort",

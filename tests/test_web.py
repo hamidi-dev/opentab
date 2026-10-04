@@ -18,6 +18,7 @@ from tests._support import (
     _whatif_msg,
     app_with,
     copilot_prices,
+    fleet_app,
     workflow,
 )
 
@@ -74,6 +75,24 @@ const WI_LOCAL=new Set(DATA.whatif.local), WI_UNPRICED=new Set(DATA.whatif.unpri
 
 
 # --- The web browser (--html / --serve) -------------------------------------
+
+
+def test_web_payload_respects_multiple_selected_machines():
+    app = fleet_app(
+        {
+            machine: [workflow(machine, "2026-05-01 10:00:00")]
+            for machine in ("laptop", "server", "archive")
+        }
+    )
+    app.select_machine_filter(frozenset({"laptop", "server"}))
+    payload = ot.build_payload(app)
+    assert {row["machine"] for row in payload["workflows"]} == {"laptop", "server"}
+    app.select_machine_filter(None)
+    assert {row["machine"] for row in ot.build_payload(app)["workflows"]} == {
+        "laptop",
+        "server",
+        "archive",
+    }
 
 
 class NodesFakeStore(FakeStore):

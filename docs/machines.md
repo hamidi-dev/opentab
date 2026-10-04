@@ -49,7 +49,10 @@ of that machine's harnesses.
 
 ## Browse and resume
 
-- **`m`** opens Machines mode; **`M`** filters every view to one machine.
+- **`m`** opens Machines mode; **`M`** filters every view to one or several machines.
+  In the picker, **Tab** switches Single / Multiple, **Space** toggles a machine,
+  **a** selects all/none, **Enter** applies and **Esc** cancels. Machine selections
+  compose with the **`H`** harness filter; selecting all machines clears the filter.
 - **`L`** resumes a supported session on its original machine when its saved entry
   has an SSH target. Launches and copied commands wrap the resume command in SSH;
   a machine saved only by URL has no SSH resume target.
