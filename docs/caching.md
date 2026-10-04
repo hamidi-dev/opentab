@@ -219,6 +219,22 @@ array shapes, finiteness checks, ownership subsets, aggregate reconciliation and
 tolerance. It still validates cached/remote numeric data before use; faster cache
 loading does not skip malformed-payload checks.
 
+## Startup progress
+
+While `App.__init__` loads rollups, an interactive ANSI stderr shows one row per
+backend (`opentab/progress.py`); piped output, `TERM=dumb` and Windows consoles
+keep the single static hint. Nothing paints for the first 200 ms, so a warm start
+stays silent, and the rows are erased before curses starts. Backends finishing
+within 50 ms fold into one "more ready" line.
+
+Rows are per thread: `CombinedStore` opens one per backend worker, and
+`read_files_parallel` reports files done/total on whichever thread consumes it,
+which gives every file backend a real bar. OpenCode reports message rows against
+a `count(*)` (taken only while a bar is drawing). A backend with neither shows a
+spinner. With no board started, reports are no-ops, so drill-in reads never touch
+the terminal. On a cold start OpenCode's bar barely moves while Claude Code parses:
+both workers compete for the GIL. That is real contention, not a display fault.
+
 ## Lazy session reads
 
 Subagent nodes, Turns, Tools, and estimated Context composition are per-session

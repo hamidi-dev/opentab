@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from functools import cached_property
 
+from opentab import progress
 from opentab.accounting.models import Workflow
 from opentab.demo import DEMO_ALL
 
@@ -17,6 +18,18 @@ def _gather(calls: list) -> list:
 
     with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="opentab-store") as ex:
         return list(ex.map(lambda c: c(), calls))
+
+
+def _tracked_workflows(store):
+    # One startup-progress row per backend; a no-op once the TUI owns the terminal.
+    def call():
+        with progress.task(getattr(store, "source_name", "") or "?") as row:
+            rows = store.workflows()
+            if row is not None:
+                row.note = progress.note(store)
+            return rows
+
+    return call
 
 
 class CombinedStore:
@@ -65,7 +78,9 @@ class CombinedStore:
         out: list[Workflow] = []
         owner: dict[str, object] = {}
         owner_by_workflow: dict[int, object] = {}
-        for store, workflows in zip(self.stores, _gather([s.workflows for s in self.stores])):
+        for store, workflows in zip(
+            self.stores, _gather([_tracked_workflows(s) for s in self.stores])
+        ):
             for w in workflows:
                 owner[w.id] = store
                 owner_by_workflow[id(w)] = store

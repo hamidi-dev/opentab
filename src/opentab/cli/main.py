@@ -19,7 +19,7 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab import __version__, sources
+from opentab import __version__, progress, sources
 from opentab.accounting.pricing import (
     MODELS_DEV_URL,
     price_cache_path,
@@ -2231,12 +2231,29 @@ def _run(args: argparse.Namespace) -> int:
         elif source_key not in ("all", "remote") and goto[0] not in source_key.split(","):
             # Merged and fleet views already contain the backend; only override a pinned one.
             source_key = goto[0]
-    store, loading = sources.make_store(args, source_key)
-    sys.stderr.write(loading)
-    sys.stderr.flush()
-    # Invalid custom bindings degrade to defaults and notices, never block startup.
-    bindings.ensure_user_keymap()
-    app = App(store, args, source_key=source_key, keymap=bindings.load_user_keymap())
+    # Live per-harness bars replace the static hint on an interactive terminal.
+    board = progress.wanted()
+    if board:
+        progress.start()
+    try:
+        store, loading = sources.make_store(args, source_key)
+        if not board:
+            sys.stderr.write(loading)
+            sys.stderr.flush()
+        # Invalid custom bindings degrade to defaults and notices, never block startup.
+        bindings.ensure_user_keymap()
+        # CombinedStore tracks each backend itself; a single source needs its own row.
+        row = (
+            contextlib.nullcontext()
+            if getattr(store, "combined", False)
+            else progress.task(getattr(store, "source_name", "") or source_key)
+        )
+        with row as tracked:
+            app = App(store, args, source_key=source_key, keymap=bindings.load_user_keymap())
+            if tracked is not None:
+                tracked.note = progress.note(store)
+    finally:
+        progress.stop()
     if source_key == "remote":
         app._refresh_backend = _make_refresh_fn(args)
         app._ssh_targets = _make_ssh_targets_fn()
