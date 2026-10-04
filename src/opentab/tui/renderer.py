@@ -2909,10 +2909,12 @@ class Renderer:
         title = (
             "Year"
             if year is None
-            else "All years"
+            else f"Range · {self.range_label()}"
             if year.year == ALL_YEARS
             else f"Year {year.year}"
         )
+        if year is not None and year.year != ALL_YEARS and self.range_input_value() != "all":
+            title += f" · {self.range_label()}"
         self.box(stdscr, y, x, h, w, self.panel_title(0, title), active=active)
         if year is None:
             self.write(stdscr, y + 2, x + 2, "No year selected.", curses.color_pair(1))
@@ -3965,10 +3967,15 @@ class Renderer:
         )
 
     def year_overview(self, year: YearSummary, width: int) -> list[str]:
+        aggregate = year.year == ALL_YEARS
+        ranged = aggregate or self.range_input_value() != "all"
+        scope_rows = [f"Range:           {self.range_label()}"] if ranged else []
+        if not aggregate:
+            scope_rows.append(f"Year:            {year.year}")
         lines = self._stat_card(
-            "# Yearly Insight",
-            [
-                f"Year:            {year_label(year.year)}",
+            "# Range Insight" if ranged else "# Yearly Insight",
+            scope_rows
+            + [
                 f"Cost:            {money(year.cost)}",
                 f"Share of range:  {pct(year.cost, self.range_cost_total())}",
                 f"Tokens:          {tokens(year.tokens)}",
@@ -4025,7 +4032,8 @@ class Renderer:
 
     def year_models(self, year: YearSummary, width: int) -> list[str]:
         agg = self.aggregate_models(self.compose_zoom_drills(self.workflows_for_year(year.year)))
-        return self._models_tab(agg, "# Yearly Model Spend", width)
+        title = "# Range Model Spend" if year.year == ALL_YEARS else "# Yearly Model Spend"
+        return self._models_tab(agg, title, width)
 
     def year_sources(self, year: YearSummary, width: int) -> list[str]:
         return self.source_table(
