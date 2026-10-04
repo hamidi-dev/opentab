@@ -68,23 +68,23 @@ independently, and reordering keeps the selected model or harness under the curs
 | Mouse | Wheel scrolls · click selects (anywhere in the preview pane focuses it) · double-click drills · click a tab, or a column header to sort (again to reverse). Inside a turn, click a tool header, arguments or result to select that call; double-click toggles its output. Clicking the Output label selects and toggles it directly |
 
 On **Subagents**, `j`/`k` select an execution, `g`/`G` jump to the first/last,
-and `Enter` or a click opens its full title, received prompt, metadata, contribution
-and exact token/cache breakdown. Where supported, further `Enter` presses drill from
-execution detail into its prompts overview, the selected prompt's turns, then a
-selected turn's trace. `Esc` reverses each step, restoring the execution detail and
-list selection and scroll. The execution detail's select hint follows your remapped
-binding. The overview adds
+and `Enter` or a click opens its compact execution summary, received prompt preview
+and selectable turns directly. Follow-up prompts appear as sections on the same
+page. `Enter` on a turn opens its trace; `Esc` returns to the turns, then directly
+to the execution list with selection and scroll restored. `z` expands/collapses
+full prompts, the full title, metadata, contribution and exact token/cache breakdown.
+Unsupported executions retain their summary detail with an availability explanation.
+Hints and help follow remapped bindings. The overview adds
 delegation counts and shares, plus summaries by agent and representative model.
 Narrow terminals hide optional table columns; the execution detail retains them.
 Shares use summed node metrics, which can differ from session rollups. Models
 are representative, not proof that an execution used only one model.
 
 The nested reader stays inside **Subagents** and shows only that execution's own
-prompts and turns, not its descendants or siblings. `j`/`k` select prompts in the
-overview and turns inside a prompt, then scroll the trace. `g`/`G` select the
-first/last prompt in the overview, the first/last turn inside a prompt, and scroll
-to the top/bottom inside a trace; `[`/`]` step between sibling turns of the same
-prompt, and `z` toggles full content.
+prompts and turns, not its descendants or siblings. `j`/`k` select turns across
+prompt sections, then scroll inside a trace. `g`/`G` select the first/last turn,
+and scroll to the top/bottom inside a trace; `[`/`]` step between turns of this
+execution, including follow-ups, and `z` inside a trace toggles full turn content.
 Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support this drill when exact
 records survive. Gemini, Antigravity and Remote do not; demo blocks it. Missing or
 ambiguous ownership is unavailable, while a valid execution with no turns is empty.

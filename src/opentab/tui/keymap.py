@@ -352,7 +352,7 @@ def _enter_summary(app: App) -> str:
                 if _trace_available(app)
                 else "open the selected turn's numeric token breakdown; no output expansion is available"
             )
-            if app.active_turn_drill is not None
+            if app.reading_turn_list
             else "open the selected prompt"
         )
     if tab == "Models":
@@ -716,6 +716,8 @@ KEYS: tuple[Key, ...] = (
         actions=("trace_prev", "trace_next"),
         summary=lambda app: "previous / next recorded edit for this file"
         if _on_change_diff(app)
+        else "previous / next turn in this execution"
+        if app.active_subagent_turns
         else "previous / next turn in this prompt",
         section="here",
         when=lambda app: _on_trace(app) or _on_change_diff(app),
@@ -725,10 +727,17 @@ KEYS: tuple[Key, ...] = (
         id="trace-expand",
         ctx="main",
         actions=("trace_expand",),
-        summary="expand the full recorded content / return to preview",
+        summary=lambda app: "expand / collapse full prompts and execution details"
+        if app.active_subagent_turns and not _on_trace(app)
+        else "expand the full recorded content / return to preview",
         section="here",
-        when=lambda app: _on_trace(app) and _trace_available(app),
-        chip=lambda app: "collapse" if app.trace_expanded else "expand",
+        when=lambda app: (app.active_subagent_turns and not _on_trace(app))
+        or (_on_trace(app) and _trace_available(app)),
+        chip=lambda app: ("collapse" if app.subagent_expanded else "details")
+        if app.active_subagent_turns and not _on_trace(app)
+        else "collapse"
+        if app.trace_expanded
+        else "expand",
     ),
     Key(
         id="diff-pager",
@@ -760,7 +769,7 @@ KEYS: tuple[Key, ...] = (
         else "diff"
         if app.active_tab_name() == "Changes"
         else "tokens"
-        if _on_turns(app) and app.active_turn_drill is not None and not _trace_available(app)
+        if _on_turns(app) and app.reading_turn_list and not _trace_available(app)
         else "turns"
         if app._on_subagents_tab() and not _on_turns(app) and app.active_subagent_drill is not None
         else "open",
@@ -1116,13 +1125,15 @@ KEYS: tuple[Key, ...] = (
         id="esc",
         ctx="main",
         actions=("back", "cycle_panel_back"),
-        summary=lambda app: "back to this prompt's turns"
+        summary=lambda app: "back to this execution's turns"
+        if _on_trace(app) and app.active_subagent_turns
+        else "back to this prompt's turns"
         if _on_trace(app)
         else "back to the file list"
         if _on_change_diff(app)
         else "back to the prompts"
         if _on_turns(app) and app.active_turn_drill is not None
-        else "back to execution detail"
+        else "back to the executions"
         if app.active_subagent_turns
         else "back to the executions"
         if app._on_subagents_tab() and app.active_subagent_drill is not None
@@ -1135,8 +1146,8 @@ KEYS: tuple[Key, ...] = (
         else "step back out — session → zoom → browse",
         section="nav",
         when=lambda app: in_main(app) and app.view != "browse",
-        chip=lambda app: "execution"
-        if app.active_subagent_turns and app.active_turn_drill is None
+        chip=lambda app: "executions"
+        if app.active_subagent_turns and not _on_trace(app)
         else "back",
         chip_actions=("back",),
     ),
@@ -1155,7 +1166,7 @@ KEYS: tuple[Key, ...] = (
             else "pick a changed file"
             if in_session(app) and app.active_tab_name() == "Changes"
             else "pick a turn"
-            if _on_turns(app) and app.active_turn_drill is not None
+            if _on_turns(app) and app.reading_turn_list
             else "pick a prompt"
             if _on_turns(app)
             else "pick an execution"
@@ -1184,7 +1195,7 @@ KEYS: tuple[Key, ...] = (
         ctx=binding_context,
         actions=("top", "bottom"),
         summary=lambda app: "first / last prompt"
-        if _on_turns(app) and app.active_turn_drill is None
+        if _on_turns(app) and not app.reading_turn_list
         else "first / last turn"
         if _on_turns(app) and app.active_trace_drill is None
         else "first / last execution"
