@@ -660,12 +660,55 @@ KEYS: tuple[Key, ...] = (
         id="trace-scroll",
         ctx="main",
         actions=("down", "up"),
-        summary=lambda app: "scroll this turn; the ▸ marker follows the next output section"
+        summary=lambda app: "scroll this turn without changing the selected tool call"
         if _trace_available(app)
         else "scroll this turn's numeric usage; no recorded output expansion is available",
         section="here",
         when=_on_trace,
         chip=lambda app: "scroll" if _trace_available(app) else "numeric-only",
+    ),
+    Key(
+        id="trace-picker-move",
+        ctx="menu",
+        actions=("down", "up", "first", "last"),
+        summary="move through the call picker",
+        section="here",
+        when=lambda app: app._trace_call_menu is not None,
+        chip="select",
+    ),
+    Key(
+        id="trace-picker-select",
+        ctx="menu",
+        actions=("select",),
+        summary="select this call and jump to it",
+        section="here",
+        when=lambda app: app._trace_call_menu is not None,
+        chip="jump to call",
+    ),
+    Key(
+        id="trace-picker-cancel",
+        ctx="menu",
+        actions=("cancel",),
+        summary="close the picker without changing the selected call",
+        section="here",
+        when=lambda app: app._trace_call_menu is not None,
+        chip="cancel",
+    ),
+    Key(
+        id="trace-calls",
+        actions=("trace_call_prev", "trace_call_next"),
+        summary="select and jump to the previous / next tool call",
+        section="here",
+        when=lambda app: _on_trace(app) and _trace_available(app),
+        chip="call",
+    ),
+    Key(
+        id="trace-call-picker",
+        actions=("trace_calls",),
+        summary="pick a tool call by number, tool name and command",
+        section="here",
+        when=lambda app: _on_trace(app) and _trace_available(app),
+        chip="calls",
     ),
     Key(
         id="trace-siblings",
@@ -828,10 +871,26 @@ KEYS: tuple[Key, ...] = (
     Key(
         id="trace-copy",
         actions=("copy_conversation",),
-        summary="copy the targeted tool call's full arguments and output as Markdown",
+        summary="copy the selected tool call's full arguments and output as Markdown",
         section="here",
         when=lambda app: _on_trace(app) and not app.store.demo,
-        chip="copy call",
+        chip="copy both",
+    ),
+    Key(
+        id="trace-copy-args",
+        actions=("trace_copy_args",),
+        summary="copy the selected command / arguments; shell commands paste directly",
+        section="here",
+        when=lambda app: _on_trace(app) and not app.store.demo,
+        chip="copy cmd",
+    ),
+    Key(
+        id="trace-copy-output",
+        actions=("trace_copy_output",),
+        summary="copy the selected call's recorded output as plain text",
+        section="here",
+        when=lambda app: _on_trace(app) and not app.store.demo,
+        chip="copy output",
     ),
     Key(
         id="copy-conversation",
@@ -1361,10 +1420,14 @@ FOOTER_ORDER = (
     "prices-view",
     "prices-pin",
     "prices-enter",
+    "trace-calls",
+    "trace-call-picker",
+    "trace-copy",
+    "trace-copy-args",
+    "trace-copy-output",
     "trace-siblings",
     "trace-scroll",
     "trace-expand",
-    "trace-copy",
     "diff-layout",
     "diff-pager",
     "enter",
@@ -1430,6 +1493,11 @@ def sections(app: App) -> list[tuple[str, list[Key]]]:
 
 
 def footer_entries(app: App) -> list[Key]:
+    if app._trace_call_menu is not None:
+        return [
+            BY_ID[key]
+            for key in ("trace-picker-move", "trace-picker-select", "trace-picker-cancel")
+        ]
     if in_conversation_search(app):
         ids = (
             ("search-filter-choose", "search-filter-cancel")
@@ -1455,6 +1523,10 @@ def footer_entries(app: App) -> list[Key]:
     entries = []
     for key_id in FOOTER_ORDER:
         if _on_trace(app) and key_id not in (
+            "trace-calls",
+            "trace-call-picker",
+            "trace-copy-args",
+            "trace-copy-output",
             "trace-siblings",
             "trace-scroll",
             "trace-expand",

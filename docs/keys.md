@@ -51,7 +51,7 @@ independently, and reordering keeps the selected model or harness under the curs
 | `t` / `p` / `u` / `m` | Switch to Time / Projects / Harnesses / Machines browse mode. Harnesses opens on `∑ All harnesses`, then one row per loaded harness; Machines opens on `∑ all machines` (the whole fleet as one scope), then one row per box (just this one until you [pull](machines.md) another) |
 | `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
 | `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
-| `Enter` | Drill into the selection; on Turns, open a prompt, then its selected turn. Inside a turn, expand / collapse the `▸` tool's output (at the top of the viewport, or the next below it) |
+| `Enter` | Drill into the selection; on Turns, open a prompt, then its selected turn. Inside a turn, expand / collapse the selected `▸` tool's output |
 | `+` | `expand`: focus detail from browse; maximize / restore the zoom pane. Highlighted only when the visible zoom pane is maximized. Sessions stay full-screen; pressing it there changes the zoom layout on return |
 | `Esc` | Step back out — turn → prompt → session → zoom → browse; returning from a turn keeps the selected row visible |
 | `h` / `l` | Switch detail tabs |
@@ -59,9 +59,13 @@ independently, and reordering keeps the selected model or harness under the curs
 | `PgDn` / `PgUp` | Half a page (`Ctrl-D` / `Ctrl-U` too); `Space` / `Shift-Space` page down / up where supported (see below) |
 | `g` / `G` | Jump to the top / bottom |
 | `[` / `]` | Inside a turn, read the previous / next turn of the same prompt |
+| `{` / `}` | Inside a turn, select and jump to the previous / next tool call |
+| `c` | Inside a turn, pick a call from a numbered list of tool names and commands; `j`/`k` move, `g`/`G` choose first/last, `Enter` jumps, `Esc` cancels |
 | `z` | Inside a turn, expand its full recorded content / collapse to the preview |
-| `y` | Inside a turn, copy the targeted tool call's full recorded command/arguments, parameters and output as Markdown |
-| Mouse | Wheel scrolls · click selects (anywhere in the preview pane focuses it) · double-click drills · click a tab, or a column header to sort (again to reverse). Inside a turn, click a tool header or result to expand / collapse that output independently |
+| `y` | Inside a turn, copy the selected tool call's full recorded command/arguments, parameters and output as Markdown |
+| `Y` | Inside a turn, copy the selected command / arguments; shell commands are plain text ready to paste |
+| `O` | Inside a turn, copy only the selected call's recorded output as plain text |
+| Mouse | Wheel scrolls · click selects (anywhere in the preview pane focuses it) · double-click drills · click a tab, or a column header to sort (again to reverse). Inside a turn, click a tool header, arguments or result to select that call; double-click toggles its output. Clicking the Output label selects and toggles it directly |
 
 On **Subagents**, `j`/`k` select an execution, `g`/`G` jump to the first/last,
 and `Enter` or a click opens its full title, received prompt, metadata, contribution
@@ -103,22 +107,31 @@ text and per-turn rows; `g`/`G` jump to the first/last prompt. Inside a prompt,
 `j`/`k` select a turn, `g`/`G` jump to the first/last turn, and `Enter` opens its
 token breakdown and recorded content where supported. The Content column shows
 text, thinking and tool names where space allows. Inside a turn, `j`/`k` scroll
-while `[`/`]` step between turns. The
-prompt and turn identity stay visible above the transcript. `z` reads the selected
+while `[`/`]` step between turns and `{`/`}` select tool calls. Scrolling never
+changes the selected call. The prompt, turn identity and selected call's number,
+tool name and command stay visible above the transcript; the selected call has a
+highlighted header and accented left gutter. `c` opens a compact, scrollable call
+picker without changing selection until you confirm. In preview mode, the picker
+lists retained preview calls; use `z` for all recorded calls in a long turn.
+`z` reads the selected
 turn's full arguments, reasoning and output; a second `z` returns to the capped preview.
 Expansion is temporary and is released when you leave the turn. Recorded tool
 errors are labeled explicitly. Sources without recorded content still have numeric
 turn detail, but no output expansion. Real content is unavailable in demo mode.
 
-To copy a command and its result, open its turn and press **`y`**. The target is
-the call at the viewport top, or the next call below it; scroll to choose another
-call in the same turn. Copy reads the full recorded text even when the call is
+To copy a command and its result, select its call and press **`y`**. Use **`Y`**
+for the command / arguments alone or **`O`** for output alone. The pinned header
+identifies the target before copying, and the confirmation names its call number,
+tool and copied part. Copy reads the full recorded text even when the call is
 collapsed, preserving spacing and long lines inside Markdown code fences. It
 includes the tool name, recorded status and other parameters; empty output stays
-empty. Missing source content leaves the clipboard untouched, and any recorded
+empty in the combined copy; copying an empty part leaves the clipboard untouched.
+Missing source content also leaves the clipboard untouched, and any recorded
 output omissions are labeled. Nested Subagents traces copy the selected execution's
 call; remote traces reuse the already fetched turn. Demo disables copy. This uses
 the same remappable `[main] copy_conversation` binding as session chat copy.
+The additional actions are `trace_call_prev`, `trace_call_next`, `trace_calls`,
+`trace_copy_args` and `trace_copy_output`; the picker uses the shared `[menu]` bindings.
 
 Prompt and turn details show a colored token breakdown and exact counts. Prompt
 totals sum the answering turns, not the text you typed. One-hour cache writes are

@@ -39,6 +39,28 @@ def test_tool_call_markdown_preserves_raw_text_and_uses_safe_fences():
     assert "Recorded output incomplete: 900 characters omitted." in incomplete
 
 
+def test_tool_arguments_copy_keeps_shell_pasteable_and_other_tool_parameters():
+    command = "  printf 'Grüße 界'\t\n" + "echo end\n"
+    for name in ("shell", "Bash", "functions.shell", "functions.exec_command"):
+        assert (
+            exporting.tool_call_arguments(
+                {
+                    "name": name,
+                    "args": command,
+                    "params": [("workdir", "/a b"), ("timeout", "120000")],
+                }
+            )
+            == command
+        )
+    text = exporting.tool_call_arguments(
+        {"name": "read", "args": "/a b/界.py", "params": [("offset", "40"), ("limit", "100")]}
+    )
+    assert (
+        text.startswith("/a b/界.py\n\n") and '"offset": "40"' in text and '"limit": "100"' in text
+    )
+    assert exporting.tool_call_arguments({"name": "shell"}) == ""
+
+
 def test_copy_conversation_keeps_full_root_text_and_reads_freshly_from_list_and_detail():
     app = _app_on_session([workflow("root", "2026-06-01")], "root")
     long_text = "Grüße 界\n" * 20000  # Larger than API windows and trace previews.

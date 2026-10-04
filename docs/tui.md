@@ -549,13 +549,22 @@ directory eligibility, remote CLI compatibility and trace command configuration.
 
 Individual tool outputs expand independently using that same one-turn read.
 Only opened outputs substitute their full event content; neighboring outputs
-and arguments retain preview limits. Enter targets the output at the viewport
-top or the next below it; mouse regions identify an event directly. Expansion
+and arguments retain preview limits. Enter targets the explicitly selected call;
+an empty result never falls through to another call. Mouse regions identify an event directly. Expansion
 anchors scrolling to the section. Whole-turn expansion is a separate action.
 
-The contextual conversation-copy binding copies one tool call while a trace is
-open. A separate ordered call-end map includes tools with empty output without
-changing Enter's output targets. Copy uses full keyed source events or the current
+The App owns the selected call's event index, independently of viewport scrolling.
+`{`/`}` select and jump between calls, and `c` opens a numbered picker using the shared
+menu bindings. Selection initializes to the first call on loading, survives reflow
+and expansion, and resets on navigation/reload. A pinned call header and highlighted
+call gutter expose the same target used by expansion and all copy actions. The
+renderer caches bounded labels and call-start positions alongside the one-turn
+layout; selection and picker movement require no wrapping or source reads.
+
+The contextual conversation-copy binding copies the selected call and output while
+a trace is open; separate actions copy command/arguments or output as plain text.
+Shell command-only copy omits ancillary parameters so it can be pasted directly;
+other tools retain their additional parameters. Copy uses full keyed source events or the current
 turn's loaded full content, never wrapped display lines. Local copy-only reads are
 not cached; nested reads route through the execution-scoped reader, and remote
 copy reuses the already fetched turn. Demo, loading, missing and changed calls
@@ -572,7 +581,7 @@ Commands and results never undergo Markdown or numeric highlighting.
 
 Wrapped trace lines and output hit regions are reused until content, width,
 pricing, bindings or expansion state changes. Scrolling slices only the viewport;
-output targeting uses ordered section ends, and target markers and expansion
+output availability uses section metadata, and selection markers and expansion
 hints are applied only to painted lines. No wrapping or session-wide pricing
 and grouping runs on a warm reader frame.
 
