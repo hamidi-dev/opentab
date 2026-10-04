@@ -139,9 +139,10 @@ See [note storage](privacy.md#notes-are-authored-data).
 
 ## Browser session tabs are missing
 
-`opentab web --html FILE` produces a static snapshot without Turns, Tools or
-Context. Use `opentab web` or `opentab web --headless` for live details. Even live,
-tabs depend on the selected session's retained data; older fleet summaries may
+`opentab web --html FILE` omits Turns, Tools and Context by default. Add
+`--include-details` to embed them for offline use, or use `opentab web` /
+`opentab web --headless` for live details. In either mode, tabs depend on the
+selected session's retained data; older fleet summaries may
 have only rollups. Re-export on the source machine if its records still exist.
 Raw turn traces and notes are available in the TUI and gated CLI/MCP API, not
 browser tabs. [Remote traces](machines.md#read-a-remote-turn) require an explicit

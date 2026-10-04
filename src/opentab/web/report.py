@@ -1,9 +1,9 @@
 """Serialize the headless App for a self-contained export or local web server.
 
 Each cost travels as recorded and API-equivalent values, so `$` remains a
-client-side field swap. Static exports omit lazy session extras; `--serve`
-fetches them on drill-in, matching the TUI's startup boundary. Data sources stay
-read-only; only an explicitly requested HTML report is written.
+client-side field swap. Static exports omit session extras unless explicitly
+requested with --include-details; live reports fetch them on drill-in. Data
+sources stay read-only; only an explicitly requested HTML report is written.
 """
 
 from __future__ import annotations
@@ -499,6 +499,12 @@ def session_extras(app: App, workflow_id: str) -> dict:
 
 def html_command(app: App, args: argparse.Namespace) -> int:
     payload = build_payload(app)
+    if getattr(args, "include_details", False):
+        # Reuse the live projection: prompts and numeric detail, never raw traces.
+        # Iterate exactly the exported catalog, honoring hidden-session policy.
+        payload["sessionExtras"] = {
+            w["id"]: session_extras(app, w["id"]) for w in payload["workflows"]
+        }
     path = os.path.expanduser(args.html or DEFAULT_REPORT)
     text = render_html(payload)
     with open(path, "w", encoding="utf-8") as fh:

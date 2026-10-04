@@ -627,6 +627,34 @@ def test_web_html_command_writes_the_report_file():
     assert "keydown" in text  # the j/k/Tab/h/l/Esc/$/T/P/R handler
 
 
+def test_web_detailed_html_embeds_live_projection_only_on_request():
+    from unittest.mock import patch
+
+    args = cli.parse_args(["web", "--html", "--include-details", "--no-state"])
+    app = ot.App(ToolsExplorerFakeStore([workflow("w1", "2026-05-01 10:00:00")]), args)
+    expected = report.session_extras(app, "w1")
+    with tempfile.TemporaryDirectory() as tmp:
+        args.html = os.path.join(tmp, "report.html")
+        args.include_details = False
+        with patch.object(report, "session_extras", side_effect=AssertionError("eager extras")):
+            report.html_command(app, args)
+        with open(args.html, encoding="utf-8") as fh:
+            plain = fh.read()
+        assert '"sessionExtras"' not in plain
+
+        args.include_details = True
+        report.html_command(app, args)
+        with open(args.html, encoding="utf-8") as fh:
+            text = fh.read()
+    payload = json.loads(re.search(r'id="opentab-data">(.*?)</script>', text, re.S)[1])
+    assert payload["sessionExtras"] == {"w1": expected}
+    assert payload["meta"]["serve"] is False
+    assert expected["turns"][0]["promptFull"] == "do the thing\nand do it properly, with tests"
+    assert expected["tools"] and expected["toolCalls"] and expected["context"]
+    assert text.count("</script>") == 2  # hostile tool labels stay JSON-escaped
+    assert "never-ship-this" not in text  # no arguments, results or raw content keys
+
+
 def test_web_daily_trend_charts_only_active_days():
     page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-07-01 10:00:00")])))
     # The Daily tab charts only up to the last day with spend, not the full calendar
@@ -921,6 +949,70 @@ const history = {
   back() { this.state = this.entries.pop(); listeners.popstate({state:this.state}); }
 };
 """
+
+
+def test_web_embedded_details_navigate_offline_without_stale_session_data():
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for offline browser navigation"
+    args = cli.parse_args(["web", "--html", "--include-details", "--no-state"])
+    app = ot.App(
+        ToolsExplorerFakeStore(
+            [workflow("w1", "2026-05-01 10:00:00"), workflow("w2", "2026-05-02 10:00:00")]
+        ),
+        args,
+    )
+    payload = ot.build_payload(app)
+    payload["sessionExtras"] = {"w1": report.session_extras(app, "w1"), "w2": {}}
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    result = subprocess.run(
+        [node, "-"],
+        input=_WEB_DOM_JS
+        + "\ndocument.getElementById('opentab-data').textContent = "
+        + json.dumps(json.dumps(payload))
+        + ";\n"
+        + "global.requestAnimationFrame = () => 1; global.cancelAnimationFrame = () => {};\n"
+        + shipped
+        + r"""
+function render() {
+  const sc = curScope(); ensureExtras(sc);
+  const tabs = tabsFor(sc); if (!tabs.includes(TAB)) TAB = tabs[0];
+  renderTabs(sc, tabs); renderDetail(sc, scopeWorkflows(sc));
+}
+const view = document.getElementById('view');
+function all(el, tag) { return [...(el.tag === tag ? [el] : []), ...el.children.flatMap(n => all(n, tag))]; }
+render();
+assert.deepEqual(tabsFor(curScope()), ['Overview','Subagents','Turns','Tools','Context']);
+assert.ok(!view.textContent.includes('--include-details'));
+TAB = 'Turns'; render();
+assert.ok(view.textContent.includes('do the thing'));
+TAB = 'Tools'; openToolDrill('tool', 'Bash');
+const row = all(view, 'tr').find(r => String(r.attrs['aria-label'] || '').startsWith('Open owning turn'));
+assert.ok(row); row.events.click();
+assert.equal(TAB, 'Turns'); assert.equal(TURN_DRILL, 0);
+assert.ok(view.textContent.includes('selected call 1 owns highlighted turn 1'));
+assert.ok(all(view, 'details').some(r => r.attrs.open != null));
+setCostMode(MODE === 'api' ? 'real' : 'api');
+assert.equal(TAB, 'Turns'); assert.equal(TOOL_TURN.turnIndex, 0);
+TAB = 'Context'; abandonToolNavigation(); render();
+assert.ok(view.textContent.includes('Context · window usage'));
+assert.ok(EXTRAS.context.points.length);
+location.hash = '#/s/w2'; resetScopeState(); render();
+assert.equal(EXTRAS.id, 'w2'); assert.deepEqual(EXTRAS.turns, []);
+assert.equal(EXTRAS.context, null); assert.equal(TOOL_DRILL, null);
+assert.deepEqual(tabsFor(curScope()), ['Overview','Subagents']);
+location.hash = '#/s/w1'; resetScopeState(); render();
+assert.equal(EXTRAS.turns.length, 2);
+delete DATA.sessionExtras; location.hash = '#/s/w2'; resetScopeState(); render();
+assert.ok(view.textContent.includes('--include-details'));
+assert.deepEqual(tabsFor(curScope()), ['Overview','Subagents']);
+assert.equal(requests.length, 0);
+""",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_web_execution_details_execute_shipped_javascript():
