@@ -8,6 +8,65 @@ import opentab as ot
 from tests._support import CopilotEstimateStore, copilot_prices, tier_prices, workflow
 
 
+def test_claude_fast_mode_reprices_cold_and_warm_rollups_after_catalog_addition():
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+    from opentab.accounting.tiers import row_list_cost
+
+    from tests._support import _claude_msg, _usage, _write_jsonl
+
+    name = "claude-opus-99-42"
+    models = {name: {"cost": [5, 25, 0.5, 6.25]}}
+    layers = [
+        pricing._parse_catalog(
+            {"providers": {"anthropic": {"models": models}}, "fetched_at": "2099"}
+        )
+    ]
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(
+        os.environ, {"XDG_CACHE_HOME": tmp}
+    ), patch.object(pricing, "_layers", return_value=layers):
+        root = os.path.join(tmp, "projects")
+        os.makedirs(root)
+        messages = []
+        for uid, speed in (("a", "standard"), ("b", "fast")):
+            message = _claude_msg(
+                "s1", name, _usage(1000, 500, 2000, 300), uuid=uid, mid=uid, req=uid, cwd=tmp
+            )
+            message["message"]["usage"]["speed"] = speed
+            messages.append(message)
+        _write_jsonl(os.path.join(root, "s1.jsonl"), messages)
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        cold = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+        cold.workflows()
+        rows = cold.model_breakdown()
+        normal = next(r for r in rows if not r["model_name"].endswith("-fast"))
+        fast = next(r for r in rows if r["model_name"].endswith("-fast"))
+        assert row_list_cost(normal) == row_list_cost(fast) > 0
+        before = row_list_cost(fast)
+        models[name + "-fast"] = {"cost": [10, 50, 1, 12.5]}
+        layers[:] = [
+            pricing._parse_catalog(
+                {"providers": {"anthropic": {"models": models}}, "fetched_at": "2099"}
+            )
+        ]
+        pricing.invalidate_price_cache()
+        assert row_list_cost(fast) == before * 2
+        backend = ot.ClaudeStore(root, args)
+        with patch.object(
+            backend, "workflows", side_effect=AssertionError("warm reparse")
+        ), patch.object(
+            backend, "model_breakdown", side_effect=AssertionError("warm model reparse")
+        ):
+            warm = ot.CachedStore(backend, "claude|" + root, args)
+            warm.workflows()
+            assert warm.served_from_cache
+            restored = warm.model_breakdown()
+            assert restored == rows
+            assert sum(row_list_cost(r) for r in restored) == before * 3
+    pricing.invalidate_price_cache()
+
+
 def test_opencode_model_cache_reuses_validated_inputs_after_metadata_only_write():
     import argparse
     from unittest.mock import patch

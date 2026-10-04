@@ -247,6 +247,8 @@ def test_whatif_price_refresh_drops_a_target_that_lost_its_list_rate():
         ot.tui.app.refresh_model_prices = lambda *a, **k: (0, "/tmp/prices.json")  # no network
         try:
             app.refresh_prices_action()
+            assert app._price_refresh_job.done.wait(5)
+            app.poll_price_refresh()
         finally:
             ot.tui.app.refresh_model_prices = orig
         # The target is dropped -- not left armed to reprice at FALLBACK_PRICE. (The

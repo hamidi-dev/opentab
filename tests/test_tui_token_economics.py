@@ -95,6 +95,8 @@ def test_tier_overview_projections_reuse_prices_and_refresh_on_rates_and_usage()
         tier["cost"] = [2 * value for value in tier["cost"]]
         with patch.object(app_mod, "refresh_model_prices", return_value=(1, "fixture")):
             app.refresh_prices_action()
+            assert app._price_refresh_job.done.wait(5)
+            app.poll_price_refresh()
         after = app.token_economics(app.loaded)
         assert abs(after.total_cost - before.total_cost * 2) < 1e-9
 

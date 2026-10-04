@@ -1019,7 +1019,7 @@ def test_custom_date_validation_cancel_and_panel_return():
     ws.filter_text = "2026-08-31..2026-09-19"
     ws.handle_key(10, bindings.DEFAULT)
     assert ws.scope["since"] == "2026-08-31" and ws.scope["until"] == "2026-09-19"
-    assert ws.filter_menu == "filters" and ws.date_label == "2026-08-31..2026-09-19"
+    assert ws.filter_menu == "filters" and ws.date_label == "2026-08-31..2026-09-19 (UTC)"
     ws.choose_filter(2)
     ws.choose_filter(4)
     ws.handle_key(27, bindings.DEFAULT)

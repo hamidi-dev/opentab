@@ -153,14 +153,23 @@ def test_note_alias_selection_and_removal_read_the_file_inside_the_lock():
     for text in ("new", ""):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp}):
             assert ot.save_notes({"native": "legacy"})
-            original_lock, original_read = notes_module._locked, notes_module._read_raw
+            original_lock, original_read = notes_module._locked, notes_module._read_document
             locked = [False]
 
             @contextmanager
             def alias_appears_before_lock(lock=original_lock, status=locked):
-                assert ot.save_notes(
-                    {"native": "legacy", "qualified": "concurrent", "other": "keep"}
-                )
+                with open(ot.notes_path(), "w") as fh:
+                    json.dump(
+                        {
+                            "version": 1,
+                            "notes": {
+                                "native": "legacy",
+                                "qualified": "concurrent",
+                                "other": "keep",
+                            },
+                        },
+                        fh,
+                    )
                 with lock():
                     status[0] = True
                     try:
@@ -168,12 +177,12 @@ def test_note_alias_selection_and_removal_read_the_file_inside_the_lock():
                     finally:
                         status[0] = False
 
-            def read_inside_lock(read=original_read, status=locked):
+            def read_inside_lock(path=None, read=original_read, status=locked):
                 assert status[0]
-                return read()
+                return read(path)
 
             with patch.object(notes_module, "_locked", alias_appears_before_lock), patch.object(
-                notes_module, "_read_raw", read_inside_lock
+                notes_module, "_read_document", read_inside_lock
             ):
                 updated, error = ot.update_note("native", text, qualified_id="qualified")
             expected = {"other": "keep"}
@@ -209,6 +218,36 @@ def test_note_save_keeps_entries_it_does_not_understand():
     }
     assert app.notes == {"a": "mine", "b": "new note"}  # ... but memory stays displayable
     os.unlink(ot.notes_path())
+
+
+def test_notes_preserve_unknown_envelope_and_refuse_future_or_invalid_versions():
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp}):
+        path = ot.notes_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        for version in (1, 2, "1", None, True, -1):
+            payload = {"version": version, "notes": {"a": "keep"}, "metadata": {"extra": [1, 2]}}
+            original = json.dumps(payload)
+            with open(path, "w") as fh:
+                fh.write(original)
+            _, error = ot.update_note("b", "new")
+            if isinstance(version, int) and not isinstance(version, bool) and version == 1:
+                assert not error
+                with open(path) as fh:
+                    saved = json.load(fh)
+                assert saved == dict(payload, notes={"a": "keep", "b": "new"})
+            else:
+                assert error
+                assert ot.load_notes() == {"a": "keep"}
+                if version == 2:
+                    assert error == "newer_version"
+                    assert ot.read_notes() == ({"a": "keep"}, True)
+                    app = _app_on_session([workflow("a", "2026-06-01 12:00:00")], "a")
+                    assert app.refresh_notes() and app.note_for("a") == "keep"
+                    app.set_note(app.current_session(), "replace")
+                    assert "newer" in app.notice and app.note_for("a") == "keep"
+                assert not ot.save_notes({"b": "direct write"})
+                with open(path) as fh:
+                    assert fh.read() == original
 
 
 def test_note_save_fails_cleanly_on_content_json_cannot_write():

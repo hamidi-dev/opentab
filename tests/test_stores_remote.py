@@ -336,6 +336,38 @@ def test_malformed_extras_rows_normalize_instead_of_crashing():
         assert crow["est_tokens"] == 0 and crow["count"] == 0
 
 
+def test_remote_numeric_validation_covers_rollups_models_and_all_detail_rows():
+    import math
+
+    for bad in (None, [], {}, "oops", float("nan"), float("inf"), -10, 10**400):
+        payload = _summary("box", [workflow("bad", "2026-07-15"), workflow("good", "2026-07-15")])
+        payload["workflows"][0].update(total_cost=bad, total_tokens=bad, worked_seconds=bad)
+        payload["workflows"][1]["total_cost"] = "12"
+        payload["model_breakdown"] = [
+            {"root_id": "bad", "cost": bad, "tokens_total": bad, "input": bad}
+        ]
+        payload["nodes"] = {"bad": [{"cost": bad, "tokens_total": bad}]}
+        payload["turns"] = {"bad": [{"cost": bad, "input": bad, "tokens_total": bad}]}
+        payload["tools"] = {"bad": [{"cost": bad, "calls": bad, "input": bad}]}
+        payload["context"] = {"bad": [{"count": bad, "est_tokens": bad}]}
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "box.json", payload)
+            store = ot.RemoteStore(d, _parse([]))
+            assert [w.total_cost for w in store.workflows()] == [12.0, 0.0]
+            assert store.workflows()[1].worked_seconds is None
+            assert math.isfinite(store.summary(store.workflows())["cost"])
+            for row in (
+                store.model_breakdown()[0],
+                store.workflow_nodes("bad")[0],
+                store.message_timeline("bad")[0],
+                store.tool_breakdown("bad")[0],
+                store.context_breakdown("bad")[0],
+            ):
+                for key in ("cost", "tokens_total", "input", "calls", "count", "est_tokens"):
+                    if key in row:
+                        assert row[key] == 0, (bad, key, row)
+
+
 def test_machine_stats_reports_per_machine_sessions_and_bytes():
     big = [workflow("a", "2026-07-15 10:00:00", cost=2.0), workflow("b", "2026-07-16 10:00:00")]
     with tempfile.TemporaryDirectory() as d:

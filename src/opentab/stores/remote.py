@@ -10,7 +10,6 @@ import argparse
 import copy
 import glob
 import json
-import math
 import os
 import threading
 from dataclasses import asdict, fields
@@ -21,7 +20,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import request_context, valid_pricing
 from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scramble_workflow
 from opentab.persistence import paths
-from opentab.util import safe_float, tool_names
+from opentab.util import safe_float, safe_int, tool_names
 
 # Portable exports evolve independently from the local warm-start cache.
 EXPORT_VERSION = 2  # v2 adds the per-session Turns/Tools/Context extras (see build_export)
@@ -41,17 +40,11 @@ _NODE_INT_FIELDS = (
 
 
 def _coerce_int(value) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+    return safe_int(value)
 
 
 def _coerce_float(value) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+    return max(0.0, safe_float(value))
 
 
 # Extra rows are untrusted and must expose every field their renderers index.
@@ -111,7 +104,7 @@ def _clean_tool(row: dict) -> dict:
         # Tool attribution divides request usage between calls; retain fractions so
         # its request buckets can still reconcile after a machine round trip.
         tool[field] = (
-            _coerce_int(row.get(field)) if field == "calls" else safe_float(row.get(field))
+            _coerce_int(row.get(field)) if field == "calls" else _coerce_float(row.get(field))
         )
     if "pricing" in row:
         tool["pricing"] = row["pricing"]
@@ -137,10 +130,7 @@ def _clean_node(row: dict) -> dict:
         "created_at": str(row.get("created_at") or ""),
         "model_name": str(row.get("model_name") or "unknown"),
     }
-    try:
-        node["cost"] = float(row.get("cost") or 0.0)
-    except (TypeError, ValueError):
-        node["cost"] = 0.0
+    node["cost"] = _coerce_float(row.get("cost"))
     node["estimated_cost"] = max(0.0, safe_float(row.get("estimated_cost")))
     for field in _NODE_INT_FIELDS:
         node[field] = _coerce_int(row.get(field))
@@ -175,7 +165,7 @@ def _clean_model_pricing(rows) -> list[dict] | None:
                 if (
                     isinstance(value, bool)
                     or not isinstance(value, (int, float))
-                    or not math.isfinite(value)
+                    or safe_float(value, -1) < 0
                     or value < 0
                 ):
                     return None
@@ -454,9 +444,26 @@ class RemoteStore:
                 # Keep only fields this opentab knows: a newer export with extra
                 # fields must load, not crash (forward compatibility).
                 clean = {k: v for k, v in row.items() if k in _WF_FIELDS}
-                if clean.get("usage_seconds") is not None:
-                    seconds = safe_float(clean["usage_seconds"], -1)
-                    clean["usage_seconds"] = seconds if seconds >= 0 else None
+                for field in (
+                    "root_cost",
+                    "total_cost",
+                    "real_total_cost",
+                    "real_root_cost",
+                    "api_total_cost",
+                    "api_root_cost",
+                ):
+                    if field in clean:
+                        clean[field] = _coerce_float(clean[field])
+                for field in ("subagents", "model_count", "total_tokens", "unpriced_tokens"):
+                    if field in clean:
+                        clean[field] = _coerce_int(clean[field])
+                for field in ("worked_seconds", "usage_seconds"):
+                    if clean.get(field) is not None:
+                        seconds = safe_float(clean[field], -1)
+                        clean[field] = seconds if seconds >= 0 else None
+                for field in ("title", "directory", "created_at", "ended_at", "source"):
+                    if field in clean:
+                        clean[field] = str(clean[field] or "")
                 if clean.get("usage_status") not in ("running", "unconfirmed", "confirmed"):
                     clean["usage_status"] = ""
                 # A session id must be a real string: it's the key for dedup, for the
@@ -488,11 +495,28 @@ class RemoteStore:
                 rid = row.get("root_id")
                 if isinstance(rid, str) and rid in kept:
                     model = dict(row)
+                    model["model_name"] = str(model.get("model_name") or "unknown")
+                    for field in ("cost", "root_cost", "estimated_cost", "root_estimated_cost"):
+                        if field in model or field == "cost":
+                            model[field] = _coerce_float(model.get(field))
+                    for field in ("runs", "tokens_total", "root_tokens_total"):
+                        if field in model or field == "tokens_total":
+                            model[field] = _coerce_int(model.get(field))
+                    for prefix in ("", "root_", "unpriced_", "root_unpriced_"):
+                        for field in (
+                            "input",
+                            "output",
+                            "reasoning",
+                            "cache_read",
+                            "cache_write",
+                            "cache_write_1h",
+                            "inferred_cache_write",
+                        ):
+                            key = prefix + field
+                            if key in model:
+                                model[key] = _coerce_float(model[key])
                     if not valid_pricing(model):
                         model.pop("pricing", None)
-                    for field in ("estimated_cost", "root_estimated_cost"):
-                        if field in model:
-                            model[field] = max(0.0, safe_float(model[field]))
                     models.append(model)
             nd = data.get("nodes")
             for sid, rows in nd.items() if isinstance(nd, dict) else ():

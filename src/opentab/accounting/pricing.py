@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -506,7 +507,9 @@ def invalidate_price_cache() -> None:
     model_tiers.cache_clear()
 
 
-def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> tuple[int, str]:
+def refresh_model_prices(
+    url: str = MODELS_DEV_URL, dest: str | None = None, *, invalidate: bool = True
+) -> tuple[int, str]:
     # The only runtime network path, reached only through an explicit refresh.
     from urllib.request import Request, urlopen
 
@@ -526,17 +529,38 @@ def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> 
         "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "providers": providers,
     }
-    tmp = f"{path}.tmp"
-    with open(tmp, "w") as fh:
-        json.dump(payload, fh)
-    os.replace(tmp, path)
-    invalidate_price_cache()
+    fd, tmp = tempfile.mkstemp(
+        prefix=os.path.basename(path) + ".", suffix=".tmp", dir=os.path.dirname(path)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    # A background fetch publishes to disk only; its UI owner adopts rates on the
+    # main thread, keeping in-memory pricing caches out of the worker's lifecycle.
+    if invalidate:
+        invalidate_price_cache()
     return count, path
+
+
+def _mode_price_name(name: str) -> str:
+    """Retain mode identity in usage even while its rate card is unavailable."""
+    if (
+        str(name).endswith("-fast")
+        and model_family(name) == "anthropic"
+        and not has_catalog_row(name)
+    ):
+        return name[:-5]
+    return name
 
 
 def model_price(
     name: str, context_tokens: float | None = None
 ) -> tuple[float, float, float, float]:
+    name = _mode_price_name(name)
     if context_tokens is not None:
         for size, price in reversed(model_tiers(name)):
             if context_tokens > size:
@@ -587,6 +611,7 @@ def model_tiers(name: str) -> tuple:
     """Return the selected rate card's context tiers, with the same alias/route rules."""
     if is_local_provider(name):
         return ()
+    name = _mode_price_name(name)
     card = _copilot_card(name)
     if card is not None:
         return tuple(
@@ -656,6 +681,7 @@ def has_known_price(name: str) -> bool:
     """
     if is_local_provider(name):
         return False
+    name = _mode_price_name(name)
     mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     plain = display_model(mid)
     if any(mid in prices or plain in prices for prices, _limits, _tree, _meta, _v in _layers()):
@@ -667,9 +693,8 @@ def has_catalog_row(name: str) -> bool:
     """Whether the catalog carries this EXACT id, not a family rule that merely reaches it.
 
     has_known_price() answers "can this be priced at all", and its family fallbacks match
-    any spelling containing the needle -- "claude-haiku-4-5-fast" included, at the plain
-    model's rate. A caller asking whether an id genuinely EXISTS (a mode suffix worth
-    splitting a model row over) has to compare against the rows themselves.
+    any spelling containing the needle -- "claude-haiku-4-5-fast" included. A caller
+    resolving a retained mode's rate must distinguish its card from that fallback.
     """
     mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     return any(mid in prices for prices, _limits, _tree, _meta, _vendor in _layers())
@@ -677,7 +702,7 @@ def has_catalog_row(name: str) -> bool:
 
 def model_context_window(name: str) -> int:
     # Local models still have context windows, so unlike price resolution they do not short-circuit.
-    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
+    mid = _gpt_version_to_dots(str(_mode_price_name(name)).rsplit("/", 1)[-1].lower())
     for _prices, limits, _tree, _meta, _vendor in _layers():
         if mid in limits:
             return limits[mid]

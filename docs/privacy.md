@@ -96,7 +96,9 @@ advisory locks; locking is best-effort elsewhere, including native Windows.
 
 An unreadable or malformed notes file is **not treated as an empty notebook**:
 OpenTab reports the problem and refuses to overwrite it. Unknown entries in the
-`notes` map survive edits, and missing session IDs are never garbage-collected, even
+`notes` map and unknown top-level metadata survive edits. A newer-format file stays
+readable but cannot be edited by an older OpenTab; upgrade to edit it. Missing
+session IDs are never garbage-collected, even
 after transcripts rotate away. Back up `notes.json`; unlike a rollup cache, it cannot
 be rebuilt from harness records.
 

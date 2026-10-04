@@ -133,13 +133,13 @@ class SearchWorkspace:
         current = self._date_preset()
         labels = {
             "all": "Any time",
-            "today": "Today",
-            "7d": "Last 7 days",
-            "30d": "Last 30 days",
+            "today": "Today (UTC)",
+            "7d": "Last 7 days (UTC)",
+            "30d": "Last 30 days (UTC)",
         }
         if current in labels:
             return labels[current]
-        return f"{self.scope.get('since') or '...'}..{self.scope.get('until') or '...'}"
+        return f"{self.scope.get('since') or '...'}..{self.scope.get('until') or '...'} (UTC)"
 
     @property
     def filter_current(self) -> str | None:
@@ -491,10 +491,10 @@ class SearchWorkspace:
         if self.filter_menu == "date":
             return [
                 ("all", "Any time", True),
-                ("today", "Today", True),
-                ("7d", "Last 7 days", True),
-                ("30d", "Last 30 days", True),
-                ("custom", "Custom...", True),
+                ("today", "Today (UTC)", True),
+                ("7d", "Last 7 days (UTC)", True),
+                ("30d", "Last 30 days (UTC)", True),
+                ("custom", "Custom (UTC)...", True),
             ]
         return []
 

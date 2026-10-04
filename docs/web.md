@@ -227,7 +227,7 @@ it in the browser. Keep these boundaries when adding a field or interaction:
 - **Two cost snapshots.** Preserve recorded (`real`) and API-equivalent (`api`)
   values; `$` swaps fields in the browser. The session-only `w` comparison uses
   per-model token splits and list rates, not another global cost mode.
-- **Text stays text.** `render_html()` escapes the title and `</` in embedded JSON,
+- **Text stays text.** `render_html()` escapes the title and every `<` in embedded JSON,
   inserting the payload last. Browser helpers create text nodes for user content.
   Preserve those boundaries rather than interpolating prompts into HTML.
 - **Release content stays shared.** Both frontends read the validated bundled resource
@@ -237,7 +237,10 @@ it in the browser. Keep these boundaries when adding a field or interaction:
   handlers would change their access assumptions.
 - **Capabilities and mutations.** Static pages make no session-detail requests;
   live extras honor per-session capabilities. Reload (`/api/reload`) and remote
-  refresh (`/api/refresh`) are POST-only. Refresh accepts one nonempty machine name,
+  refresh (`/api/refresh`) are POST-only and require `Content-Type: application/json`.
+  Cross-site fetches and supplied Origins that differ from the request's HTTP origin
+  are rejected before mutations; no cross-origin preflight is granted.
+  Refresh accepts one nonempty machine name,
   never an arbitrary URL or shell command from the browser, and demo blocks it.
 - **Execution prompts are opt-in.** Only `GET /api/node-prompt?session=<id>&node=<index>&snapshot=<nonce>`
   calls `App.read_node_prompt`, never payload building, session extras or prefetch.

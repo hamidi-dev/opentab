@@ -508,7 +508,13 @@ def test_date_picker_shows_presets_and_custom_dates_explain_utc():
     ws.open_filter("date")
     text = screen_text(_paint(app, 20, 80))
     assert "Message dates (UTC), not session start dates" in text
-    for label in ("Any time", "Today", "Last 7 days", "Last 30 days", "Custom..."):
+    for label in (
+        "Any time",
+        "Today (UTC)",
+        "Last 7 days (UTC)",
+        "Last 30 days (UTC)",
+        "Custom (UTC)...",
+    ):
         assert label in text
     ws.choose_filter(4)
     text = screen_text(_paint(app, 20, 80))

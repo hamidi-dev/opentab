@@ -835,6 +835,22 @@ def test_service_note_and_preference_mutations_use_authored_xdg_files():
                     os.environ[key] = value
 
 
+def test_service_reads_future_notes_but_refuses_edits_without_losing_envelope():
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp}):
+        path = Path(ot.notes_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = json.dumps({"version": 2, "notes": {"a": "keep"}, "future": [1, 2]})
+        path.write_text(original)
+        service = ot.OpenTabService(DetailStore([workflow("a", "2026-09-01")]), _args())
+        assert service.get_note("a")["note"] == "keep"
+        try:
+            service.set_note("a", "replace")
+            raise AssertionError("future notes were overwritten")
+        except ot.ServiceError as exc:
+            assert exc.code == "notes_newer_version" and "upgrade" in str(exc)
+        assert path.read_text() == original
+
+
 def test_model_catalog_static_path_matches_instance_api_with_state_and_paging():
     rows = [
         ("openai", "gpt-5", (1.25, 10, 0.125, 0), "active"),
