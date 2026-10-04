@@ -50,7 +50,10 @@ from opentab.stores.gemini import (
 from opentab.tui import bindings
 from opentab.util import (
     env_flag,
+    herdr_renders_palette,
+    herdr_server_version,
     init_color_allowed,
+    palette_write_host,
     palette_writes_ignored,
     terminal_multiplexers,
     unicode_screen,
@@ -598,9 +601,15 @@ def _multiplexer_row(colors: int | None, muxes: list[str]) -> Row:
         )
     name = found[0]
     if name == "herdr":
+        version = herdr_server_version()
+        shown = ".".join(map(str, version)) if version else "version unknown"
+        if herdr_renders_palette():
+            return Row(INFO, "multiplexer", f"herdr {shown} — renders palette writes")
         # Leave the actionable warning to the colours row.
         return Row(
-            INFO, "multiplexer", "herdr — known to discard palette writes (see colours, below)"
+            INFO,
+            "multiplexer",
+            f"herdr {shown} — releases before 0.8.2 discard palette writes (see colours, below)",
         )
     if "tmux" in name and colors is not None and 0 < colors < 256:
         # Low colour inside tmux is fixed in tmux, not by overriding TERM in the pane.
@@ -676,7 +685,7 @@ def terminal_rows() -> list[Row]:
             Row(
                 WARN,
                 "colours",
-                "nearest-256 — this host stores palette writes and renders the index instead (herdr, via $HERDR_ENV)",
+                f"nearest-256 — this host stores palette writes and renders the index instead ({palette_write_host()})",
                 f"themes still work, the hues are approximated; {_export('OPENTAB_NO_INIT_COLOR', '0', shell)} forces the exact path back on",
             )
         )

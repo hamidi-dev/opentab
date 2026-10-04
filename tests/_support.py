@@ -1,7 +1,11 @@
 import hashlib
 import json
 import os
+import shutil
+import socket
 import sqlite3
+import tempfile
+import threading
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -1545,3 +1549,39 @@ def _ag_subagent_step(seconds, child_sid, parent_sid, agent="Joke Writer"):
         _pb_msg(4, _pb_bytes(2, parent_sid), _pb_bytes(3, child_sid)),
     )
     return (101, _ag_step_meta(seconds), payload)
+
+
+@contextmanager
+def fake_herdr(version: str):
+    """Run a herdr socket that answers ping with ``version``, exported like a pane does."""
+    root = tempfile.mkdtemp(prefix="herdr")
+    path = os.path.join(root, "h.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+
+    def answer():
+        conn, _ = server.accept()
+        with conn:
+            request = json.loads(conn.makefile().readline())
+            reply = {
+                "id": request["id"],
+                "result": {"type": "pong", "version": version, "protocol": 22},
+            }
+            conn.sendall((json.dumps(reply) + "\n").encode())
+
+    thread = threading.Thread(target=answer, daemon=True)
+    thread.start()
+    saved = {k: os.environ.get(k) for k in ("HERDR_ENV", "HERDR_SOCKET_PATH")}
+    os.environ.update(HERDR_ENV="1", HERDR_SOCKET_PATH=path)
+    ot.util._HERDR_VERSION = False
+    try:
+        yield
+    finally:
+        ot.util._HERDR_VERSION = False
+        for key, value in saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+        server.close()
+        shutil.rmtree(root, ignore_errors=True)

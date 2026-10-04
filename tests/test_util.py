@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import opentab as ot
 
-from tests._support import app_with, workflow
+from tests._support import app_with, fake_herdr, workflow
 
 
 def test_resolve_project_root_folds_worktree():
@@ -999,6 +999,34 @@ def test_palette_writes_ignored_detects_herdr_only_by_its_own_marker():
         os.environ.pop("HERDR_ENV", None)
         if saved is not None:
             os.environ["HERDR_ENV"] = saved
+
+
+def test_herdr_from_0_8_2_renders_palette_writes_by_its_server_version():
+    for version, ignored in (
+        ("0.9.3", False),
+        ("0.8.2", False),
+        ("0.8.0", True),
+        ("garbage", True),
+    ):
+        with fake_herdr(version):
+            assert ot.util.palette_writes_ignored() is ignored, version
+
+
+def test_palette_writes_ignored_detects_konsole_by_its_own_marker():
+    # Konsole paints its own 256-colour palette after an init_color write (issue #26).
+    saved = os.environ.get("KONSOLE_VERSION"), os.environ.get("HERDR_ENV")
+    try:
+        os.environ.pop("HERDR_ENV", None)
+        os.environ.pop("KONSOLE_VERSION", None)
+        assert ot.util.palette_write_host() is None
+        os.environ["KONSOLE_VERSION"] = "240802"
+        assert ot.util.palette_writes_ignored() is True
+        assert "Konsole" in ot.util.palette_write_host()
+    finally:
+        for name, value in zip(("KONSOLE_VERSION", "HERDR_ENV"), saved):
+            os.environ.pop(name, None)
+            if value is not None:
+                os.environ[name] = value
 
 
 def test_safe_int_and_safe_float_reject_every_number_a_log_can_hold_but_a_float_cannot():

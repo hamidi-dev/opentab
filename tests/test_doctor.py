@@ -12,7 +12,7 @@ import opentab as ot
 from opentab.cli import doctor
 from opentab.cli import main as cli
 
-from tests._support import _parse
+from tests._support import _parse, fake_herdr
 
 # Every harness path flag, so a test namespace can point all of them somewhere empty --
 # a report that reads the developer's real ~/.claude would assert differently on every
@@ -32,6 +32,8 @@ _ENV_KEYS = (
     "GEMINI_CLI_HOME",
     "OPENTAB_NO_INIT_COLOR",
     "HERDR_ENV",
+    "HERDR_SOCKET_PATH",
+    "KONSOLE_VERSION",
     "WSL_DISTRO_NAME",
     "TMUX",
     "STY",
@@ -56,8 +58,10 @@ def _clean_env(**over):
         os.environ["TERM"] = "xterm-256color"
         for key, value in over.items():
             os.environ[key] = value
+        ot.util._HERDR_VERSION = False
         yield
     finally:
+        ot.util._HERDR_VERSION = False
         for key, value in saved.items():
             os.environ.pop(key, None)
             if value is not None:
@@ -711,6 +715,7 @@ def test_the_colour_verdict_tracks_util_rather_than_re_deriving_the_rule():
         ({}, True),
         ({"HERDR_ENV": "1"}, False),
         ({"HERDR_ENV": "1", "OPENTAB_NO_INIT_COLOR": "0"}, True),
+        ({"KONSOLE_VERSION": "240802"}, False),
         ({"OPENTAB_NO_INIT_COLOR": "1"}, False),
     ):
         with _clean_env(**env):
@@ -725,6 +730,9 @@ def test_a_detected_palette_dropping_host_warns_while_an_explicit_optout_does_no
     # Detected = they don't know yet, and the colours look wrong.
     with _clean_env(HERDR_ENV="1"):
         assert next(r for r in doctor.terminal_rows() if r.label == "colours").status == doctor.WARN
+    with _clean_env(KONSOLE_VERSION="240802"):
+        row = next(r for r in doctor.terminal_rows() if r.label == "colours")
+        assert row.status == doctor.WARN and "Konsole" in row.detail
     with _clean_env(OPENTAB_NO_INIT_COLOR="1"):
         assert next(r for r in doctor.terminal_rows() if r.label == "colours").status == doctor.INFO
 
@@ -851,6 +859,15 @@ def test_herdr_states_the_fact_and_leaves_the_warning_to_the_colours_row():
         mux = next(r for r in rows if r.label == "multiplexer")
         assert mux.status == doctor.INFO and "discard palette writes" in mux.detail
         assert next(r for r in rows if r.label == "colours").status == doctor.WARN
+
+
+def test_herdr_with_the_palette_fix_gets_exact_colours():
+    # herdr 0.8.2 renders OSC 4 overrides (herdrdev/herdr#2162); the server decides.
+    for version, exact in (("0.9.3", True), ("0.7.5", False)):
+        with _clean_env(), fake_herdr(version):
+            rows = doctor.terminal_rows()
+            assert version in next(r for r in rows if r.label == "multiplexer").detail
+            assert ("exact" in next(r for r in rows if r.label == "colours").detail) is exact
 
 
 def test_inside_tmux_the_colour_fix_is_tmuxs_setting_not_the_terminals():

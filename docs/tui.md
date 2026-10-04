@@ -388,7 +388,9 @@ direct truecolor SGR output. `_slot` reserves indices with bit 3 clear and
 terminals that apply "bold is bright" beyond the base ANSI palette.
 
 `can_change_color()` reports a terminfo claim, not proof that palette writes
-reach the display. `palette_writes_ignored()` detects known hosts such as herdr.
+reach the display. `palette_writes_ignored()` detects known hosts: Konsole, and
+herdr servers before 0.8.2 (asked over `$HERDR_SOCKET_PATH`; an unknown version
+keeps the fallback).
 `OPENTAB_NO_INIT_COLOR=1` forces approximation; `=0` overrides detection in the
 other direction. This terminal-specific environment choice is not persisted.
 
