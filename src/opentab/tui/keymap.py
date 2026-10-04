@@ -345,7 +345,7 @@ def _enter_summary(app: App) -> str:
         return "open the selected session"
     if _on_turns(app):
         if app.active_trace_drill is not None:
-            return "expand / collapse the output at the top of the viewport (or the next below)"
+            return "expand / collapse the output of the selected tool call"
         return (
             (
                 "open the selected turn"

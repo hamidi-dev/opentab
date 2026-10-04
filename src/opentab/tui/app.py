@@ -2636,6 +2636,8 @@ class App:
         self._trace_call_menu = calls.index(selected) if selected in calls else 0
 
     def handle_trace_call_menu_key(self, key) -> bool:
+        if key == 3:  # Ctrl-C still quits
+            return False
         calls = list(self.renderer._trace_calls)
         act = self.keymap.action("menu", key)
         if not calls or act == "cancel":
