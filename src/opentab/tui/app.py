@@ -558,6 +558,9 @@ class App:
         self._trace_list_scroll = 0
         self.trace_expanded = False
         self._trace_open_outputs: set[int] = set()
+        self._trace_selected_call: int | None = None
+        self._trace_call_follow = False
+        self._trace_call_menu: int | None = None
         self._trace_full: tuple[str, str, list[dict]] | None = None
         self._trace_loading: tuple[str, str] | None = None
         self._remote_trace_job = None
@@ -2589,6 +2592,11 @@ class App:
         self.renderer._trace_tool_at = {}
         self.renderer._trace_output_ends = []
         self.renderer._trace_call_ends = []
+        self.renderer._trace_calls = {}
+        self._trace_call_menu = None
+        self._trace_call_follow = False
+        if not keep_remote:
+            self._trace_selected_call = None
         if self._remote_trace_job is not None:
             self._remote_trace_job[3].cancel()
             self._remote_trace_job = None
@@ -2599,6 +2607,49 @@ class App:
         self._trace_open_outputs.clear()
         self._trace_full = None
         self._trace_loading = None
+
+    def select_trace_call(self, event_index: int, *, follow: bool = True) -> bool:
+        if not self._on_turns_tab() or self.active_trace_drill is None:
+            return False
+        if self._trace_loading is not None or event_index not in self.renderer._trace_calls:
+            return False
+        self._trace_selected_call = event_index
+        self._trace_call_follow = follow
+        return True
+
+    def step_trace_call(self, delta: int) -> None:
+        calls = list(self.renderer._trace_calls)
+        if not calls:
+            return
+        selected = self._trace_selected_call
+        pos = calls.index(selected) if selected in calls else (-1 if delta > 0 else len(calls))
+        self.select_trace_call(calls[max(0, min(pos + delta, len(calls) - 1))])
+
+    def open_trace_call_menu(self) -> None:
+        if not self._on_turns_tab() or self.active_trace_drill is None:
+            return
+        calls = list(self.renderer._trace_calls)
+        if not calls or self._trace_loading is not None:
+            self.notify("no recorded tool calls ready to select", "warn")
+            return
+        selected = self._trace_selected_call
+        self._trace_call_menu = calls.index(selected) if selected in calls else 0
+
+    def handle_trace_call_menu_key(self, key) -> bool:
+        calls = list(self.renderer._trace_calls)
+        act = self.keymap.action("menu", key)
+        if not calls or act == "cancel":
+            self._trace_call_menu = None
+        elif act == "select":
+            index = max(0, min(self._trace_call_menu, len(calls) - 1))
+            self.select_trace_call(calls[index])
+            self._trace_call_menu = None
+        elif act in ("up", "down", "first", "last"):
+            index = self._trace_call_menu + (1 if act == "down" else -1)
+            if act in ("first", "last"):
+                index = 0 if act == "first" else len(calls) - 1
+            self._trace_call_menu = max(0, min(index, len(calls) - 1))
+        return True
 
     def toggle_trace_output(self, event_index: int | None = None) -> bool:
         wf = self.current_session()
@@ -2618,6 +2669,7 @@ class App:
         event = events[event_index]
         if event.get("kind") != "tool" or not (event.get("output") or event.get("output_dropped")):
             return False
+        self._trace_selected_call = event_index
         if event_index in self._trace_open_outputs:
             self._trace_open_outputs.remove(event_index)
         else:
@@ -4734,8 +4786,8 @@ class App:
         # generous width only does the ~ swap here, no clipping).
         self.notify(f"exported {len(rows)} rows → {short_path(path, 999)}", "success")
 
-    def copy_trace_call(self, stdscr=None) -> None:
-        """Copy the targeted call's source text, never its rendered preview."""
+    def copy_trace_call(self, stdscr=None, *, part: str = "both") -> None:
+        """Copy the selected call's source text, never its rendered preview."""
         if self.store.demo:
             self.notify("tool call copy disabled in demo mode", "error")
             return
@@ -4751,7 +4803,7 @@ class App:
         target = self.renderer.trace_call_target()
         key = rows[idx].get("content_key") if 0 <= idx < len(rows) else None
         if not key or target is None:
-            self.notify("no recorded tool call at or below the viewport", "warn")
+            self.notify("no recorded tool call selected", "warn")
             return
         try:
             preview = self.turn_trace_events(wf.id, rows[idx])
@@ -4782,15 +4834,32 @@ class App:
             if not matches:
                 self.notify("recorded call changed or disappeared; reopen the turn", "warn")
                 return
-            text = exporting.tool_call_markdown(events[target])
+            event = events[target]
+            if part == "args":
+                text = exporting.tool_call_arguments(event)
+            elif part == "output":
+                text = str(event.get("output") or "")
+            else:
+                text = exporting.tool_call_markdown(event)
         except Exception:  # noqa: BLE001 -- raw source errors must not leak content or close the TUI
             self.notify("tool call copy failed: source is unavailable", "error")
             return
-        if util.copy_to_clipboard(text):
-            incomplete = bool(events[target].get("output_dropped"))
-            suffix = "; recorded output is incomplete" if incomplete else ""
+        if not text:
             self.notify(
-                f"copied tool call and output ({len(text):,} characters){suffix}",
+                f"selected call has no recorded {'output' if part == 'output' else 'arguments'}",
+                "warn",
+            )
+            return
+        if util.copy_to_clipboard(text):
+            incomplete = part != "args" and bool(events[target].get("output_dropped"))
+            suffix = "; recorded output is incomplete" if incomplete else ""
+            calls = list(self.renderer._trace_calls)
+            number = calls.index(target) + 1
+            label = {"args": "command / arguments", "output": "output", "both": "command + output"}[
+                part
+            ]
+            self.notify(
+                f"copied call {number}/{len(calls)} · {util.short_tool_name(str(event.get('name') or '(unknown)'))} · {label} ({len(text):,} characters){suffix}",
                 "warn" if incomplete else "success",
             )
         else:
@@ -8073,6 +8142,8 @@ class App:
             return self.handle_filter_key(key)
         if self.launch_menu is not None:
             return self.handle_launch_key(key)
+        if self._trace_call_menu is not None:
+            return self.handle_trace_call_menu_key(key)
         act = self.keymap.action("main", key)
         if key == 3 or act == "quit":
             return False
@@ -8212,6 +8283,16 @@ class App:
             return True
         if act == "export":
             self.export_current()
+            return True
+        if act in ("trace_copy_args", "trace_copy_output"):
+            if self._on_turns_tab() and self.active_trace_drill is not None:
+                self.copy_trace_call(stdscr, part="args" if act == "trace_copy_args" else "output")
+            return True
+        if act == "trace_calls":
+            self.open_trace_call_menu()
+            return True
+        if act in ("trace_call_prev", "trace_call_next"):
+            self.step_trace_call(-1 if act == "trace_call_prev" else 1)
             return True
         if act == "copy_conversation":
             if self._on_turns_tab() and self.active_trace_drill is not None:
@@ -8595,6 +8676,18 @@ class App:
                 self.launch_menu = None  # click cancels the launch picker
                 self.launch_menu_backend = None
             return True
+        if self._trace_call_menu is not None:
+            if up or down:
+                calls = self.renderer._trace_calls
+                self._trace_call_menu = max(
+                    0, min(self._trace_call_menu + (-1 if up else 1), len(calls) - 1)
+                )
+            elif click or double:
+                target = self.renderer.hit(my, mx)
+                if target and target[0] == "trace-call-pick":
+                    self.select_trace_call(target[1])
+                self._trace_call_menu = None
+            return True
         if keymap.in_conversation_search(self):
             ws = self.conversation_search
             if ws.consent or ws.filter_field:
@@ -8885,7 +8978,13 @@ class App:
 
     def _apply_click(self, target: tuple[str, int], drill: bool) -> None:
         kind, value = target
+        if kind == "trace-call":
+            self.select_trace_call(value, follow=False)
+            if drill:
+                self.toggle_trace_output(value)
+            return
         if kind == "trace-output":
+            self.select_trace_call(value, follow=False)
             self.toggle_trace_output(value)
             return
         if kind == "modetab":

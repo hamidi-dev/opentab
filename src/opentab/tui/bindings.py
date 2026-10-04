@@ -184,6 +184,11 @@ REGISTRY: tuple[Context, ...] = (
             Action("trace_prev", ("[",), "previous turn or recorded edit"),
             Action("trace_next", ("]",), "next turn or recorded edit"),
             Action("trace_expand", ("z",), "expand / collapse this turn's content"),
+            Action("trace_call_prev", ("{",), "select the previous tool call"),
+            Action("trace_call_next", ("}",), "select the next tool call"),
+            Action("trace_calls", ("c",), "pick a tool call in this turn"),
+            Action("trace_copy_args", ("Y",), "copy the selected command / arguments"),
+            Action("trace_copy_output", ("O",), "copy the selected tool output"),
             *_SCROLL,
             Action("tab_prev", ("h", "left"), "previous detail tab"),
             Action("tab_next", ("l", "right"), "next detail tab"),
@@ -208,7 +213,9 @@ REGISTRY: tuple[Context, ...] = (
             Action("show_bookmarks", ("B",), "show only bookmarked sessions"),
             Action("note", ("n",), "note ✎ this session"),
             Action("export", ("e",), "export this list to CSV"),
-            Action("copy_conversation", ("y",), "copy session chat / targeted turn tool call"),
+            Action(
+                "copy_conversation", ("y",), "copy session chat / selected tool call and output"
+            ),
             Action("open_dir", ("o",), "open the selection's directory"),
             Action("launch", ("L",), "resume this session in its own tool"),
             Action("whatif", ("w",), "what-if — reprice a session at one model"),

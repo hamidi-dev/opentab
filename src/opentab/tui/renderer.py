@@ -125,7 +125,7 @@ from opentab.tui.components.token_cards import (
     token_economics_card,
 )
 from opentab.tui.search_layout import conversation_layout, snippet_lines
-from opentab.tui.trace import TraceLine, output_target
+from opentab.tui.trace import TraceLine, call_label
 from opentab.tui.views import prices as price_view
 from opentab.tui.views import subagents as subagents_view
 from opentab.tui.views import tools as tools_view
@@ -293,6 +293,7 @@ class Renderer:
         self._tool_header_at: dict[int, int] = {}
         self._tool_call_at: dict[int, int] = {}
         self._tool_cursor_line: int | None = None
+        self._trace_calls: dict[int, tuple[str, int]] = {}
         self._subagent_header_at: dict[int, int] = {}
         self._subagent_cursor_line: int | None = None
         self._change_row_at: dict[int, int] = {}
@@ -956,6 +957,8 @@ class Renderer:
             self.draw_sort_menu(stdscr, height, width)
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
+        elif self.app._trace_call_menu is not None:
+            self.draw_trace_call_menu(stdscr, height, width)
 
         # Toasts float above modals, except their own history reader.
         self.draw_toasts(stdscr, height, width)
@@ -3229,10 +3232,30 @@ class Renderer:
         turns = self.app._on_turns_tab()
         tracing = turns and self.app.active_trace_drill is not None
         body_start = 0
+        body_y = y + 3
         if tracing and lines:
             # The turn's identity stays above the scrolling transcript, below the tabs.
             self.write(stdscr, y + 2, x + 2, shorten(lines[0], w - 4), curses.A_BOLD)
             body_start = 2
+            visible = max(0, visible - 1)
+            body_y += 1
+            target = self.trace_call_target()
+            calls = self._trace_calls
+            if target is not None:
+                number = list(calls).index(target) + 1
+                label = f"▸ Call {number}/{len(calls)} · {calls[target][0]}"
+            elif self.app._trace_loading is not None:
+                label = "Tool calls loading…"
+            else:
+                label = "No tool call selected"
+            if not self.app.trace_expanded and len(calls):
+                label += " · preview"
+            self.write(
+                stdscr, y + 3, x + 2, shorten(label, w - 4), curses.color_pair(6) | curses.A_BOLD
+            )
+            if self.app._trace_call_follow and target is not None:
+                self.app.scroll = calls[target][1]
+                self.app._trace_call_follow = False
 
         if turns and self.app._turn_follow:
             # Follow is one-shot and must run before the scroll clamp.
@@ -3269,7 +3292,7 @@ class Renderer:
             )
         paint_scroll = 0 if loading_content else self.scroll
         drawn = lines[body_start + paint_scroll : body_start + paint_scroll + visible]
-        target = self.trace_output_target() if tracing else None
+        target = self.trace_call_target() if tracing else None
         for offset, line in enumerate(drawn):
             attr = self.line_attr(line)
             if (
@@ -3288,14 +3311,14 @@ class Renderer:
             ):
                 # Select by line index, not a display glyph. paint_cursor_row preserves
                 # gutters and prevents rich number colors from shredding the highlight.
-                self.paint_cursor_row(stdscr, y + 3 + offset, x + 2, line, w - 4)
+                self.paint_cursor_row(stdscr, body_y + offset, x + 2, line, w - 4)
                 continue
             if not tracing and (
                 line in self._box_headers or self.scroll + offset in self._line_sort_headers
             ):
-                self._paint_box_header(stdscr, y + 3 + offset, x + 2, line, w - 4)
+                self._paint_box_header(stdscr, body_y + offset, x + 2, line, w - 4)
                 self._register_line_sort_header(
-                    y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
+                    body_y + offset, x + 2, self.scroll + offset, line, w - 4
                 )
                 continue
             if current == "Context":
@@ -3308,6 +3331,8 @@ class Renderer:
             if tracing:
                 if isinstance(line, TraceLine) and line.event is not None:
                     if line.role in ("tool", "error"):
+                        if line.event == target:
+                            attr |= curses.A_REVERSE | curses.A_BOLD
                         line = ("▸" if line.event == target else "·") + line[1:]
                     elif (
                         line.role == "meta"
@@ -3316,31 +3341,42 @@ class Renderer:
                     ):
                         line = " · ".join(line.split(" · ")[:2])
                 # $1 in a shell script is not money, and 1.0M in output is not a token count.
-                self.write(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+                self.write(stdscr, body_y + offset, x + 2, shorten(line, w - 4), attr)
+                event = getattr(drawn[offset], "event", None)
+                if event is not None and event == target and line.startswith(("│", "╰")):
+                    self.write(
+                        stdscr,
+                        body_y + offset,
+                        x + 2,
+                        line[0],
+                        curses.color_pair(6) | curses.A_BOLD,
+                    )
                 # Trace prose deliberately bypasses write_rich, but numeric token bands
                 # still need their semantic colors overpainted explicitly.
-                self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
-                event = getattr(drawn[offset], "event", None)
+                self._paint_token_runs(stdscr, body_y + offset, x + 2, line, w - 4)
                 if event is not None:
-                    self._add_rows_region(
-                        "trace-output", y + 3 + offset, x + 2, x + w - 3, event, 1
+                    kind = (
+                        "trace-output"
+                        if drawn[offset].role == "meta" and line.startswith("│  Output ·")
+                        else "trace-call"
                     )
+                    self._add_rows_region(kind, body_y + offset, x + 2, x + w - 3, event, 1)
                 continue
             if isinstance(line, ChangeLine):
                 # Source paths and patches are inert text: no money/token/heading parser.
-                self.paint_change_line(stdscr, y + 3 + offset, x + 2, line, w - 4)
+                self.paint_change_line(stdscr, body_y + offset, x + 2, line, w - 4)
                 continue
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
-            self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
+            self.write_rich(stdscr, body_y + offset, x + 2, shorten(line, w - 4), attr)
+            self._paint_token_runs(stdscr, body_y + offset, x + 2, line, w - 4)
             if current == "Tools":
                 self._paint_tool_tree_runs(
-                    stdscr, y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
+                    stdscr, body_y + offset, x + 2, self.scroll + offset, line, w - 4
                 )
             self._register_line_sort_header(
-                y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
+                body_y + offset, x + 2, self.scroll + offset, line, w - 4
             )
-        if turns:
-            self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
+        if turns and not tracing:
+            self._add_rows_region("turnline", body_y, x + 2, x + w - 3, self.scroll, len(drawn))
         if current == "Subagents" and not turns:
             self._add_rows_region("subagentline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
         if current == "Tools":
@@ -3350,7 +3386,7 @@ class Renderer:
             self._add_rows_region("changeline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
         if not loading_content:
             self._paint_scrollbar(
-                stdscr, y + 3, x + w - 1, len(lines) - body_start, visible, self.scroll
+                stdscr, body_y, x + w - 1, len(lines) - body_start, visible, self.scroll
             )
 
     def _scroll_turn_cursor_into_view(self, visible: int) -> None:
@@ -4683,11 +4719,15 @@ class Renderer:
                 self._trace_output_ends,
                 dict(self._token_runs),
                 self._trace_call_ends,
+                self._trace_calls,
             )
             self._trace_layout_cache = cached
         self._trace_tool_at, self._trace_output_ends = cached[5:7]
         self._token_runs.update(cached[7])
         self._trace_call_ends = cached[8]
+        self._trace_calls = cached[9]
+        if self.app._trace_selected_call is None and self._trace_calls:
+            self.app._trace_selected_call = next(iter(self._trace_calls))
         return cached[4]
 
     def _build_turn_trace(
@@ -4696,6 +4736,7 @@ class Renderer:
         self._trace_tool_at = {}
         self._trace_output_ends = []
         self._trace_call_ends = []
+        self._trace_calls = {}
         siblings = self.app.drilled_turn_indices()
         if idx not in siblings:
             return []
@@ -4735,16 +4776,25 @@ class Renderer:
         self._trace_tool_at = layout.tool_lines
         self._trace_output_ends = layout.output_ends
         self._trace_call_ends = layout.call_ends
+        self._trace_calls = {
+            line.event: (call_label(events[line.event]), index - 2)
+            for index, line in enumerate(layout.lines)
+            if isinstance(line, TraceLine)
+            and line.role in ("tool", "error")
+            and line.event is not None
+        }
         self._token_runs.update(layout.token_runs)
         return layout.lines
 
     def trace_output_target(self) -> int | None:
-        """The output section at the viewport top, or the next one below it."""
-        return output_target(self._trace_output_ends, self.app.scroll)
+        """Expansion and copying always address the same explicitly selected call."""
+        target = self.trace_call_target()
+        return target if any(event == target for _end, event in self._trace_output_ends) else None
 
     def trace_call_target(self) -> int | None:
-        """The call at the viewport top, or the next below it, including empty results."""
-        return output_target(getattr(self, "_trace_call_ends", []), self.app.scroll)
+        """Scrolling never changes the selected call."""
+        target = self.app._trace_selected_call
+        return target if target in self._trace_calls else None
 
     def detail_turn_drill(self, workflow: Workflow, width: int) -> list[str]:
         """Render one prompt's full text, totals, and turns."""
@@ -5972,6 +6022,34 @@ class Renderer:
             self._menu_title("Sort by", "menu.sort"),
             self._menu_lines(layout),
         )
+
+    def draw_trace_call_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        calls = list(self._trace_calls.items())
+        if not calls:
+            return
+        index = max(0, min(self.app._trace_call_menu, len(calls) - 1))
+        visible = max(1, scr_h - 10)
+        start = max(0, min(index - visible // 2, len(calls) - visible))
+        lines = []
+        for pos in range(start, min(len(calls), start + visible)):
+            event, (label, _line) = calls[pos]
+            marker = "▸" if event == self.app._trace_selected_call else " "
+            attr = curses.A_REVERSE | curses.A_BOLD if pos == index else curses.A_NORMAL
+            lines.append((shorten(f"{marker} {pos + 1:02}  {label}", max(12, scr_w - 12)), attr))
+        lines += [
+            ("", 0),
+            (
+                f"{index + 1}/{len(calls)} · {'full turn' if self.app.trace_expanded else 'preview calls; expand turn for all'}",
+                curses.color_pair(1),
+            ),
+        ]
+        # This modal owns hit testing; never let a row click reach the transcript behind it.
+        self.regions.clear()
+        y, x, _h, w = self.draw_modal(
+            stdscr, scr_h, scr_w, self._menu_title("Tool calls", "menu"), lines
+        )
+        for offset, (event, _row) in enumerate(calls[start : start + visible]):
+            self._add_rows_region("trace-call-pick", y + 2 + offset, x + 1, x + w - 2, event, 1)
 
     def draw_launch_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `L` picker: a small modal of launch targets. One keystroke picks (handled in

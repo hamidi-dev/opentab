@@ -2111,6 +2111,7 @@ def test_subagent_turns_render_regions_cursor_trace_styles_and_execution_header(
             y
             for (y, x), ch in screen.cells.items()
             if ch == "g"
+            and y > 3
             and "git diff" in "".join(screen.cells.get((y, c), " ") for c in range(120))
         )
         assert screen.attrs[(command, 5)] == ot.curses.A_NORMAL
@@ -4668,7 +4669,7 @@ def test_long_turn_list_scroll_bounds_layout_work_and_session_resolution():
             assert app.scroll <= rnd._turn_cursor_line < app.scroll + 47
 
 
-def test_expanded_trace_scroll_reuses_layout_and_moves_output_targets():
+def test_expanded_trace_scroll_reuses_layout_and_keeps_selected_call():
     app = _trace_app()
     app.can_switch_source = lambda: False
     app.store._CONTENT["k0"] = [
@@ -4701,6 +4702,9 @@ def test_expanded_trace_scroll_reuses_layout_and_moves_output_targets():
             assert app.scroll == 20
             assert rnd.trace_output_target() == 0
             app.scroll = max(line for line, event in rnd._trace_tool_at.items() if event == 0) + 1
+            rnd.draw(screen)
+            assert rnd.trace_output_target() == 0
+            app.handle_key(None, ord("}"))
             rnd.draw(screen)
             assert rnd.trace_output_target() == 1
             assert "▸ second" in screen_text(screen)
@@ -5138,7 +5142,7 @@ def test_trace_styles_cover_whole_blocks_and_stay_visible_while_scrolling():
         dollar = next(
             (y, x)
             for (y, x), ch in screen.cells.items()
-            if ch == "$" and screen.cells.get((y, x + 2)) != "."
+            if y > 3 and ch == "$" and screen.cells.get((y, x + 2)) != "."
         )
         assert screen.attrs[dollar] == ot.curses.A_NORMAL
     finally:
@@ -5189,6 +5193,7 @@ def test_trace_copy_reads_full_targeted_call_and_preserves_reader_state():
     )
     app.open_trace_drill()
     app.renderer.detail_turn_trace(app.current_session(), 50)
+    app.handle_key(None, ord("}"))
     app.scroll = app.renderer._trace_call_ends[0][0] + 1
     state = (app.scroll, app.trace_expanded, set(app._trace_open_outputs))
     with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
@@ -5197,7 +5202,7 @@ def test_trace_copy_reads_full_targeted_call_and_preserves_reader_state():
     app.store.turn_content.assert_called_with(app.current_session().id, content_key="k0")
     assert "PRIVATE NARRATION" not in copied.call_args.args[0]
     assert (app.scroll, app.trace_expanded, app._trace_open_outputs) == state
-    assert app._trace_full is None and "copied tool call" in app.notice
+    assert app._trace_full is None and "copied call 2/2 · shell · command + output" in app.notice
 
 
 def test_trace_copy_empty_result_remapping_and_contextual_help():
@@ -5205,18 +5210,156 @@ def test_trace_copy_empty_result_remapping_and_contextual_help():
     app.store._CONTENT["k0"] = [{"kind": "tool", "name": "shell", "args": "true", "output": ""}]
     app.open_trace_drill()
     app.renderer.detail_turn_trace(app.current_session(), 80)
-    app.keymap = ot.tui.bindings.Keymap({("main", "copy_conversation"): ["Y"]})
-    assert "Y copy call" in str(ot.keymap.footer_parts(app))
+    app.keymap = ot.tui.bindings.Keymap({("main", "copy_conversation"): ["ctrl-y"]})
+    assert "^Y copy both" in str(ot.keymap.footer_parts(app))
     assert ot.keymap.BY_ID["trace-copy"].shown(app)
     assert not ot.keymap.BY_ID["copy-conversation"].shown(app)
     with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
         app.handle_key(None, ord("y"))
         copied.assert_not_called()
-        app.handle_key(None, ord("Y"))
+        app.handle_key(None, 25)
         assert "true" in copied.call_args.args[0]
     app.handle_key(None, 27)
     assert ot.keymap.BY_ID["copy-conversation"].shown(app)
     assert not ot.keymap.BY_ID["trace-copy"].shown(app)
+
+
+def test_trace_selected_call_drives_copy_modes_even_after_scrolling_away():
+    app = _trace_app()
+    command = "printf '  Grüße 界\\n'\n  echo done\n"
+    output = "  first\n\n\tlast  \n"
+    app.store._CONTENT["k0"] = [
+        {"kind": "tool", "name": "shell", "args": "true", "output": ""},
+        {"kind": "text", "text": "Between calls"},
+        {
+            "kind": "tool",
+            "name": "shell",
+            "args": command,
+            "params": [("workdir", "/a b")],
+            "output": output,
+        },
+    ]
+    app.open_trace_drill()
+    app.renderer.detail_turn_trace(app.current_session(), 40)
+    assert app.renderer.trace_call_target() == 0
+    assert app.renderer.trace_output_target() is None
+    app.handle_key(None, 10)  # Empty output must not expand a different call.
+    assert not app._trace_open_outputs
+    app.keymap = ot.tui.bindings.Keymap({("main", "trace_call_next"): [")"]})
+    app.handle_key(None, ord(")"))
+    assert app.renderer.trace_call_target() == 2
+    app.scroll = 10000  # Selection, not the viewport, owns all three copy actions.
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+        app.handle_key(None, ord("Y"))
+        copied.assert_called_with(command)
+        assert "copied call 2/2" in app.notice and "command / arguments" in app.notice
+        app.handle_key(None, ord("O"))
+        copied.assert_called_with(output)
+        app.handle_key(None, ord("y"))
+        assert command in copied.call_args.args[0] and output in copied.call_args.args[0]
+        assert '"workdir": "/a b"' in copied.call_args.args[0]
+        app.handle_key(None, ord("{"))
+        copied.reset_mock()
+        app.handle_key(None, ord("O"))
+        copied.assert_not_called()
+        assert "no recorded output" in app.notice
+    assert app._trace_full is None
+
+
+def test_trace_call_picker_scrolls_to_selection_and_cancels_without_moving_it():
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {"kind": "tool", "name": "shell", "args": f"echo call-{i}", "output": ""} for i in range(40)
+    ]
+    app.open_trace_drill()
+    rnd = app.renderer
+    rnd.detail_turn_trace(app.current_session(), 76)
+    app.handle_key(None, ord("c"))
+    app.handle_key(None, ord("G"))
+    assert app._trace_call_menu == 39 and rnd.trace_call_target() == 0
+    with patch.object(ot.curses, "color_pair", lambda n: n << 8):
+        for height, width in ((20, 80), (40, 140)):
+            screen = AttrScreen(height, width)
+            rnd.draw_trace_call_menu(screen, height, width)
+            text = screen_text(screen)
+            assert "echo call-39" in text and "40/40" in text
+            row = next(
+                (y, x)
+                for (y, x), ch in screen.cells.items()
+                if ch == "e" and rnd.hit(y, x) == ("trace-call-pick", 39)
+            )
+            assert screen.attrs[row] & ot.curses.A_REVERSE
+    app.handle_key(None, ord("r"))  # No global key leaks through the picker.
+    assert app._trace_call_menu == 39
+    app.handle_key(None, 27)
+    assert app._trace_call_menu is None and rnd.trace_call_target() == 0
+    app.handle_key(None, ord("c"))
+    app.handle_key(None, ord("G"))
+    app.handle_key(None, 10)
+    assert app._trace_call_menu is None and rnd.trace_call_target() == 39
+    app._nodes_by_session[app.current_session().id] = []
+    with patch.object(ot.curses, "color_pair", lambda n: n << 8):
+        screen = AttrScreen(20, 80)
+        rnd.draw_detail(screen, 0, 0, 20, 80)
+        assert "Call 40/40 · shell · echo call-39" in screen_text(screen)
+        assert app.scroll > 0 and not app._trace_call_follow
+        app.handle_key(None, ord("c"))
+        app.handle_key(None, ord("g"))
+        rnd.draw_trace_call_menu(screen, 20, 80)
+        region = next(r for r in rnd.regions if r[:2] == ("rows", "trace-call-pick"))
+        # Region format is exercised through hit(), as the real mouse dispatcher uses it.
+        point = next(
+            (y, x) for y in range(20) for x in range(80) if rnd.hit(y, x) == ("trace-call-pick", 0)
+        )
+        assert region
+        with patch.object(
+            ot.curses,
+            "getmouse",
+            return_value=(0, point[1], point[0], 0, ot.curses.BUTTON1_CLICKED),
+        ):
+            app.handle_mouse()
+        assert rnd.trace_call_target() == 0 and app._trace_call_menu is None
+
+
+def test_trace_call_header_and_highlight_survive_reflow_and_output_scrolling():
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {"kind": "tool", "name": "shell", "args": "echo first", "output": "result\n" * 80},
+        {"kind": "tool", "name": "shell", "args": "echo second", "output": ""},
+    ]
+    app.open_trace_drill()
+    app._nodes_by_session[app.current_session().id] = []
+    rnd = app.renderer
+    rnd.detail_turn_trace(app.current_session(), 76)
+    app.handle_key(None, 10)
+    app.load_trace_expansion()
+    with patch.object(ot.curses, "color_pair", lambda n: n << 8):
+        for width in (80, 140):
+            screen = AttrScreen(20, width)
+            app.scroll = rnd._trace_calls[0][1] + 20
+            rnd.draw_detail(screen, 0, 0, 20, width)
+            assert "Call 1/2 · shell · echo first" in screen_text(screen)
+            assert rnd.trace_call_target() == 0
+            assert screen.attrs[(5, 2)] == (6 << 8) | ot.curses.A_BOLD
+        app.handle_key(None, ord("}"))
+        screen = AttrScreen(20, 80)
+        rnd.regions.clear()
+        rnd.draw_detail(screen, 0, 0, 20, 80)
+        header = next((y, x) for (y, x), ch in screen.cells.items() if y > 3 and ch == "▸")
+        assert screen.attrs[header] & ot.curses.A_REVERSE
+        assert rnd.hit(*header) == ("trace-call", 1)
+    app.handle_key(None, ord("z"))
+    app.load_trace_expansion()
+    rnd.detail_turn_trace(app.current_session(), 76)
+    assert rnd.trace_call_target() == 1
+    app._apply_click(("trace-output", 0), drill=False)
+    assert rnd.trace_call_target() == 0 and app.trace_expanded
+    app.handle_key(None, ord("}"))
+    app.handle_key(None, ord("z"))
+    rnd.detail_turn_trace(app.current_session(), 76)
+    assert rnd.trace_call_target() == 1
+    app.handle_key(None, ord("]"))
+    assert app._trace_selected_call is None and not rnd._trace_calls
 
 
 def test_trace_copy_failures_never_replace_clipboard_or_fall_back_to_chat():
@@ -5246,7 +5389,7 @@ def test_trace_copy_failures_never_replace_clipboard_or_fall_back_to_chat():
         app.store.turn_content.return_value = {}
         app.handle_key(None, ord("y"))
         assert "changed or disappeared" in app.notice
-        app.scroll = app.renderer._trace_call_ends[-1][0] + 1
+        app._trace_selected_call = None
         app.handle_key(None, ord("y"))
         assert "no recorded tool call" in app.notice
         copied.assert_not_called()
@@ -5341,6 +5484,7 @@ def test_trace_outputs_expand_independently_with_keyboard_and_mouse():
     assert app._trace_loading is None  # the one-turn read is reused
     assert "second 29" in render()
     app.scroll = max(line for line, index in app.renderer._trace_tool_at.items() if index == 0)
+    app.handle_key(None, ord("{"))
     app.handle_key(None, 10)
     assert app._trace_open_outputs == {1}
     text = render()

@@ -33,6 +33,13 @@ class TraceLayout:
     call_ends: list[tuple[int, int]]
 
 
+def call_label(event: dict) -> str:
+    """A bounded, single-line identity for call navigation, never clipboard text."""
+    name = " ".join(short_tool_name(str(event.get("name") or "(unknown)")).split())
+    args = " ".join(str(event.get("args") or "").split())
+    return shorten(f"{name} · {args}" if args else name, 120)
+
+
 def output_target(output_ends: list[tuple[int, int]], scroll: int) -> int | None:
     """Return the output at the viewport top, or the next one below it."""
     pos = bisect_left(output_ends, (scroll, -1))
@@ -221,8 +228,9 @@ def _format_call(
             TraceLine(line, "output", event_index)
             for line in format_output(output_event, wrap, expanded=expanded)
         ]
-        out[0].event = event_index
     out.append(TraceLine("╰─", "meta"))
+    for line in out:
+        line.event = event_index
     return out
 
 

@@ -8,6 +8,7 @@ from collections import defaultdict
 
 from opentab.accounting.models import HarnessSummary, MachineSummary, ProjectSummary, Workflow
 from opentab.accounting.pricing import family_label
+from opentab.util import short_tool_name
 
 
 def conversation_markdown(records: list[dict]) -> tuple[str, int]:
@@ -21,6 +22,16 @@ def conversation_markdown(records: list[dict]) -> tuple[str, int]:
         if text.strip():
             messages.append(f"## {role.capitalize()}\n\n{text}")
     return ("\n\n".join(messages) + "\n" if messages else ""), len(messages)
+
+
+def tool_call_arguments(event: dict) -> str:
+    """Shell commands paste directly; other tools retain their additional parameters."""
+    args = str(event.get("args") or "")
+    name = short_tool_name(str(event.get("name") or "")).rsplit(".", 1)[-1].lower()
+    if not event.get("params") or name in ("shell", "bash", "exec_command", "run_shell_command"):
+        return args
+    params = json.dumps(dict(event["params"]), ensure_ascii=False, indent=2)
+    return f"{args}\n\n{params}" if args else params
 
 
 def tool_call_markdown(event: dict) -> str:
