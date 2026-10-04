@@ -1461,7 +1461,7 @@ class Renderer:
         if ignored_count:
             segs.append((f"  ·  ignored: {ignored_count}", active))
         if self.machine_filter:  # the `M` global narrowing -- a LIMIT, so accented
-            segs.append((f"  ·  machine: {self.machine_filter}", active))
+            segs.append((f"  ·  machine: {self.machine_filter_label}", active))
         if self.harness_filter:  # the fleet `H` harness narrowing -- likewise a LIMIT
             segs.append((f"  ·  harness: {self.harness_filter_label}", active))
         if self.show_bookmarks_only:
@@ -5806,17 +5806,22 @@ class Renderer:
         return layout.y, layout.x, layout.height, layout.width
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        self._draw_harness_picker(stdscr, scr_h, scr_w, fleet=False)
+        self._draw_scope_picker(stdscr, scr_h, scr_w, "source")
 
-    def _draw_harness_picker(self, stdscr, scr_h, scr_w, *, fleet: bool) -> None:
-        context = "menu.harness" if fleet else "menu.source"
-        entries = self.harness_picker_entries(fleet=fleet)
-        index = self.harness_menu_index if fleet else self.source_menu_index
-        multiple = self.harness_picker_multiple
-        intro = "Filter harnesses across machines:" if fleet else "Browse spend recorded by:"
+    def _draw_scope_picker(self, stdscr, scr_h, scr_w, kind: str) -> None:
+        context = f"menu.{kind}"
+        entries = self.scope_picker_entries(kind)
+        index = getattr(self, f"{kind}_menu_index")
+        multiple = self.scope_picker_multiple
+        noun = "machine" if kind == "machine" else "harness"
+        intro = {
+            "source": "Browse spend recorded by:",
+            "harness": "Filter harnesses across machines:",
+            "machine": "Filter machines across harnesses:",
+        }[kind]
         if multiple:
             count = sum(checked for _key, _label, checked in entries)
-            intro = f"{count} selected" if count else "Select at least one harness."
+            intro = f"{count} selected" if count else f"Select at least one {noun}."
             hint = f"{self._key(context, 'toggle')} toggle · {self._key(context, 'check_all')} all/none · "
         else:
             hint = ""
@@ -5834,7 +5839,11 @@ class Renderer:
             checkboxes=multiple,
         )
         my, mx, mh, mw = self.draw_modal(
-            stdscr, scr_h, scr_w, "Harnesses", self._menu_lines(layout)
+            stdscr,
+            scr_h,
+            scr_w,
+            "Machines" if kind == "machine" else "Harnesses",
+            self._menu_lines(layout),
         )
         if mh > 4:
             self.draw_tabs(
@@ -5844,11 +5853,11 @@ class Renderer:
                 mw - 4,
                 ("Single", "Multiple"),
                 int(multiple),
-                kind="harnesspickertab",
+                kind="scopepickertab",
             )
         for row, option in layout.option_rows:
             if row < mh - 4:
-                self.regions.append(("harnesspickerrow", my + 2 + row, mx + 2, mx + mw - 3, option))
+                self.regions.append(("scopepickerrow", my + 2 + row, mx + 2, mx + mw - 3, option))
 
     def draw_demo_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `D` picker: a multi-check list of what --demo scrambles. Space toggles a
@@ -5872,31 +5881,11 @@ class Renderer:
         )
         self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
 
-    def _draw_filter_menu(self, stdscr, scr_h, scr_w, title, intro, options, index) -> None:
-        # Shared body for the `M` / `H` global-filter pickers: an intro line then a radio
-        # list (● current, ○ others), the selected row reversed. Mirrors draw_source_menu.
-        layout = menus.radio_menu(
-            intro,
-            [(label, is_current) for _value, label, is_current in options],
-            index,
-        )
-        self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
-
     def draw_machine_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        # The `M` picker: narrow every view to one box (or "All machines" to clear). j/k
-        # moves the highlight, Enter arms, Esc cancels (handle_machine_menu_key).
-        self._draw_filter_menu(
-            stdscr,
-            scr_h,
-            scr_w,
-            self._menu_title("Filter machine", "menu.machine"),
-            "Narrow every view to which machine:",
-            self.machine_filter_options(),
-            self.machine_menu_index,
-        )
+        self._draw_scope_picker(stdscr, scr_h, scr_w, "machine")
 
     def draw_harness_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        self._draw_harness_picker(stdscr, scr_h, scr_w, fleet=True)
+        self._draw_scope_picker(stdscr, scr_h, scr_w, "harness")
 
     WHATIF_TIERS = ("your models", "models.dev")  # the picker's two row sets, Tab-flipped
 

@@ -461,8 +461,8 @@ class App:
         self.machine_menu_index = 0
         self.harness_menu = False
         self.harness_menu_index = 0
-        self.harness_picker_multiple = False
-        self.harness_picker_selection: set[str] = set()
+        self.scope_picker_multiple = False
+        self.scope_picker_selection: set[str] = set()
         self.sort_menu = False
         self.sort_menu_index = 0
         self.demo_menu = False
@@ -613,7 +613,7 @@ class App:
         self.model_pick_index = 0
         self.zoom_machine: str | None = None
         self.machine_pick_index = 0
-        self.machine_filter: str | None = None
+        self.machine_filter: frozenset[str] | None = None
         # Fleet machine and harness filters are orthogonal and compose globally.
         self.harness_filter: frozenset[str] | None = None
         self.conversation_search: SearchWorkspace | None = None
@@ -651,7 +651,7 @@ class App:
         if self.show_bookmarks_only:
             rows = [w for w in rows if w.id in self.bookmarks]
         if self.machine_filter is not None:
-            rows = [w for w in rows if self.machine_of(w) == self.machine_filter]
+            rows = [w for w in rows if self.machine_of(w) in self.machine_filter]
         if self.harness_filter is not None:
             rows = [w for w in rows if (w.source or "unknown") in self.harness_filter]
         if self.custom_since or self.custom_until:
@@ -1115,61 +1115,50 @@ class App:
         )
         out: list[tuple[str, str, bool]] = [("", "All machines", self.machine_filter is None)]
         for name in names:
-            out.append((name, name, self.machine_filter == name))
+            out.append((name, name, self.machine_filter == frozenset({name})))
         return out
 
     def open_machine_menu(self) -> None:
-        if not self.machines_present:
+        if not self.machines_present and self.machine_filter is None:
             self.notify("machine filter needs a fleet — see --pull", "error")
             return
         options = self.machine_filter_options()
-        cur = next(
-            (i for i, (value, _l, _a) in enumerate(options) if value == self.machine_filter), 0
-        )
+        cur = next((i for i, (_value, _label, active) in enumerate(options) if active), 0)
         self.machine_menu_index = cur
+        self.scope_picker_multiple = bool(self.machine_filter and len(self.machine_filter) > 1)
+        self.scope_picker_selection = set(self.machine_filter or (v for v, _, _ in options if v))
+        if self.scope_picker_multiple:
+            self.machine_menu_index = 0
         self.machine_menu = True
 
-    def select_machine_filter(self, name: str | None) -> None:
-        name = name or None
-        if name == self.machine_filter:
+    @property
+    def machine_filter_label(self) -> str:
+        return ", ".join(sorted(self.machine_filter or ()))
+
+    def select_machine_filter(self, name: str | frozenset[str] | None) -> None:
+        selected = frozenset({name}) if isinstance(name, str) and name else frozenset(name or ())
+        selected = selected or None
+        if selected == self.machine_filter:
             return
         self._tools_return = None
         anchor = self.selection_anchor()
-        self.machine_filter = name
+        self.machine_filter = selected
         self._invalidate_workflow_cache()
         self.restore_selection(anchor)
-        self.notify(f"machine: {name}" if name else "machine filter cleared", "success")
+        self.notify(
+            f"machine: {self.machine_filter_label}" if selected else "machine filter cleared",
+            "success",
+        )
 
     def _revalidate_machine_filter(self) -> None:
         # A stale global filter must clear rather than silently empty every view.
         if self.machine_filter is None:
             return
         names = {self.machine_of(w) for w in self.loaded}
-        if self.machine_filter not in names:
-            self.machine_filter = None
+        self.machine_filter = self.machine_filter & names or None
 
     def handle_machine_menu_key(self, key: int | str) -> bool:
-        options = self.machine_filter_options()
-        if not options:
-            self.machine_menu = False
-            return True
-        if key == 3:  # Ctrl-C still quits
-            return False
-        act = self.keymap.action("menu.machine", key)
-        if act in ("down", "advance"):
-            self.machine_menu_index = (self.machine_menu_index + 1) % len(options)
-        elif act == "up":
-            self.machine_menu_index = (self.machine_menu_index - 1) % len(options)
-        elif act == "first":
-            self.machine_menu_index = 0
-        elif act == "last":
-            self.machine_menu_index = len(options) - 1
-        elif act == "select":
-            self.machine_menu = False
-            self.select_machine_filter(options[self.machine_menu_index % len(options)][0])
-        elif act == "cancel":
-            self.machine_menu = False
-        return True
+        return self._handle_scope_picker_key(key, "machine")
 
     def harness_filter_options(self) -> list[tuple[str, str, bool]]:
         grouped: dict[str, float] = defaultdict(float)
@@ -1196,9 +1185,9 @@ class App:
         options = self.harness_filter_options()
         cur = next((i for i, (_v, _l, active) in enumerate(options) if active), 0)
         self.harness_menu_index = cur
-        self.harness_picker_multiple = bool(self.harness_filter and len(self.harness_filter) > 1)
-        self.harness_picker_selection = set(self.harness_filter or (v for v, _, _ in options if v))
-        if self.harness_picker_multiple:
+        self.scope_picker_multiple = bool(self.harness_filter and len(self.harness_filter) > 1)
+        self.scope_picker_selection = set(self.harness_filter or (v for v, _, _ in options if v))
+        if self.scope_picker_multiple:
             self.harness_menu_index = 0
         self.harness_menu = True
 
@@ -1230,7 +1219,7 @@ class App:
         )
 
     def handle_harness_menu_key(self, key: int | str) -> bool:
-        return self._handle_harness_picker_key(key, fleet=True)
+        return self._handle_scope_picker_key(key, "harness")
 
     def open_harness_picker(self) -> None:
         # Swapping stores would discard pulled machines, so fleets filter instead.
@@ -4159,49 +4148,64 @@ class App:
             return
         cur = self.source_key if self.source_key in order else order[0]
         self.source_menu_index = order.index(cur)
-        self.harness_picker_multiple = "," in self.source_key
-        self.harness_picker_selection = (
+        self.scope_picker_multiple = "," in self.source_key
+        self.scope_picker_selection = (
             set(order) - {"all"} if self.source_key == "all" else set(self.source_key.split(","))
         )
         self.source_menu = True
 
-    def harness_picker_entries(self, *, fleet: bool) -> list[tuple[str, str, bool]]:
-        entries = self.harness_filter_options() if fleet else self.source_menu_entries()
-        if not self.harness_picker_multiple:
+    def scope_picker_entries(self, kind: str) -> list[tuple[str, str, bool]]:
+        if kind == "source":
+            entries = self.source_menu_entries()
+        elif kind == "harness":
+            entries = self.harness_filter_options()
+        else:
+            entries = self.machine_filter_options()
+        if not self.scope_picker_multiple:
             return entries
+        aggregate = "all" if kind == "source" else ""
         return [
-            (key, label, key in self.harness_picker_selection)
+            (key, label, key in self.scope_picker_selection)
             for key, label, _active in entries
-            if key not in ("", "all")
+            if key != aggregate
         ]
 
-    def set_harness_picker_mode(self, multiple: bool, *, fleet: bool) -> None:
-        if multiple == self.harness_picker_multiple:
+    def set_scope_picker_mode(self, multiple: bool, kind: str) -> None:
+        if multiple == self.scope_picker_multiple:
             return
-        index_attr = "harness_menu_index" if fleet else "source_menu_index"
-        entries = self.harness_picker_entries(fleet=fleet)
+        index_attr = f"{kind}_menu_index"
+        entries = self.scope_picker_entries(kind)
         index = getattr(self, index_attr)
         selected = entries[index % len(entries)][0] if entries else None
-        self.harness_picker_multiple = multiple
-        entries = self.harness_picker_entries(fleet=fleet)
+        self.scope_picker_multiple = multiple
+        entries = self.scope_picker_entries(kind)
         setattr(
             self, index_attr, next((i for i, row in enumerate(entries) if row[0] == selected), 0)
         )
 
-    def _handle_harness_picker_key(self, key: int | str, *, fleet: bool) -> bool:
+    def _apply_scope_picker(self, kind: str, value: str | frozenset[str] | None) -> None:
+        if kind == "source":
+            assert isinstance(value, str)
+            self.select_source(value)
+        elif kind == "harness":
+            self.select_harness_filter(value)
+        else:
+            self.select_machine_filter(value)
+
+    def _handle_scope_picker_key(self, key: int | str, kind: str) -> bool:
         if key == 3:
             return False
-        context = "menu.harness" if fleet else "menu.source"
-        menu_attr = "harness_menu" if fleet else "source_menu"
-        index_attr = "harness_menu_index" if fleet else "source_menu_index"
+        context = f"menu.{kind}"
+        menu_attr = f"{kind}_menu"
+        index_attr = f"{kind}_menu_index"
         act = self.keymap.action(context, key)
-        entries = self.harness_picker_entries(fleet=fleet)
+        entries = self.scope_picker_entries(kind)
         if act == "cancel" or not entries:
             setattr(self, menu_attr, False)
             return True
         index = getattr(self, index_attr) % len(entries)
         if act == "mode":
-            self.set_harness_picker_mode(not self.harness_picker_multiple, fleet=fleet)
+            self.set_scope_picker_mode(not self.scope_picker_multiple, kind)
             return True
         if act in ("down", "advance"):
             index = (index + 1) % len(entries)
@@ -4211,29 +4215,28 @@ class App:
             index = 0
         elif act == "last":
             index = len(entries) - 1
-        elif act == "toggle" and self.harness_picker_multiple:
-            self.harness_picker_selection.symmetric_difference_update({entries[index][0]})
-        elif act == "check_all" and self.harness_picker_multiple:
+        elif act == "toggle" and self.scope_picker_multiple:
+            self.scope_picker_selection.symmetric_difference_update({entries[index][0]})
+        elif act == "check_all" and self.scope_picker_multiple:
             keys = {row[0] for row in entries}
-            self.harness_picker_selection = set() if keys <= self.harness_picker_selection else keys
+            self.scope_picker_selection = set() if keys <= self.scope_picker_selection else keys
         elif act == "select":
-            if self.harness_picker_multiple:
-                selected = [row[0] for row in entries if row[0] in self.harness_picker_selection]
+            if self.scope_picker_multiple:
+                selected = [row[0] for row in entries if row[0] in self.scope_picker_selection]
                 if not selected:
-                    self.notify("select at least one harness", "error")
+                    noun = "machine" if kind == "machine" else "harness"
+                    self.notify(f"select at least one {noun}", "error")
                     return True
-                if fleet:
-                    self.select_harness_filter(
-                        None if len(selected) == len(entries) else frozenset(selected)
-                    )
-                else:
+                if kind == "source":
                     self.select_source(
                         "all" if len(selected) == len(entries) else ",".join(selected)
                     )
-            elif fleet:
-                self.select_harness_filter(entries[index][0])
+                else:
+                    self._apply_scope_picker(
+                        kind, None if len(selected) == len(entries) else frozenset(selected)
+                    )
             else:
-                self.select_source(entries[index][0])
+                self._apply_scope_picker(kind, entries[index][0])
             setattr(self, menu_attr, False)
         setattr(self, index_attr, index)
         return True
@@ -4548,7 +4551,7 @@ class App:
         visible = {
             w.id
             for w in self.loaded
-            if (self.machine_filter is None or self.machine_of(w) == self.machine_filter)
+            if (self.machine_filter is None or self.machine_of(w) in self.machine_filter)
             and (self.harness_filter is None or (w.source or "unknown") in self.harness_filter)
             and (
                 self.show_ignored_projects
@@ -5208,7 +5211,7 @@ class App:
             self.notice = f"{kind}: {shorten(command, 50)}" if not where else f"{kind} on {where}"
 
     def handle_source_menu_key(self, key: int | str) -> bool:
-        return self._handle_harness_picker_key(key, fleet=False)
+        return self._handle_scope_picker_key(key, "source")
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.session_sort_key()
@@ -7901,8 +7904,8 @@ class App:
         if act == "harness":
             self.open_harness_picker()  # narrowing/switching re-scopes the charts in place
             return True
-        if act == "machine" and self.machines_present:
-            self.open_machine_menu()  # narrowing to one box re-scopes the charts in place
+        if act == "machine" and (self.machines_present or self.machine_filter):
+            self.open_machine_menu()  # machine selection re-scopes the charts in place
             return True
         if act == "demo_toggle":
             self.toggle_demo()  # anonymize before a screenshot without leaving
@@ -8039,7 +8042,7 @@ class App:
                 self.open_harness_picker()  # ...and so does the harness key: the key list
                 # names both, and a list that names a key it then eats is the very thing
                 # this table exists to prevent.
-            elif act == "machine" and self.machines_present:
+            elif act == "machine" and (self.machines_present or self.machine_filter):
                 self.open_machine_menu()  # the machine filter floats above help too
             elif act == "demo":
                 self.demo_action()
@@ -8210,7 +8213,7 @@ class App:
             self.open_harness_picker()  # fleet: filter harness (keep boxes); else swap store
             return True
         if act == "machine":
-            self.open_machine_menu()  # narrow every view to one box (fleet); no-op off one
+            self.open_machine_menu()  # narrow every view to selected machines
             return True
         if act == "theme":
             self.open_theme_menu()
@@ -8591,7 +8594,7 @@ class App:
         if act == "harness":
             self.open_harness_picker()
             return True
-        if act == "machine" and self.machines_present:
+        if act == "machine" and (self.machines_present or self.machine_filter):
             self.open_machine_menu()
             return True
         if act == "demo_toggle":
@@ -8789,10 +8792,10 @@ class App:
             elif click or double:
                 self.demo_menu = False  # click cancels, demo state unchanged
             return True
-        if self.source_menu or self.harness_menu:
-            fleet = self.harness_menu
-            entries = self.harness_picker_entries(fleet=fleet)
-            index_attr = "harness_menu_index" if fleet else "source_menu_index"
+        if self.source_menu or self.harness_menu or self.machine_menu:
+            picker = "source" if self.source_menu else "harness" if self.harness_menu else "machine"
+            entries = self.scope_picker_entries(picker)
+            index_attr = f"{picker}_menu_index"
             if entries and (up or down):
                 setattr(
                     self, index_attr, (getattr(self, index_attr) + (-1 if up else 1)) % len(entries)
@@ -8801,38 +8804,26 @@ class App:
                 # Modal hits take precedence over the view underneath.
                 for region in self.renderer.regions:
                     if len(region) != 5 or region[0] not in (
-                        "harnesspickertab",
-                        "harnesspickerrow",
+                        "scopepickertab",
+                        "scopepickerrow",
                     ):
                         continue
                     kind, ry, x0, x1, index = region
                     if ry != my or not x0 <= mx <= x1:
                         continue
-                    if kind == "harnesspickertab":
-                        self.set_harness_picker_mode(bool(index), fleet=fleet)
+                    if kind == "scopepickertab":
+                        self.set_scope_picker_mode(bool(index), picker)
                     elif index < len(entries):
                         setattr(self, index_attr, index)
-                        if self.harness_picker_multiple:
-                            self.harness_picker_selection.symmetric_difference_update(
+                        if self.scope_picker_multiple:
+                            self.scope_picker_selection.symmetric_difference_update(
                                 {entries[index][0]}
                             )
                         else:
-                            if fleet:
-                                self.select_harness_filter(entries[index][0])
-                            else:
-                                self.select_source(entries[index][0])
-                            self.source_menu = self.harness_menu = False
+                            self._apply_scope_picker(picker, entries[index][0])
+                            setattr(self, f"{picker}_menu", False)
                     return True
-                self.source_menu = self.harness_menu = False
-            return True
-        if self.machine_menu:
-            options = self.machine_filter_options()
-            if options and up:
-                self.machine_menu_index = (self.machine_menu_index - 1) % len(options)
-            elif options and down:
-                self.machine_menu_index = (self.machine_menu_index + 1) % len(options)
-            elif click or double:
-                self.machine_menu = False  # click cancels, filter unchanged
+                setattr(self, f"{picker}_menu", False)
             return True
         if self.whatif_menu:
             rows = self.whatif_rows()  # the wheel walks what's on screen, filter included

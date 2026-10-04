@@ -1232,10 +1232,10 @@ KEYS: tuple[Key, ...] = (
         id="machine-filter",
         ctx=_picker_context,
         actions=("machine",),
-        summary="filter every view to one machine",
+        summary="filter every view to selected machines",
         section="pickers",
-        when=lambda app: app.machines_present,
-        chip=lambda app: app.machine_filter if app.machine_filter else "machine",
+        when=lambda app: app.machines_present or bool(app.machine_filter),
+        chip=lambda app: app.machine_filter_label if app.machine_filter else "machine",
         active=lambda app: bool(app.machine_filter) or app.machine_menu,
     ),
     Key(

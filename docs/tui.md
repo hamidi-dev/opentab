@@ -16,9 +16,13 @@ The global harness picker has Single and Multiple tabs with a pending checkbox
 selection applied only on Enter. Local custom combinations use a comma-separated
 `source_key`, persisted through the existing source preference and built from
 independently cached leaves in `CombinedStore`. Fleet selection keeps its store
-and uses an immutable harness-name set as the global filter. Both tabs share
-keyboard handling and windowed rendering; search builds only conversation-capable
-leaves from the selected local combination.
+and uses an immutable harness-name set as the global filter. The machine picker
+uses the same Single / Multiple interaction and an independent immutable
+machine-name set. These sets compose globally, including Prices. Reload intersects
+each set with available values; an armed machine filter stays clearable even when
+only one machine remains. All three scope pickers share pending selection state,
+keyboard/mouse handling and windowed rendering; search builds only
+conversation-capable leaves from the selected local combination.
 
 ## App and Renderer
 

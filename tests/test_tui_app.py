@@ -3364,19 +3364,19 @@ def test_source_menu_multiple_stages_combination_and_cancels_without_switching()
     try:
         app.open_source_menu()
         app.handle_key(None, ord("\t"))
-        assert app.harness_picker_multiple
+        assert app.scope_picker_multiple
         app.handle_key(None, ord("j"))
         app.handle_key(None, ord(" "))
-        assert app.harness_picker_selection == {"opencode", "claude"}
+        assert app.scope_picker_selection == {"opencode", "claude"}
         assert not chosen and app.source_key == "opencode"
         app.handle_key(None, ord("\t"))
         app.handle_key(None, ord("\t"))
-        assert app.harness_picker_selection == {"opencode", "claude"}
+        assert app.scope_picker_selection == {"opencode", "claude"}
         app.handle_key(None, 27)
         assert not chosen and not app.source_menu
         app.open_source_menu()
         app.handle_key(None, ord("\t"))
-        assert app.harness_picker_selection == {"opencode"}
+        assert app.scope_picker_selection == {"opencode"}
         app.handle_key(None, ord("j"))
         app.handle_key(None, ord(" "))
         app.handle_key(None, 10)
@@ -3390,8 +3390,8 @@ def test_source_menu_multiple_reopens_custom_selection_and_requires_nonempty():
     app, chosen = _menu_app("opencode,claude", ("opencode", "claude", "codex", "all"))
     try:
         app.open_source_menu()
-        assert app.harness_picker_multiple
-        assert [key for key, _, checked in app.harness_picker_entries(fleet=False) if checked] == [
+        assert app.scope_picker_multiple
+        assert [key for key, _, checked in app.scope_picker_entries("source") if checked] == [
             "opencode",
             "claude",
         ]
@@ -3435,14 +3435,14 @@ def test_harness_picker_small_screen_tabs_and_mouse_checkbox_ignore_underlying_r
             app.renderer.regions = [("detail", 0, 0, 80, 20)]
             screen = FakeScreen(18, 80)
             app.renderer.draw_source_menu(screen, 18, 80)
-            tab = next(r for r in app.renderer.regions if r[0] == "harnesspickertab" and r[-1] == 1)
+            tab = next(r for r in app.renderer.regions if r[0] == "scopepickertab" and r[-1] == 1)
             with patch.object(
                 ot.curses,
                 "getmouse",
                 return_value=(0, tab[2], tab[1], 0, ot.curses.BUTTON1_CLICKED),
             ):
                 app.handle_mouse()
-            assert app.source_menu and app.harness_picker_multiple
+            assert app.source_menu and app.scope_picker_multiple
             app.handle_key(None, ord("G"))
             app.renderer.regions = []
             screen = FakeScreen(18, 80)
@@ -3450,16 +3450,14 @@ def test_harness_picker_small_screen_tabs_and_mouse_checkbox_ignore_underlying_r
             text = screen_text(screen)
             assert "[Multiple]" in text and "[x]  harness-19" in text
             assert "apply" in text and "toggle" in text
-            row = next(
-                r for r in app.renderer.regions if r[0] == "harnesspickerrow" and r[-1] == 19
-            )
+            row = next(r for r in app.renderer.regions if r[0] == "scopepickerrow" and r[-1] == 19)
             with patch.object(
                 ot.curses,
                 "getmouse",
                 return_value=(0, row[2], row[1], 0, ot.curses.BUTTON1_CLICKED),
             ):
                 app.handle_mouse()
-            assert "harness-19" not in app.harness_picker_selection
+            assert "harness-19" not in app.scope_picker_selection
             assert app.source_menu and not chosen
     finally:
         ot.sources.source_cycle = app._orig_cycle
@@ -4794,11 +4792,136 @@ def test_machine_sessions_show_full_dates_not_a_bare_clock():
 
 
 # --- The `M` global machine filter (the harness-picker twin) ------------------
+def _machine_picker_fleet():
+    # "all" is a valid machine name, not the aggregate picker row.
+    return fleet_app(
+        {
+            name: [workflow(name, "2026-05-01 10:00:00", cost=cost)]
+            for name, cost in (("laptop", 3), ("server", 2), ("all", 1))
+        }
+    )
+
+
+def test_machine_picker_multiple_applies_to_totals_prices_and_composes_with_harness():
+    app = _machine_picker_fleet()
+    app.loaded[-1].source = "Claude Code"
+    app._model_by_root = {w.id: [_model_row(w.id, w.total_cost, 100)] for w in app.loaded}
+    store = app.store
+    assert len(app.all_workflows) == 3  # populate caches before applying
+    app.handle_key(None, ord("M"))
+    app.handle_key(None, ord("\t"))
+    entries = app.scope_picker_entries("machine")
+    assert {row[0] for row in entries} == {"laptop", "server", "all"}
+    app.machine_menu_index = next(i for i, row in enumerate(entries) if row[0] == "server")
+    app.handle_key(None, ord(" "))
+    assert app.machine_filter is None and len(app.all_workflows) == 3
+    app.handle_key(None, 10)
+    assert app.machine_filter == frozenset({"laptop", "all"})
+    assert {w.id for w in app.all_workflows} == {"laptop", "all"}
+    assert sum(w.total_cost for w in app.all_workflows) == 4
+    assert set(app._priced_model_roots()) == {"laptop", "all"}
+    assert app.store is store
+    app.select_harness_filter("Claude Code")
+    assert {w.id for w in app.all_workflows} == {"all"}
+    assert set(app._priced_model_roots()) == {"all"}
+    app.open_machine_menu()
+    assert app.scope_picker_multiple and app.scope_picker_selection == {"laptop", "all"}
+    # An independent filter never hides other machines from the picker.
+    assert {row[0] for row in app.scope_picker_entries("machine")} == {"laptop", "server", "all"}
+
+
+def test_machine_picker_multiple_cancel_empty_and_all_with_remapped_keys():
+    app = _machine_picker_fleet()
+    app.keymap = bindings.Keymap(
+        {
+            ("menu.machine", "mode"): ["v"],
+            ("menu.machine", "toggle"): ["z"],
+        }
+    )
+    app.select_machine_filter("laptop")
+    app.open_machine_menu()
+    app.handle_key(None, ord("v"))
+    assert app.scope_picker_multiple
+    app.handle_key(None, ord("z"))  # uncheck the current laptop
+    app.handle_key(None, 10)
+    assert app.machine_menu and "at least one machine" in app.notice
+    assert app.machine_filter == frozenset({"laptop"})
+    app.handle_key(None, ord("a"))
+    app.handle_key(None, 27)
+    assert not app.machine_menu and app.machine_filter == frozenset({"laptop"})
+    app.open_machine_menu()
+    app.handle_key(None, ord("v"))
+    assert app.scope_picker_selection == {"laptop"}
+    app.handle_key(None, ord("a"))
+    app.handle_key(None, ord("v"))
+    app.handle_key(None, ord("v"))
+    assert app.scope_picker_selection == {"laptop", "server", "all"}
+    app.handle_key(None, 10)
+    assert app.machine_filter is None and not app.machine_menu
+    assert len(app.all_workflows) == 3
+
+
+def test_machine_picker_revalidation_keeps_survivors_and_filter_clearable():
+    app = _machine_picker_fleet()
+    app.select_machine_filter(frozenset({"laptop", "server"}))
+    app.loaded = [w for w in app.loaded if w.machine != "server"]
+    app._revalidate_machine_filter()
+    assert app.machine_filter == frozenset({"laptop"})
+    app.loaded = [w for w in app.loaded if w.machine == "laptop"]
+    app._revalidate_machine_filter()
+    assert not app.machines_present
+    key = next(k for k in ot.keymap.KEYS if k.id == "machine-filter")
+    assert key.shown(app)
+    for overlay in ("help", "trends", "show_prices"):
+        setattr(app, overlay, True)
+        app.handle_key(None, ord("M"))
+        assert app.machine_menu, overlay
+        app.handle_key(None, 27)
+        setattr(app, overlay, False)
+    app.handle_key(None, ord("M"))
+    assert app.machine_menu
+    app.machine_menu_index = 0  # All machines
+    app.handle_key(None, 10)
+    assert app.machine_filter is None
+    app.select_machine_filter(frozenset({"server", "all"}))
+    app._revalidate_machine_filter()
+    assert app.machine_filter is None
+
+
+def test_machine_picker_mouse_tabs_checkboxes_and_scroll_fit_minimum_screen():
+    app = fleet_app({f"box-{i:02d}": [workflow(str(i), "2026-05-01 10:00:00")] for i in range(20)})
+    app.open_machine_menu()
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        screen = FakeScreen(18, 80)
+        app.renderer.draw_machine_menu(screen, 18, 80)
+        tab = next(r for r in app.renderer.regions if r[0] == "scopepickertab" and r[-1] == 1)
+        with patch.object(
+            ot.curses, "getmouse", return_value=(0, tab[2], tab[1], 0, ot.curses.BUTTON1_CLICKED)
+        ):
+            app.handle_mouse()
+        assert app.scope_picker_multiple and app.machine_menu
+        app.handle_key(None, ord("G"))
+        app.renderer.regions = [("detail", 0, 0, 80, 20)]
+        screen = FakeScreen(18, 80)
+        app.renderer.draw_machine_menu(screen, 18, 80)
+        assert "[Multiple]" in screen_text(screen)
+        assert "[x]  box-19" in screen_text(screen) and "apply" in screen_text(screen)
+        row = next(r for r in app.renderer.regions if r[0] == "scopepickerrow" and r[-1] == 19)
+        with patch.object(
+            ot.curses, "getmouse", return_value=(0, row[2], row[1], 0, ot.curses.BUTTON1_CLICKED)
+        ):
+            app.handle_mouse()
+        assert "box-19" not in app.scope_picker_selection and app.machine_filter is None
+        assert app.machine_menu
+        app.handle_key(None, 10)
+        assert len(app.machine_filter) == 19 and "box-19" not in app.machine_filter
+
+
 def test_machine_filter_narrows_every_view_and_clears():
     app = _fleet()
     assert {w.machine for w in app.all_workflows} == {"laptop", "server"}
     app.select_machine_filter("server")
-    assert app.machine_filter == "server"
+    assert app.machine_filter == frozenset({"server"})
     assert {w.id for w in app.all_workflows} == {"b", "c"}
     assert [m.name for m in app.machines] == ["server"]  # the list collapses to the one box
     assert app.machines_present is True  # ...but the `M`/mode gate stays on
@@ -4816,7 +4939,7 @@ def test_machine_filter_menu_opens_selects_and_reopens_at_current():
     assert {v for v, _l, _a in opts} == {"", "laptop", "server"}
     app.machine_menu_index = next(i for i, (v, _l, _a) in enumerate(opts) if v == "server")
     app.handle_machine_menu_key(10)  # Enter arms server + closes
-    assert app.machine_menu is False and app.machine_filter == "server"
+    assert app.machine_menu is False and app.machine_filter == frozenset({"server"})
     app.handle_key(None, ord("M"))  # reopen: server is now current, "All" is not
     reopened = app.machine_filter_options()
     assert reopened[0][2] is False
@@ -4850,7 +4973,7 @@ def test_machine_filter_revalidated_when_its_box_disappears():
     app2 = _fleet()
     app2.select_machine_filter("server")
     app2._revalidate_machine_filter()  # server still loaded
-    assert app2.machine_filter == "server"
+    assert app2.machine_filter == frozenset({"server"})
 
 
 def test_machine_filter_shows_in_the_header_as_a_narrowing_chip():
@@ -4954,7 +5077,7 @@ def test_fleet_multiple_harnesses_compose_with_machine_and_prices_and_revalidate
     store = app.store
     app.open_harness_menu()
     app.handle_key(None, ord("\t"))
-    entries = app.harness_picker_entries(fleet=True)
+    entries = app.scope_picker_entries("harness")
     app.harness_menu_index = next(i for i, row in enumerate(entries) if row[0] == "Codex")
     app.handle_key(None, ord(" "))
     assert app.harness_filter is None
@@ -4964,7 +5087,7 @@ def test_fleet_multiple_harnesses_compose_with_machine_and_prices_and_revalidate
     assert set(app._priced_model_roots()) == {"a", "b", "c"}
     assert app.store is store
     app.open_harness_menu()
-    assert app.harness_picker_multiple
+    assert app.scope_picker_multiple
     app.handle_key(None, ord("a"))
     app.handle_key(None, 27)  # discard all-selection draft
     assert app.harness_filter == frozenset({"OpenCode", "Claude Code"})
