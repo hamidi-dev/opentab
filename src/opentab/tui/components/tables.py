@@ -223,8 +223,9 @@ def group_header(
     }
     labels.update(headings or {})
     costw, tokw, countw = (10, 8, 6) if token_columns else (11, 9, 7)
+    # Explicit alignment also accepts a zero-width bar on Python 3.9.
     return (
-        f"  {shorten(labels['name'], name_width):<{name_width}}  {'':{bar_width}} {labels['cost']:>{costw}} "
+        f"  {shorten(labels['name'], name_width):<{name_width}}  {'':<{bar_width}} {labels['cost']:>{costw}} "
         f"{'Share':>5} {labels['tokens']:>{tokw}} {labels['count']:>{countw}}"
     ) + "".join(f" {labels.get(key, label):>6}" for key, label in token_columns)
 
@@ -336,7 +337,7 @@ def group_table_layout(
     if len(scope) > 1:
         costw, tokw, countw = (10, 8, 6) if token_columns else (11, 9, 7)
         total_row = (
-            f"  {pad(shorten('TOTAL', name_width), name_width)}  {'':{bar_width}} {money(total_cost):>{costw}} {'':>5} "
+            f"  {pad(shorten('TOTAL', name_width), name_width)}  {'':<{bar_width}} {money(total_cost):>{costw}} {'':>5} "
             f"{human_tokens(sum(int(item['tokens']) for _name, item in scope)):>{tokw}} "
             f"{sum(int(item['sessions']) for _name, item in scope):>{countw}}"
         )
