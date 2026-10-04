@@ -28,7 +28,9 @@ for _var in (
     "HERDR_ENV",
     "HERDR_BIN_PATH",
     "HERDR_PANE_ID",
+    "HERDR_SOCKET_PATH",
     "HERDR_WORKSPACE_ID",
+    "KONSOLE_VERSION",
     "OPENTAB_LAUNCHER",
     "OPENTAB_DIFF_PAGER",
 ):

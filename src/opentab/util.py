@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -44,14 +45,24 @@ def env_flag(name: str) -> bool | None:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
-def palette_writes_ignored() -> bool:
-    """Detect hosts known to accept palette writes but not render them.
+def palette_write_host() -> str | None:
+    """Name the detected host known to accept palette writes but not render them.
 
     This cannot be probed: curses and OSC queries report stored palette state, not the
     displayed cell. Herdr 0.7.5 forwards ``CellColor::Palette(i)`` as the index, so the
-    outer terminal resolves its own palette and discards the redefinition.
+    outer terminal resolves its own palette and discards the redefinition. Konsole
+    paints its own 256-colour palette after an init_color write (issue #26).
     """
-    return in_herdr()
+    if in_herdr() and not herdr_renders_palette():
+        return "herdr before 0.8.2, via $HERDR_ENV"
+    if os.environ.get("KONSOLE_VERSION", "").strip():
+        return "Konsole, via $KONSOLE_VERSION"
+    return None
+
+
+def palette_writes_ignored() -> bool:
+    """Whether a known host discards palette writes; see ``palette_write_host``."""
+    return palette_write_host() is not None
 
 
 # Use markers set by each multiplexer, never TERM guesses. Presence matters because
@@ -763,6 +774,49 @@ def in_tmux() -> bool:
 
 def in_herdr() -> bool:
     return env_flag("HERDR_ENV") is True
+
+
+# herdr renders OSC 4 palette overrides itself from 0.8.2 (herdrdev/herdr#2162).
+_HERDR_PALETTE_FIXED = (0, 8, 2)
+_HERDR_VERSION: tuple[int, ...] | None | bool = False
+
+
+def herdr_server_version() -> tuple[int, ...] | None:
+    """Ask the herdr server rendering this pane for its version, once per process.
+
+    The pane's server, not the herdr binary on PATH, does the rendering and may be older
+    until restarted. Any failure returns None so callers keep the safe fallback.
+    """
+    global _HERDR_VERSION
+    if _HERDR_VERSION is not False:
+        return _HERDR_VERSION
+    _HERDR_VERSION = None
+    path = os.environ.get("HERDR_SOCKET_PATH", "").strip()
+    if not path or not hasattr(socket, "AF_UNIX"):
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(0.3)
+            client.connect(path)
+            client.sendall(b'{"id":"opentab","method":"ping","params":{}}\n')
+            data = b""
+            while b"\n" not in data and len(data) < 65536:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        version = json.loads(data.split(b"\n", 1)[0])["result"]["version"]
+        match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(version))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if match:
+        _HERDR_VERSION = tuple(int(part) for part in match.groups())
+    return _HERDR_VERSION
+
+
+def herdr_renders_palette() -> bool:
+    version = herdr_server_version()
+    return version is not None and version >= _HERDR_PALETTE_FIXED
 
 
 def herdr_pane_id() -> str | None:
