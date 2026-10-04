@@ -51,6 +51,53 @@ def test_ordinary_all_keeps_the_full_accounting_source_catalog():
     assert built == ["opencode", "hermes"]
 
 
+def test_custom_source_combination_builds_only_selected_leaves_and_filters_search():
+    args = _parse([])
+    built = []
+
+    def make_store(_args, key):
+        built.append(key)
+        return FakeStore([workflow(key, "2026-09-01 12:00:00")]), ""
+
+    with (
+        patch.object(
+            ot.sources, "available_sources", return_value=["opencode", "claude", "csv", "codex"]
+        ),
+        patch.object(ot.sources, "make_store", side_effect=make_store),
+    ):
+        store, _ = ot.sources._build_store(args, "csv,opencode,csv")
+        assert built == ["opencode", "csv"]
+        assert {row.id for row in store.workflows()} == {"opencode", "csv"}
+        assert "OpenCode" in store.source_name and store.source_name != "all"
+        built.clear()
+        args.conversation_sources_only = True
+        store, _ = ot.sources._build_store(args, "opencode,csv")
+        assert built == ["opencode"]
+        assert [row.id for row in store.workflows()] == ["opencode"]
+        try:
+            ot.sources._build_store(args, "opencode,missing")
+        except SystemExit as exc:
+            assert "no longer available" in str(exc)
+        else:
+            raise AssertionError("missing custom source was accepted")
+
+
+def test_saved_custom_sources_restore_available_members_and_explicit_source_wins():
+    args = _parse([])
+    saved = {"source": "opencode,claude"}
+    with patch.object(
+        ot.sources, "available_sources", return_value=["opencode", "claude", "codex"]
+    ):
+        assert ot.sources.resolve_source(args, saved) == "opencode,claude"
+        args.source = "codex"
+        assert ot.sources.resolve_source(args, saved) == "codex"
+        args.source = "auto"
+    with patch.object(ot.sources, "available_sources", return_value=["opencode", "codex"]):
+        assert ot.sources.resolve_source(args, saved) == "opencode"
+    with patch.object(ot.sources, "available_sources", return_value=["codex"]):
+        assert ot.sources.resolve_source(args, saved) == "codex"
+
+
 def test_conversation_specific_defaults_build_an_explicit_read_only_opencode_store():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")

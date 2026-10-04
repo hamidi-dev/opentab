@@ -2228,7 +2228,7 @@ def _run(args: argparse.Namespace) -> int:
         if goto is None:
             # Keep the tmux popup open as a plain TUI when nothing matches yet.
             goto_hint = _goto_hint(args.goto or os.getcwd())
-        elif source_key not in ("all", "remote", goto[0]):
+        elif source_key not in ("all", "remote") and goto[0] not in source_key.split(","):
             # Merged and fleet views already contain the backend; only override a pinned one.
             source_key = goto[0]
     store, loading = sources.make_store(args, source_key)

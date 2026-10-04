@@ -403,13 +403,23 @@ REGISTRY: tuple[Context, ...] = (
         "menu.source",
         "The H data-source picker (off a fleet).",
         "menu",
-        (Action("advance", ("H",), "H again walks the list"),),
+        (
+            Action("advance", ("H",), "H again walks the list"),
+            Action("mode", ("tab", "h", "l", "left", "right"), "single ↔ multiple harnesses"),
+            Action("toggle", ("space", "x"), "check / uncheck a harness in Multiple"),
+            Action("check_all", ("a",), "check all · clear all in Multiple"),
+        ),
     ),
     Context(
         "menu.harness",
         "The H harness filter (in a fleet).",
         "menu",
-        (Action("advance", ("H",), "H again walks the list"),),
+        (
+            Action("advance", ("H",), "H again walks the list"),
+            Action("mode", ("tab", "h", "l", "left", "right"), "single ↔ multiple harnesses"),
+            Action("toggle", ("space", "x"), "check / uncheck a harness in Multiple"),
+            Action("check_all", ("a",), "check all · clear all in Multiple"),
+        ),
     ),
     Context(
         "menu.machine",

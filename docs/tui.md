@@ -12,6 +12,14 @@ export boundaries. Public controls call data backends **harnesses** (`H`,
 `--harness`); internal names such as `source_key`, `zoom_source`, `source_menu`,
 and `sources.py` retain their existing spelling.
 
+The global harness picker has Single and Multiple tabs with a pending checkbox
+selection applied only on Enter. Local custom combinations use a comma-separated
+`source_key`, persisted through the existing source preference and built from
+independently cached leaves in `CombinedStore`. Fleet selection keeps its store
+and uses an immutable harness-name set as the global filter. Both tabs share
+keyboard handling and windowed rendering; search builds only conversation-capable
+leaves from the selected local combination.
+
 ## App and Renderer
 
 [`App`](../src/opentab/tui/app.py) owns view state, selection, keyboard and mouse
