@@ -68,8 +68,9 @@ const WI_LOCAL=new Set(DATA.whatif.local), WI_UNPRICED=new Set(DATA.whatif.unpri
         assert actual["economics"]["cost"] == list(econ.cost)
         app.whatif_model = name
         baseline, target = app.whatif_session_totals(app.loaded[0])
-        assert actual["comparison"]["actual"] == baseline
-        assert actual["comparison"]["whatif"] == target
+        # Python 3.12's compensated sum can differ from 3.9/JavaScript by an ulp.
+        assert abs(actual["comparison"]["actual"] - baseline) < 1e-12
+        assert abs(actual["comparison"]["whatif"] - target) < 1e-12
 
 
 # --- The web browser (--html / --serve) -------------------------------------
