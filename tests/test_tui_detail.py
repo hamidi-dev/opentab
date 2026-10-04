@@ -5183,6 +5183,9 @@ def test_trace_footer_and_help_describe_the_current_level_and_bindings():
     assert ot.keymap.BY_ID["enter"].text(app) == "open the selected turn"
     app.open_trace_drill()
     assert not ot.keymap.BY_ID["enter"].shown(app)
+    assert ot.keymap.BY_ID["enter"].text(app) == (
+        "expand / collapse the output of the selected tool call"
+    )
     assert ot.keymap.BY_ID["move"].text(app).startswith("scroll this turn")
     footer = " ".join(
         text
@@ -5347,6 +5350,9 @@ def test_trace_call_picker_scrolls_to_selection_and_cancels_without_moving_it():
         ):
             app.handle_mouse()
         assert rnd.trace_call_target() == 0 and app._trace_call_menu is None
+    app.handle_key(None, ord("c"))
+    assert app._trace_call_menu is not None
+    assert app.handle_key(None, 3) is False
 
 
 def test_trace_call_header_and_highlight_survive_reflow_and_output_scrolling():
