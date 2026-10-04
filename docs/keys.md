@@ -24,8 +24,8 @@ steps back out. Zoom is not full-screen: the detail pane takes focus *beside* th
 sidebar, which stays clickable to re-scope in place; `+` maximizes/restores the
 detail pane (remembered between runs). The session view is full-screen.
 
-Detail tabs per scope: years/months get Overview · Models · Projects · Sessions;
-days drop Models. Drilling a row of the **Models** tab replaces them with that model's
+Detail tabs per scope: years/months/days get Overview · Models · Projects · Sessions.
+Drilling a row of the **Models** tab replaces them with that model's
 own two: **Economics** (what it cost here, split by token type) and **Sessions** (the
 sessions that used it, with the cost and tokens *it* accounts for) — see
 [Scope & filter](#scope--filter). A session adds **Turns** (prompt costs and per-turn drill-down, every harness
@@ -280,7 +280,7 @@ harnesses are detected; the browse mode remains available with a single source.
 | `Ctrl-F` | Search retained conversation text in the current local catalog; available from the main views and supported overlays |
 | `R` | Set the date range — `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` |
 | `a` | Back to all time, keeping the current selection where possible |
-| `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`). Sessions offer **Start Date** (`created_at`, default) and, everywhere except the Time overview's **Days** pane, **Last Activity** (`ended_at`, including subagent activity where tracked) — a single day's list is read by start time, and activity can run into a later day than the one the row is filed under, so ranking by it there is deliberately left out — that pane falls back to **Start Date**, keeping your choice for when you focus Months/Years again. The Date column follows whichever is active, and its header shows "Last act" under the latter. Projects offer the matching pair: **Recency** (the newest session's *start*) and **Last Activity** (the newest activity in any of the project's sessions, subagents included) |
+| `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`). Sessions offer **Start Date** (`created_at`, default) and **Last Activity** (`ended_at`, including subagent activity where tracked), also in the **Days** pane. Day membership follows the session's start date; Last Activity ranks those sessions by their latest activity, falling back to the start when unavailable. The Date column follows whichever is active, and its header shows "Last act" under the latter. In Days it shows the activity time for same-day activity, or the date for activity on a later day. Projects offer the matching pair: **Recency** (the newest session's *start*) and **Last Activity** (the newest activity in any of the project's sessions, subagents included) |
 | `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**) and projects. Sessions rank by match quality; projects keep the selected column sort. Model lists (`P`, `w`) match word-anchored (letters may scatter inside a word, a new word only joins at its first letter — `opus48` works, `opus` no longer drags in `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**), routes by substring. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
 | `x` | Clear the filter |
 

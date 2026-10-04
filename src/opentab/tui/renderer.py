@@ -1701,8 +1701,12 @@ class Renderer:
     def session_date_cell(self, workflow: Workflow) -> str:
         if self.session_sort_key() != "last_activity":
             return self.session_started(workflow)
-        # Activity sort is unavailable in single-day scope, so a date is always required.
-        return (workflow.ended_at or workflow.created_at)[:10]
+        activity = workflow.ended_at or workflow.created_at
+        # Same-day activity is easier to compare by time; resumed sessions need
+        # their actual activity date rather than an ambiguous later-day clock time.
+        if not self._scope_spans_days() and activity[:10] == workflow.created_at[:10]:
+            return activity[11:16]
+        return activity[:10]
 
     BOX_HEADER_LINE = 1
 
@@ -3073,6 +3077,8 @@ class Renderer:
             lines = self.model_scope_overview(w - 4)
         elif current == "Overview":
             lines = self.day_overview(day, w - 4)
+        elif current == "Models":
+            lines = self.day_models(day, w - 4)
         elif current == "Harnesses":
             lines = self.day_sources(day, w - 4)
         elif current == "Machines":
@@ -4071,6 +4077,10 @@ class Renderer:
         agg = self.aggregate_models(day_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
         return lines
+
+    def day_models(self, day: DaySummary, width: int) -> list[str]:
+        agg = self.aggregate_models(self.compose_zoom_drills(self.workflows_for_day(day.day)))
+        return self._models_tab(agg, "# Daily Model Spend", width)
 
     def day_sources(self, day: DaySummary, width: int) -> list[str]:
         return self.source_table(
