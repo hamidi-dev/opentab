@@ -34,6 +34,12 @@ OpenRouter/Together/etc.) price out of the box — with family fallbacks for ver
 churn and a mid-range fallback for unknown models. Ordinary price lookup stays
 offline; refreshing rates is an explicit action.
 
+Claude Code's recorded `usage.speed: fast` is retained as a separate `-fast` model
+bucket even before a fast rate card is available. Until then, it uses the base
+model's rates and context tiers as a fallback. Adding the fast card through refresh
+reprices existing in-memory and warm-cached usage without rereading transcripts.
+Older rollup caches are rebuilt once to recover mode distinctions they discarded.
+
 ### Copilot list-price estimates
 
 For the `github-copilot` provider, the estimate replaces **all** recorded costs with
@@ -241,8 +247,11 @@ opentab --refresh-models     # fetch every provider's list prices into a local c
 This writes `~/.cache/opentab/prices.json` through an explicitly requested network
 fetch (stdlib `urllib`, no dependency). The newer of the cache and the bundled
 snapshot wins; you can also press **`r`** inside
-`P` to refresh in place. The `P` overlay's source line names which layer is serving
-the rates.
+`P` to refresh in place. The TUI fetch runs in the background so navigation and quit
+remain responsive; repeated refresh requests share the pending fetch. On completion,
+the UI adopts rates and reprices the current data. Cache writes use unique temporary
+files and atomic replacement so concurrent OpenTabs cannot collide mid-write.
+The `P` overlay's source line names which layer is serving the rates.
 
 When OpenTab notices models it has no built-in price for, it offers this fetch
 **once** on startup (`y` now, `n` not now, `d` never — remembered in `state.json`,

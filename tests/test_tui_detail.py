@@ -1832,6 +1832,7 @@ def test_subagent_tab_return_reopens_flat_reader_and_click_targets_followup_turn
     app.handle_key(None, ord("l"))
     assert not app.active_subagent_turns and app._subagent_turn_rows is None
     app.handle_key(None, ord("h"))
+    assert app.active_subagent_turns  # navigation owns reopening, without a paint
     app.renderer.detail_subagents(wf, 80)
     assert app.active_subagent_turns and app._subagent_turn_rows is None
     app.store.node_timeline.assert_called_once()
@@ -1844,6 +1845,71 @@ def test_subagent_tab_return_reopens_flat_reader_and_click_targets_followup_turn
     assert app._trace_cursor == 2 and app.active_subagent_turns
     app.handle_key(None, 27)
     assert app.active_subagent_drill is None
+
+
+def test_subagent_reader_roundtrip_preserves_root_prompt_and_trace_selection():
+    for trace_open in (False, True):
+        app = _subagent_turns_app()
+        app.select_tab(app.current_tabs().index("Turns"))
+        app.open_turn_drill(0)
+        app._turn_cursor = 1
+        app._trace_cursor = 1
+        if trace_open:
+            assert app.open_trace_drill()
+        expected = (app.turn_drill, app._turn_cursor, app.trace_drill, app._trace_cursor)
+        app._apply_click(("tab", app.current_tabs().index("Subagents")), drill=False)
+        app.open_subagent_drill()
+        app.load_subagent_turns()
+        assert app.active_turn_drill is None
+        app.open_trace_drill()
+        app.select_tab(app.current_tabs().index("Turns"))
+        assert (
+            app.active_turn_drill,
+            app._turn_cursor,
+            app.trace_drill,
+            app._trace_cursor,
+        ) == expected
+        assert app._subagent_trace is None and app._subagent_turn_rows is None
+        app.select_tab(app.current_tabs().index("Subagents"))
+        assert app.active_subagent_turns and app.active_trace_drill is None
+        app.close_subagent_drill()
+        app.select_tab(app.current_tabs().index("Turns"))
+        assert (
+            app.active_turn_drill,
+            app._turn_cursor,
+            app.trace_drill,
+            app._trace_cursor,
+        ) == expected
+
+
+def test_subagent_reader_reopens_after_browse_mode_restore_without_needing_a_paint():
+    for paint in (False, True):
+        app = _subagent_turns_app()
+        wf = app.current_session()
+        app.open_subagent_drill()
+        selected = app.active_subagent_drill
+        app.load_subagent_turns()
+        app.open_trace_drill()
+        app.renderer.detail_subagents(wf, 120)
+        assert app._subagent_trace is not None
+        reads = app.store.node_timeline.call_count
+        app.set_browse_mode("projects")
+        assert app._subagent_turn_rows is None and app._subagent_trace is None
+        assert app._subagent_turns_loading is None
+        if paint:
+            screen = FakeScreen(10, 40)
+            screen.erase = screen.cells.clear
+            screen.refresh = lambda: None
+            with patch.object(ot.curses, "color_pair", return_value=0):
+                app.renderer.draw(screen)
+        app.set_browse_mode("time")
+        assert app.active_tab_name() == "Subagents" and app.current_session().id == wf.id
+        assert app.active_subagent_drill == selected and app.active_subagent_turns
+        assert app.active_trace_drill is None and app._subagent_turn_rows is None
+        assert app._subagent_turns_loading is not None
+        assert app.store.node_timeline.call_count == reads
+        app.load_subagent_turns()
+        assert app.store.node_timeline.call_count == reads + 1
 
 
 def test_subagent_turns_bound_long_prompts_and_expand_details_in_place():
@@ -3367,6 +3433,8 @@ def test_turns_price_refresh_invalidates_layout_without_reloading_rows():
     before = app.renderer.detail_turns(wf, 116)
     with patch("opentab.tui.app.refresh_model_prices", return_value=(1, None)):
         app.refresh_prices_action()
+        assert app._price_refresh_job.done.wait(5)
+        app.poll_price_refresh()
     assert app.renderer._turn_layout_cache is None
     assert app.session_turn_rows(wf.id) is rows
     with patch("opentab.accounting.tiers.row_list_cost", return_value=123):
@@ -5701,6 +5769,48 @@ def test_remote_trace_copy_reuses_fetched_full_text_without_another_ssh_request(
         app.handle_key(None, ord("y"))
         assert "END OF REMOTE OUTPUT" in copied.call_args.args[0]
     assert len(requests) == 1 and app._trace_full is None
+
+
+def test_remote_trace_return_requeues_released_content_after_tab_execution_and_mode():
+    for route in ("tab", "execution", "mode"):
+        app = _subagent_turns_app()
+        wf = app.current_session()
+        requests = []
+        events = [{"kind": "text", "text": "remote answer"}]
+
+        def request(wid, key, requests=requests, events=events):
+            requests.append((wid, key))
+            return lambda cancel: {key: events}
+
+        app.store.remote_trace_request = request
+        app.select_tab(app.current_tabs().index("Turns"))
+        app.open_turn_drill(0)
+        app.open_trace_drill()
+        with patch("opentab.remote_content.TraceJob", _ManualTraceJob):
+            app.load_trace_expansion()
+            app._remote_trace_job[3].complete()
+            app.poll_remote_trace()
+            original = app._remote_trace_content
+            assert original is not None
+            if route == "mode":
+                app.set_browse_mode("projects")
+            else:
+                app.select_tab(app.current_tabs().index("Subagents"))
+                if route == "execution":
+                    app.open_subagent_drill()
+                    app.load_subagent_turns()
+            assert app._remote_trace_content is None and app._trace_loading is None
+            if route == "mode":
+                app.set_browse_mode("time")
+            else:
+                app.select_tab(app.current_tabs().index("Turns"))
+            assert app.active_trace_drill == 0 and app._trace_loading == original[:2]
+            assert len(requests) == 1  # Navigation queues; the post-paint phase starts I/O.
+            app.load_trace_expansion()
+            app._remote_trace_job[3].complete()
+            app.poll_remote_trace()
+            assert app.turn_trace_events(wf.id, {"content_key": original[1]}) == original[3]
+            assert len(requests) == 2 and app._trace_loading is None
 
 
 def test_remote_trace_unconfigured_machine_says_so_on_enter():

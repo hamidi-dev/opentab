@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import NamedTuple
 
 from opentab.accounting.models import Workflow
-from opentab.accounting.pricing import has_catalog_row
 from opentab.accounting.tiers import attach_node_pricing, attach_pricing, row_list_cost
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import (
@@ -809,9 +808,9 @@ class ClaudeStore:
         # usage.speed "fast" (its own pricing branches on `speed==="fast"` for exactly
         # claude-opus-4-8 and claude-opus-5), and models.dev files that as
         # experimental.modes.fast, which the catalog carries as "<model>-fast". Rename
-        # only when such a row exists, so a model with no fast card keeps its own price
-        # instead of falling through to a family guess.
-        if usage.get("speed") == "fast" and has_catalog_row(model_name + "-fast"):
+        # independently of catalog availability: warm rollups must retain the mode
+        # so a later rate refresh can price it without reparsing or merging usage.
+        if usage.get("speed") == "fast" and not model_name.endswith("-fast"):
             model_name += "-fast"
         entry = s["models"].get(model_name)
         if entry is None:

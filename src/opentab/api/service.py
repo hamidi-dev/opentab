@@ -1699,6 +1699,11 @@ class OpenTabService:
             qualified_id=item.ref.encode() if unique else None,
         )
         if error:
+            if error == "newer_version":
+                raise ServiceError(
+                    "notes_newer_version",
+                    "notes file uses a newer format; upgrade OpenTab to edit it",
+                )
             raise ServiceError(f"notes_{error}", f"notes file is {error}")
         return {"session_key": item.ref.encode(), "note": self._session_note(item, notes)}
 

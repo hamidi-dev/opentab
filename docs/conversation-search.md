@@ -14,7 +14,8 @@ local sessions. The scope selector switches between all sessions and one session
 
 Open **Filters** with `Ctrl-G`, even while typing. Pick a known project by name,
 choose a harness, or select Today, Last 7 days, Last 30 days or a custom date range.
-Dates are inclusive UTC **message dates**, not session start dates. Only active
+Dates are inclusive UTC **message dates**, not session start dates; active date
+chips and date presets explicitly label UTC. Only active
 filters appear below the query; click a chip's `x` to remove it, or Clear to remove
 all three filters without changing the session scope or query. Changes apply
 immediately; `Esc` returns from a picker to Filters, then to search.

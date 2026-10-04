@@ -1417,7 +1417,7 @@ class Renderer:
             else:
                 # With no recorded dollars, list-price spend is an estimate, not a delta.
                 tag = " ESTIMATED — usage × API list prices "
-        elif not getattr(self.store, "records_cost", True):
+        elif summary.get("unpriced_tokens", 0) > 0:
             tag = f" $0 = no recorded cost · press {self._key('main', 'api_prices')} to estimate "
         else:
             tag = ""
@@ -4369,8 +4369,6 @@ class Renderer:
         self._subagent_cursor_line = None
         nodes = self.session_node_rows(workflow.id)
         rows = self.app.subagent_rows(workflow)
-        if self.app.active_subagent_turns and self.app.subagent_turns_unavailable():
-            self.app._clear_subagent_turns()
         if self.app.active_subagent_turns:
             return self.detail_turns(workflow, width)
         if not any(row["depth"] > 0 for row in nodes):
@@ -4379,11 +4377,6 @@ class Renderer:
             (row for row in rows if row["_node_index"] == self.app.active_subagent_drill), None
         )
         if selected is not None:
-            # Tab changes discard raw content but retain the execution selection.
-            # Reopen its flat reader, not the old intermediate detail step.
-            if self.app._on_subagents_tab() and not self.app.subagent_turns_unavailable():
-                self.app.open_subagent_turns()
-                return self.detail_turns(workflow, width)
             return self._subagent_detail(selected, nodes, width)
         priced = self._priced_nodes(nodes)
         totals = self.whatif_session_totals(workflow)
@@ -4941,7 +4934,6 @@ class Renderer:
                 traced = self.detail_turn_trace(workflow, width)
                 if traced:
                     return traced
-                self.app.trace_drill = None
             rows = self.reader_turn_rows(workflow.id)
             nodes = self.session_node_rows(workflow.id)
             node = self._priced_nodes([nodes[self.app.active_subagent_drill]])[0]

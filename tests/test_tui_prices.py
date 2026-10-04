@@ -6,6 +6,85 @@ import opentab as ot
 from tests._support import FakeStore, _model_row, _price_sort_app, app_with, workflow
 
 
+def test_price_refresh_is_nonblocking_single_flight_and_adopts_on_ui_thread():
+    import threading
+    from unittest.mock import patch
+
+    from opentab.tui import app as app_module
+
+    app = app_with([workflow("a", "2026-06-01")])
+    entered, release = threading.Event(), threading.Event()
+    caller = threading.get_ident()
+
+    def fetch(*, invalidate):
+        assert not invalidate and threading.get_ident() != caller
+        entered.set()
+        assert release.wait(5)
+        return 12, "fixture"
+
+    with patch.object(
+        app_module, "refresh_model_prices", side_effect=fetch
+    ) as fetch_mock, patch.object(app_module, "invalidate_price_cache") as invalidate:
+        try:
+            app.refresh_prices_action()
+            job = app._price_refresh_job
+            assert entered.wait(5) and not job.done.is_set()
+            app.toasts.clear()
+            assert app._input_timeout_ms() >= 0
+            app.refresh_prices_action()
+            assert app._price_refresh_job is job
+            app.poll_price_refresh()
+            assert app._model_price_revision == 0
+            invalidate.assert_not_called()
+            # Navigation remains available while the fetch is blocked.
+            assert app.handle_key(None, ord("P")) and app.show_prices
+        finally:
+            release.set()
+            assert job.done.wait(5)
+        invalidate.assert_not_called()
+        app.poll_price_refresh()
+        invalidate.assert_called_once()
+        fetch_mock.assert_called_once_with(invalidate=False)
+        assert app._price_refresh_job is None and app._model_price_revision == 1
+        assert "refreshed 12" in app.notice
+        app.poll_price_refresh()
+        assert app._model_price_revision == 1
+
+
+def test_price_refresh_failure_can_retry_and_quit_does_not_wait_for_network():
+    import threading
+    from unittest.mock import patch
+
+    from opentab.tui import app as app_module
+
+    app = app_with([workflow("a", "2026-06-01")])
+    with patch.object(app_module, "refresh_model_prices", side_effect=OSError("offline")):
+        app.refresh_prices_action()
+        assert app._price_refresh_job.done.wait(5)
+        app.poll_price_refresh()
+    assert "offline" in app.notice and app._model_price_revision == 0
+    assert app._price_refresh_job is None
+    release = threading.Event()
+
+    def fetch(**kwargs):
+        assert release.wait(5)
+        return 1, "fixture"
+
+    with patch.object(app_module, "refresh_model_prices", side_effect=fetch), patch.object(
+        app, "_run"
+    ):
+        app.refresh_prices_action()
+        job = app._price_refresh_job
+        try:
+            app.run(None)
+            assert app._price_refresh_job is None and not job.done.is_set()
+        finally:
+            release.set()
+            assert job.done.wait(5)
+        app.poll_price_refresh()
+        assert app._model_price_revision == 0
+
+
 def test_capital_p_opens_model_prices_overlay():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
@@ -696,6 +775,27 @@ def test_unpriced_hint_matches_price_mode():
     app.show_api_prices = True
     hint = app.renderer.unpriced_hint()
     assert "estimate" in hint and "press $" not in hint
+
+
+def test_recorded_header_hints_unpriced_usage_in_a_mixed_cost_store():
+    from unittest.mock import patch
+
+    from tests._support import FakeScreen, screen_text
+
+    paid = workflow("paid", "2026-06-01", cost=1)
+    unpriced = workflow("free", "2026-06-01", cost=0)
+    unpriced.unpriced_tokens = 100
+    app = app_with([paid, unpriced])
+    app.store.records_cost = True
+    app.show_api_prices = False
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        screen = FakeScreen(3, 200)
+        app.renderer.draw_header(screen, 200)
+        assert "$0 = no recorded cost" in screen_text(screen)
+        app.show_api_prices = True
+        screen = FakeScreen(3, 200)
+        app.renderer.draw_header(screen, 200)
+        assert "$0 = no recorded cost" not in screen_text(screen)
 
 
 def _price_prompt_app(model="openrouter/exotic-zzz-9", unpriced=500):

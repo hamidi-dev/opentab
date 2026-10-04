@@ -56,8 +56,8 @@ def _locked():
             handle.close()
 
 
-def _read_raw(path: str | None = None) -> tuple[dict, bool]:
-    """Read raw entries without dropping shapes this version does not understand.
+def _read_document(path: str | None = None) -> tuple[dict, bool]:
+    """Read the envelope without treating a newer version as broken JSON.
 
     An absent file is readable and empty; an existing unreadable or malformed file is
     not, so the writer can refuse to overwrite authored data. ``path`` lets doctor use
@@ -71,10 +71,17 @@ def _read_raw(path: str | None = None) -> tuple[dict, bool]:
             data = json.load(fh)
     except (OSError, ValueError):
         return {}, False
-    notes = data.get("notes") if isinstance(data, dict) else None
-    if not isinstance(notes, dict):
+    if not isinstance(data, dict) or not isinstance(data.get("notes"), dict):
         return {}, False
-    return notes, True
+    version = data.get("version", NOTES_VERSION)
+    readable = isinstance(version, int) and not isinstance(version, bool) and version >= 1
+    return data, readable
+
+
+def _read_raw(path: str | None = None) -> tuple[dict, bool]:
+    """Read all entries, including unknown shapes, and their readability verdict."""
+    data, readable = _read_document(path)
+    return data.get("notes", {}), readable
 
 
 def _valid(notes: dict) -> dict[str, str]:
@@ -86,7 +93,7 @@ def _valid(notes: dict) -> dict[str, str]:
 
 
 def read_notes(path: str | None = None) -> tuple[dict[str, str], bool]:
-    """Return displayable notes and whether the underlying file is safe to update."""
+    """Return displayable notes and whether the underlying file is readable."""
     notes, readable = _read_raw(path)
     return _valid(notes), readable
 
@@ -105,9 +112,12 @@ def update_note(
     other alias, but preserves unknown shapes there. Without it, edit only session_id.
     """
     with _locked():
-        notes, readable = _read_raw()
+        document, readable = _read_document()
         if not readable:
             return {}, "unreadable"
+        notes = document.get("notes", {})
+        if document.get("version", NOTES_VERSION) > NOTES_VERSION:
+            return _valid(notes), "newer_version"
         target = session_id
         if qualified_id is not None:
             qualified = notes.get(qualified_id)
@@ -129,11 +139,16 @@ def update_note(
 def save_notes(notes: dict) -> bool:
     """Atomically write every entry, including shapes this version cannot display."""
     path = notes_path()
-    payload = {
-        "version": NOTES_VERSION,
-        # Only an empty string means deletion; preserve all unknown falsy values.
-        "notes": {key: notes[key] for key in sorted(notes, key=str) if notes[key] != ""},
-    }
+    payload, readable = _read_document(path)
+    if not readable or payload.get("version", NOTES_VERSION) > NOTES_VERSION:
+        return False
+    payload.update(
+        {
+            "version": NOTES_VERSION,
+            # Only an empty string means deletion; preserve all unknown falsy values.
+            "notes": {key: notes[key] for key in sorted(notes, key=str) if notes[key] != ""},
+        }
+    )
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)

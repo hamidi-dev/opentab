@@ -2494,8 +2494,8 @@ def test_claude_fast_mode_is_split_out_because_it_bills_at_its_own_rate():
     claude-opus-4-8 and claude-opus-5), and models.dev files it as
     experimental.modes.fast, priced 10/50/1/12.5 against the plain 5/25/0.5/6.25. Reading
     only `message.model` folded fast turns into the standard row and repriced them at
-    half. The rename is gated on the catalog carrying the row, so a model with no fast
-    card keeps its own price rather than being split into two identical rows."""
+    half. Keep mode identity even without a rate card, so a later refresh can reprice
+    existing rollups. An unavailable fast card temporarily uses the base rate."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -2514,7 +2514,7 @@ def test_claude_fast_mode_is_split_out_because_it_bills_at_its_own_rate():
             [
                 msg("u1", "claude-opus-5", "standard"),
                 msg("u2", "claude-opus-5", "fast"),
-                # No fast rate card on record -> must NOT be renamed on the speed flag.
+                # No fast rate card yet: keep the mode separate for a later refresh.
                 msg("u3", "claude-haiku-4-5", "fast"),
             ],
         )
@@ -2524,10 +2524,13 @@ def test_claude_fast_mode_is_split_out_because_it_bills_at_its_own_rate():
         assert set(rows) == {
             "anthropic/claude-opus-5",
             "anthropic/claude-opus-5-fast",
-            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-haiku-4-5-fast",
         }
         assert all(r["runs"] == 1 for r in rows.values())
         # Same tokens on both Opus rows, so the "$" estimate differs by the rate alone.
         plain = ot.api_equivalent_cost("anthropic/claude-opus-5", 1000, 500, 0, 2000, 300)
         fast = ot.api_equivalent_cost("anthropic/claude-opus-5-fast", 1000, 500, 0, 2000, 300)
         assert fast == 2 * plain > 0
+        assert ot.model_price("anthropic/claude-haiku-4-5-fast") == ot.model_price(
+            "anthropic/claude-haiku-4-5"
+        )

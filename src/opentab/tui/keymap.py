@@ -1135,8 +1135,7 @@ KEYS: tuple[Key, ...] = (
         if _on_turns(app) and app.active_turn_drill is not None
         else "back to the executions"
         if app.active_subagent_turns
-        else "back to the executions"
-        if app._on_subagents_tab() and app.active_subagent_drill is not None
+        or (app._on_subagents_tab() and app.active_subagent_drill is not None)
         else "back to the Tools drill"
         if app._on_turns_tab() and app._tools_return is not None
         else "back to the Tools rankings"

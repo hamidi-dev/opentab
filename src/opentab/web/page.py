@@ -2930,14 +2930,14 @@ function chrome() {
   }
   if (META.demo) { }
   else if (MODE === 'api') right.appendChild(h('span', { class: 'badge est' }, 'estimated · list prices'));
-  else if (!META.recordsCost) right.appendChild(h('span', { class: 'badge sub' }, '$0 recorded · subscription'));
+  else if (W.some(w => w.unpriced > 0)) right.appendChild(h('span', { class: 'badge sub' }, '$0 = no recorded cost · press $ to estimate'));
   right.appendChild(h('button', { class: 'hbtn', title: 'Trends (T)', onclick: openTrends }, '▚ trends'));
   right.appendChild(h('button', { class: 'hbtn', title: 'Model prices (P)', onclick: openPrices }, '$/M prices'));
   right.appendChild(h('button', { class: 'hbtn', title: 'Theme (C)', onclick: openTheme }, '◑ theme'));
   right.appendChild(h('button', { class: 'hbtn', title: "What's New (W)",
     onclick: e => openWhatsNew(e.currentTarget) }, '✦ what\'s new'));
   if (META.serve) right.appendChild(h('button', { class: 'hbtn', title: 're-read the data sources',
-    onclick: () => fetch('/api/reload', { method: 'POST' }).then(() => location.reload()) }, '↻ refresh'));
+    onclick: () => fetch('/api/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' } }).then(() => location.reload()) }, '↻ refresh'));
   const hints = document.getElementById('hints');
   hints.textContent = '';
    [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['w', 'what-if model'],
@@ -3229,7 +3229,7 @@ function renderTrends() {
   const footer = h('div', { class: 'tr-nav', style: 'margin-top:14px' });
   if (META.demo) footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · esc close'));
   else if (MODE === 'api') footer.append(h('span', { class: 'badge est' }, 'estimated · list prices'));
-  else if (!META.recordsCost) footer.append(h('span', { class: 'tr-note' }, 'press $ to estimate subscription/credit usage at API list prices'));
+  else if (W.some(w => w.unpriced > 0)) footer.append(h('span', { class: 'tr-note' }, 'press $ to estimate unpriced usage at API list prices'));
   else footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · $ what-if · esc close'));
   const panel = h('div', { class: 'tr-panel' },
     h('div', { class: 'tr-head' },
@@ -3666,7 +3666,7 @@ render();
 def render_html(payload: dict) -> str:
     meta = payload.get("meta", {})
     title = "OpenTab — AI spend browser" + (" (demo)" if meta.get("demo") else "")
-    blob = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
+    blob = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
     js = _JS.replace("__THEMES__", json.dumps(themes.web_payload(), separators=(",", ":")))
     page = _SHELL.replace("__TITLE__", html.escape(title))
     page = page.replace("__FAVICON__", _FAVICON)

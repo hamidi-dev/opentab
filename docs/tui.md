@@ -215,8 +215,8 @@ no list-rate charge: Economics labels them explicitly, while Sessions shows $0.
 
 Elsewhere, `$` selects the recorded/API-equivalent cost snapshots. API-equivalent
 pricing starts on outside demo, unless a saved preference overrides it. Header
-labels and subscription hints use the store's `records_cost` capability, not a
-scan for whether all visible rows cost zero. The session-only `w` comparison is
+labels use the store's `records_cost` capability; the recorded-mode `$0` hint uses
+unpriced token counts in the loaded range, including mixed-cost stores. The session-only `w` comparison is
 independent of both the model drill and that global price mode; the arithmetic
 and caveats belong in [Pricing](pricing.md).
 
@@ -480,6 +480,10 @@ drill. `Esc` restores turn/list selection and scroll, with no hidden detail step
 execution turns including follow-ups. `z` expands full prompts and execution
 accounting in the list, or full content inside a trace. Expanded state and prompt
 content participate in the layout cache key. Hints resolve configured bindings.
+Opening an execution preserves the root Turns prompt and trace selection separately
+from the execution cursor. Tab navigation and browse-mode restoration reopen retained
+readers in App before painting; leaving releases child content, so returning queues
+a fresh lazy read rather than depending on a renderer-side transition.
 
 Opening an execution queues optional `node_timeline(root_id, node_id)` on the
 exact owning leaf after a loading frame. Only that execution's rows and prompts
@@ -557,6 +561,8 @@ result only if the store, turn key and reader context still match. A failed read
 shows a safe error; closing and reopening retries. One selected remote turn's full
 events and derived preview remain in memory, reused by `z` and individual output
 expansion even after collapse, until navigation or reload. No disk cache is written.
+Returning by tab or browse mode to a retained root trace queues its keyed fetch again,
+since leaving released the previous content; the next frame shows the loading state.
 
 The transport resolves the snapshot turn against live identity/accounting fields,
 not row ordinals, then fetches its unique live content key. Stale or ambiguous

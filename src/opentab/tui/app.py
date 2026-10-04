@@ -90,6 +90,7 @@ from opentab.presentation.heatmap import (
 from opentab.presentation.whats_new import RELEASES_URL, load_release_history, should_announce
 from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, diff_pager, exporting, keymap
+from opentab.tui.price_worker import PriceRefreshJob
 from opentab.tui.renderer import Renderer
 from opentab.tui.search_workspace import SearchWorkspace
 from opentab.util import (
@@ -538,6 +539,7 @@ class App:
         self._tools_return: tuple | None = None
         self._tool_projection_cache: tuple | None = None
         self._model_price_revision = 0
+        self._price_refresh_job: PriceRefreshJob | None = None
         self._subagent_snapshot = None
         self._subagent_order: tuple[int, ...] = ()
         self._subagent_selected: int | None = None
@@ -547,6 +549,7 @@ class App:
         self._subagent_prompt: tuple | None = None
         self._subagent_prompt_loading: tuple | None = None
         self._subagent_turns: tuple | None = None
+        self._root_reader_state: tuple | None = None
         self._subagent_turn_rows: list[dict] | None = None
         self._subagent_turns_loading: tuple | None = None
         self._subagent_turns_error = ""
@@ -1469,6 +1472,11 @@ class App:
         text = text.strip()
         previous = self.note_for(session.id)
         notes, error = update_note(session.id, text)
+        if error == "newer_version":
+            self.notify(
+                "note not saved: notes use a newer format — upgrade OpenTab to edit them", "error"
+            )
+            return
         if error == "unreadable":
             self.notify(
                 f"note not saved: {short_path(notes_path(), 60)} is unreadable — "
@@ -2780,6 +2788,10 @@ class App:
         # also closes the trace, without a second independently tracked session ID.
         if self.trace_drill is None or not self.reading_turn_list:
             return None
+        if self.active_subagent_turns and not 0 <= self.trace_drill < len(
+            self._subagent_turn_rows or []
+        ):
+            return None
         return self.trace_drill
 
     @property
@@ -2893,6 +2905,7 @@ class App:
             and self._on_subagents_tab()
             and scope[0] is self._subagent_snapshot
             and self.active_subagent_drill == scope[1]
+            and not self.subagent_turns_unavailable()
         )
 
     def reader_turn_rows(self, workflow_id: str) -> list[dict]:
@@ -2961,15 +2974,20 @@ class App:
 
     def _clear_subagent_turns(self) -> None:
         if self._subagent_turns is not None:
-            self.turn_drill = self._turn_drill_session = self.trace_drill = None
-            self._turn_cursor = self._trace_cursor = 0
-            self._turn_follow = False
+            if self._root_reader_state is not None:
+                (
+                    self.trace_drill,
+                    self._trace_cursor,
+                    self._turn_follow,
+                    self._trace_list_scroll,
+                ) = self._root_reader_state
             self._clear_trace_expansion()
             self._turn_runs_cache = None
             self.renderer._turn_layout_cache = None
             self.renderer._turn_header_at = {}
             self.renderer._turn_cursor_line = None
         self._subagent_turns = self._subagent_turns_loading = None
+        self._root_reader_state = None
         self._subagent_turn_rows = self._subagent_trace = None
         self._subagent_turns_error = ""
         self.subagent_expanded = False
@@ -2981,8 +2999,14 @@ class App:
         if self.active_subagent_turns:
             return True
         self._clear_subagent_turns()
-        self.turn_drill = self._turn_drill_session = self.trace_drill = None
-        self._turn_cursor = self._trace_cursor = 0
+        self._root_reader_state = (
+            self.trace_drill,
+            self._trace_cursor,
+            self._turn_follow,
+            self._trace_list_scroll,
+        )
+        self.trace_drill = None
+        self._trace_cursor = 0
         self._turn_follow = False
         self._clear_trace_expansion()
         self._subagent_turns = (self._subagent_snapshot, self.active_subagent_drill)
@@ -3211,7 +3235,7 @@ class App:
     @property
     def active_turn_drill(self) -> int | None:
         wf = self.current_session()
-        if self._subagent_turns is not None and not self.active_subagent_turns:
+        if self._subagent_turns is not None:
             return None
         if self.turn_drill is None or wf is None or self._turn_drill_session != wf.id:
             return None
@@ -3811,7 +3835,22 @@ class App:
         )
 
     def refresh_prices_action(self) -> None:
+        if self._price_refresh_job is not None:
+            self.notice = "price refresh already in progress…"
+            return
         self.notice = "fetching prices from models.dev…"
+        self._price_refresh_job = PriceRefreshJob(lambda: refresh_model_prices(invalidate=False))
+
+    def poll_price_refresh(self) -> None:
+        job = self._price_refresh_job
+        if job is None or not job.done.is_set():
+            return
+        self._price_refresh_job = None
+        if job.error:
+            self.notify(f"price refresh failed: {job.error}", "error")
+            return
+        # Selection can change while fetching. Reprice the current store and preserve
+        # the tool selected now, not a stale cursor captured when the request began.
         wf = self.current_session() if self.view == "session" else None
         selected = (
             self.selected_tool_ranking(wf.id)
@@ -3819,11 +3858,6 @@ class App:
             else None
         )
         tool_key = (selected["kind"], selected["name"]) if selected else None
-        try:
-            count, _ = refresh_model_prices()
-        except (OSError, ValueError) as exc:
-            self.notify(f"price refresh failed: {exc}", "error")
-            return
         invalidate_price_cache()
         self._model_economics_cache.clear()
         self.renderer._turn_layout_cache = None
@@ -3838,7 +3872,7 @@ class App:
         # _ensure_models is already satisfied, so explicitly reject a now-unpriced target.
         self._revalidate_whatif()
         self.prices_scroll = 0
-        self.notify(f"refreshed {count} model prices from models.dev", "success")
+        self.notify(f"refreshed {job.count} model prices from models.dev", "success")
 
     def unknown_priced_models(self) -> list[str]:
         out: list[str] = []
@@ -5982,6 +6016,25 @@ class App:
         tabs = self.current_tabs()
         self.tab = tabs.index(name) if name in tabs else 0
 
+    def select_tab(self, index: int) -> None:
+        """Release reader content and reopen a retained execution before painting."""
+        if self.active_tab_name() == "Changes":
+            self._clear_changes()
+        self._tools_return = None
+        self._clear_subagent_prompt()
+        self._clear_trace_expansion()
+        self.tab = index % len(self.current_tabs())
+        self.scroll = 0
+        self._resume_turn_reader()
+
+    def _resume_turn_reader(self) -> None:
+        """Restore the retained reader and queue any content released on departure."""
+        if self._on_subagents_tab() and self.active_subagent_drill is not None:
+            if not self.subagent_turns_unavailable():
+                self.open_subagent_turns()
+        elif self._on_turns_tab():
+            self._queue_remote_trace()
+
     def set_focus(self, name: str) -> None:
         self._tools_return = None
         active_tab = self.active_tab_name()
@@ -6124,6 +6177,8 @@ class App:
         # open it fresh at the top. The snapshot is value-anchored, so it self-heals against
         # data changes (see _capture_mode_memory) and needs no cache-invalidation hook.
         self._remember_mode_position()
+        self._clear_subagent_prompt()
+        self._clear_trace_expansion()
         self.browse_mode = mode
         saved = self._mode_memory.get(mode)
         if saved is not None:
@@ -6172,6 +6227,7 @@ class App:
         # tabs); fall back to the first tab rather than a stale index into another tab set.
         self.tab = tabs.index(tab_name) if tab_name in tabs else 0
         self.scroll = max(0, int(saved["scroll"]))
+        self._resume_turn_reader()
 
     def drill_in(self) -> None:
         if self.view == "browse":
@@ -6964,7 +7020,10 @@ class App:
             return 50
         return (
             self.TOAST_POLL_MS
-            if self.toasts or self._remote_trace_job is not None or self._change_pending
+            if self.toasts
+            or self._remote_trace_job is not None
+            or self._change_pending
+            or self._price_refresh_job is not None
             else -1
         )
 
@@ -7052,6 +7111,9 @@ class App:
         try:
             self._run(stdscr)
         finally:
+            # A daemon fetch may finish its explicitly requested atomic cache write;
+            # it owns no App/store state and must never delay quitting the terminal.
+            self._price_refresh_job = None
             self._close_conversation_search()
             self._invalidate_changes(close=True)
             pending = self._remote_trace_job
@@ -7105,6 +7167,7 @@ class App:
         first = True
         launch_recorded = False
         while True:
+            self.poll_price_refresh()
             self.poll_remote_trace()
             self.poll_conversation_search()
             self.poll_changes()
@@ -8426,22 +8489,10 @@ class App:
                 self.drill_out()
             return True
         if act == "tab_prev":
-            if self.active_tab_name() == "Changes":
-                self._clear_changes()
-            self._tools_return = None
-            self._clear_subagent_prompt()
-            self._clear_trace_expansion()
-            self.tab = (self.tab - 1) % len(self.current_tabs())
-            self.scroll = 0
+            self.select_tab(self.tab - 1)
             return True
         if act == "tab_next":
-            if self.active_tab_name() == "Changes":
-                self._clear_changes()
-            self._tools_return = None
-            self._clear_subagent_prompt()
-            self._clear_trace_expansion()
-            self.tab = (self.tab + 1) % len(self.current_tabs())
-            self.scroll = 0
+            self.select_tab(self.tab + 1)
             return True
         if act == "top":
             self.jump(to_end=False, stdscr=stdscr)
@@ -9053,13 +9104,7 @@ class App:
                 # active and j/k keeps moving it instead.
                 self.drill_in()
             if self.tab != value:
-                if self.active_tab_name() == "Changes":
-                    self._clear_changes()
-                self._tools_return = None
-                self._clear_subagent_prompt()
-                self._clear_trace_expansion()
-                self.tab = value
-                self.scroll = 0
+                self.select_tab(value)
             return
         if kind == "changeline":
             ordinal = getattr(self.renderer, "_change_row_at", {}).get(value)

@@ -567,6 +567,18 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._check_host():
             return
+        # Host validation blocks rebinding, not a browser POST directly to loopback.
+        # JSON is not a CORS-safelisted content type; this server grants no preflight.
+        origin = self.headers.get("Origin")
+        expected_origin = "http://" + (self.headers.get("Host") or "").lower()
+        if (origin is not None and origin.lower() != expected_origin) or self.headers.get(
+            "Sec-Fetch-Site"
+        ) == "cross-site":
+            self._send(403, "text/plain; charset=utf-8", b"forbidden origin")
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._send(415, "text/plain; charset=utf-8", b"application/json required")
+            return
         path = self.path.split("?", 1)[0]
         server: ReportServer = self.server  # type: ignore[assignment]
         if path == "/api/reload":

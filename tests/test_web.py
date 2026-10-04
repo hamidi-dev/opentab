@@ -391,7 +391,7 @@ def test_web_tools_explorer_payload_is_allowlisted_fractional_and_reprices_whole
     text = json.dumps(extras)
     assert "never-ship-this" not in text
     assert all(word not in text for word in ("content_key", "arguments", "result"))
-    assert "<\\/script>" in ot.render_html({"meta": {}, "toolCalls": extras["toolCalls"]})
+    assert "\\u003c/script>" in ot.render_html({"meta": {}, "toolCalls": extras["toolCalls"]})
 
     # Static reports retain the lazy boundary: building one must neither query nor embed
     # per-session tool calls, prompts, or the deliberately hostile fixture data above.
@@ -583,13 +583,18 @@ def test_web_session_extras_context_gated_by_curve_support():
 
 def test_web_render_html_defuses_embedded_script_tags():
     w = workflow("w1", "2026-05-01 10:00:00")
-    w.title = "evil</script><script>alert(1)</script>"
+    w.title = "HTML debugging <!--<script and evil</script><script>alert(1)</script>"
     page = ot.render_html(ot.build_payload(app_with([w])))
     # Exactly the shell's two script blocks survive; the title's closing tags are
     # escaped inside the JSON blob so they can't break out of the data block.
     assert page.count("</script>") == 2
-    assert "<\\/script>" in page
+    assert "\\u003c/script>" in page
     assert 'id="opentab-data"' in page
+    blob = re.search(
+        r'<script type="application/json" id="opentab-data">(.*?)</script>', page, re.S
+    ).group(1)
+    assert "<" not in blob
+    assert json.loads(blob)["workflows"][0]["title"] == w.title
 
 
 def test_web_html_command_writes_the_report_file():
@@ -1821,7 +1826,12 @@ def test_web_node_prompt_endpoint_is_lazy_private_and_snapshot_bound():
         reader.reset_mock(side_effect=True)
         # Invalidation rejects the old ordinal before resolving any node or reading content.
         urllib.request.urlopen(
-            urllib.request.Request(base + "/api/reload", data=b"", method="POST")
+            urllib.request.Request(
+                base + "/api/reload",
+                data=b"",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
         ).read()
         assert server._page is None and server._node_snapshot is None
         with patch.object(app, "session_node_rows", side_effect=AssertionError("stale index")):
@@ -1868,8 +1878,37 @@ def test_web_server_is_hardened_against_csrf_and_dns_rebinding():
             raise AssertionError("expected a 405")
         except urllib.error.HTTPError as exc:
             assert exc.code == 405
-        req = urllib.request.Request(base + "/api/reload", data=b"", method="POST")
+        req = urllib.request.Request(
+            base + "/api/reload",
+            data=b"",
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": base},
+        )
         assert json.loads(urllib.request.urlopen(req).read().decode("utf-8")) == {"ok": True}
+        from unittest.mock import patch
+
+        with patch.object(server, "reload") as reload, patch.object(
+            server, "refresh_machine"
+        ) as refresh:
+            for endpoint in ("reload", "refresh"):
+                for headers, status in (
+                    ({"Content-Type": "text/plain"}, 415),
+                    ({"Content-Type": "application/x-www-form-urlencoded"}, 415),
+                    ({"Content-Type": "application/json", "Origin": "https://evil.example"}, 403),
+                    ({"Content-Type": "application/json", "Origin": "null"}, 403),
+                    ({"Content-Type": "application/json", "Origin": base + "0"}, 403),
+                    ({"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"}, 403),
+                ):
+                    req = urllib.request.Request(
+                        base + "/api/" + endpoint, data=b'{"machine":"server"}', headers=headers
+                    )
+                    try:
+                        urllib.request.urlopen(req)
+                        raise AssertionError("cross-origin or simple POST accepted")
+                    except urllib.error.HTTPError as exc:
+                        assert exc.code == status
+            reload.assert_not_called()
+            refresh.assert_not_called()
         # DNS rebinding: a foreign Host header is rejected on a loopback bind...
         req = urllib.request.Request(base + "/", headers={"Host": "evil.example.com"})
         try:
@@ -2100,7 +2139,12 @@ def test_web_refresh_endpoint_ignores_malformed_and_unnamed_requests():
     base = f"http://127.0.0.1:{server.server_address[1]}"
 
     def post(raw):
-        req = urllib.request.Request(base + "/api/refresh", data=raw, method="POST")
+        req = urllib.request.Request(
+            base + "/api/refresh",
+            data=raw,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         return json.loads(urllib.request.urlopen(req).read().decode("utf-8"))
 
     try:

@@ -587,6 +587,57 @@ def test_refresh_model_prices_rejects_empty_response():
         assert not os.path.exists(os.path.join(tmp, "p.json"))  # nothing written on failure
 
 
+def test_price_refresh_concurrent_writers_publish_complete_files_and_clean_failed_temps():
+    import threading
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src, dest = os.path.join(tmp, "api.json"), os.path.join(tmp, "prices.json")
+        with open(src, "w") as fh:
+            json.dump(
+                {"anthropic": {"models": {"claude-opus-5": {"cost": {"input": 5, "output": 25}}}}},
+                fh,
+            )
+        barrier = threading.Barrier(2)
+        replace = os.replace
+        errors = []
+        temps = []
+
+        def publish(source, target):
+            temps.append(source)
+            barrier.wait(timeout=5)
+            replace(source, target)
+
+        def refresh():
+            try:
+                pricing.refresh_model_prices("file://" + src, dest, invalidate=False)
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(pricing.os, "replace", side_effect=publish):
+            threads = [threading.Thread(target=refresh) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+        assert not errors and all(not thread.is_alive() for thread in threads)
+        assert len(set(temps)) == 2
+        with open(dest) as fh:
+            before = fh.read()
+        assert json.loads(before)["providers"]["anthropic"]["models"]
+        with patch.object(pricing.json, "dump", side_effect=ValueError("failed encoding")):
+            try:
+                pricing.refresh_model_prices("file://" + src, dest, invalidate=False)
+                raise AssertionError("expected encoding failure")
+            except ValueError:
+                pass
+        with open(dest) as fh:
+            assert fh.read() == before
+        assert not any(name.endswith(".tmp") for name in os.listdir(tmp))
+
+
 def test_model_price_uses_embedded_table_without_cache():
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
