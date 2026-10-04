@@ -67,7 +67,8 @@ are ignored, and the defaults are shown):
   (summaries pulled from other machines). Local rollups and prices can be regenerated; deleting pulled
   summaries removes offline history until you pull or copy them again.
 - Only when you ask: an `opentab-*.csv` export (on `e`, in the current directory),
-  an HTML report (`opentab web --html FILE`), or a machine summary
+  an HTML report (`opentab web --html FILE`; `--include-details` also embeds retained
+  user prompts, turn usage, tool attribution and context metrics), or a machine summary
   (`opentab export FILE`; stdout when no file is supplied).
 - Only on explicit conversation indexing: `conversations/index.sqlite3` under the
   cache directory, containing plaintext user/assistant text, titles and source

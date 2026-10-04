@@ -593,6 +593,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "(default FILE: opentab-report.html); selective --demo leaves other data real",
     )
     web.add_argument(
+        "--include-details",
+        action="store_true",
+        help="with --html, embed available Turns, Tools and Context for every exported session; "
+        "includes recorded user prompts and makes the offline file larger",
+    )
+    web.add_argument(
         "--headless",
         action="store_true",
         help="serve but do NOT open a browser (Ctrl-C stops it); the bare `opentab web` "
@@ -1017,7 +1023,11 @@ def _validate_remote_files(parser: argparse.ArgumentParser, args: argparse.Names
 
 
 def _validate_web_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    if getattr(args, "command", None) != "web" or getattr(args, "html", None) is None:
+    if getattr(args, "command", None) != "web":
+        return
+    if getattr(args, "html", None) is None:
+        if getattr(args, "include_details", False):
+            parser.error("web: --include-details requires --html")
         return
     explicit_server_flags = []
     if getattr(args, "web_port", None) is not None:

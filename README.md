@@ -196,6 +196,7 @@ does not build or refresh anything. Retrieved text can enter the agent's model c
 opentab web                        # open the live browser on localhost
 opentab --html report.html          # write a self-contained report
 opentab --demo --html demo.html    # anonymize it for sharing
+opentab web --html full.html --include-details  # bundle Turns, Tools and Context
 ```
 
 The web browser shares the TUI's navigation, themes, trends, and model comparisons.
@@ -211,7 +212,8 @@ part you want to show them.
 
 Turn traces and personal notes are absent from web reports; the TUI and gated
 [CLI/MCP API](docs/programmatic.md#raw-content) provide separate access. The static
-HTML report omits the live Turns, Tools, and Context tabs.
+HTML report includes Turns, Tools, and Context when exported with `--include-details`.
+This embeds retained user prompts and session metrics for offline drill-down.
 [Web browser & exports](docs/web.md).
 
 <a id="fleet"></a>

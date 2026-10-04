@@ -2813,8 +2813,8 @@ function renderSessionOverview(root, sc) {
   if (econ) root.appendChild(econ);
   if (EXTRAS.id === sc.id && EXTRAS.loading)
     root.appendChild(h('div', { class: 'hint' }, 'loading turns & tools…'));
-  if (!META.serve)
-    root.appendChild(h('div', { class: 'hint' }, 'the per-turn timeline, tool attribution and context curve are fetched live — run: opentab --serve'));
+  if (!META.serve && !Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id))
+    root.appendChild(h('div', { class: 'hint' }, 'For Turns, Tools and Context, export with opentab web --html report.html --include-details or run opentab web.'));
 }
 function renderDetail(sc, ws) {
   if (NODE_PROMPT && TAB !== 'Subagents') NODE_DRILL = null;
@@ -2949,10 +2949,16 @@ function chrome() {
 }
 
 function ensureExtras(sc) {
-  if (sc.kind !== 's' || !META.serve || EXTRAS.id === sc.id) return;
+  if (sc.kind !== 's' || EXTRAS.id === sc.id) return;
   const request = ++EXTRAS_REQUEST, session = sc.id;
   TURN_DRILL = null;
   abandonToolNavigation();
+  if (!META.serve) {
+    const x = Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id)
+      ? DATA.sessionExtras[sc.id] : {};
+    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [] };
+    return;
+  }
   EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
   fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
     const current = curScope();

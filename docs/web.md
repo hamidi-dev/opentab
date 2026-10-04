@@ -45,9 +45,25 @@ rather than silently ignoring them.
   `opentab web --demo --html demo.html`. Review it before publishing;
   [demo mode is selective, not fully private](privacy.md#demo-mode).
 
-Static HTML omits the per-session **Turns / Tools / Context** tabs: embedding them
-would require scanning every session up front. It is a snapshot, not a live view;
-generate it again to include new usage.
+By default static HTML omits the per-session **Turns / Tools / Context** tabs.
+To bundle their available data for offline use:
+
+```sh
+opentab web --html report.html --include-details
+```
+
+This explicitly scans every session in the exported catalog and embeds the same
+detail projection used by the live UI: recorded user prompts, per-turn usage,
+tool attribution and call-to-turn navigation, and measured/estimated context data.
+It takes longer and produces a larger file. Date options still set the initial
+browse range; they do not remove other sessions from the export. Use a dedicated
+source when exporting a prepared recording.
+
+Available tabs work from `file://` or a static host without API requests. Sessions
+without retained details keep those tabs hidden. Raw tool arguments/results,
+reasoning text, authored notes and received subagent prompts are not embedded.
+The file is a snapshot; regenerate it to include new usage. `--include-details`
+requires `--html`; ordinary exports and live startup retain lazy detail loading.
 
 A report generated from one selected harness contains only that loaded source. The
 Harnesses sidebar says so explicitly; generate with `opentab web --harness all` to
@@ -124,7 +140,7 @@ In a **live report**, opening one execution separately loads its **Received prom
 the first recorded user message in that execution (the child session for a subagent),
 not the complete system prompt or context payload. The **Title** remains separately
 labeled and is never used as a prompt fallback. Loading is explicit; available text
-is shown in full, preserving whitespace and wrapping long lines. Static reports,
+is shown in full, preserving whitespace and wrapping long lines. Static reports (including `--include-details`),
 demo mode, unsupported nodes and unavailable local records explicitly say the prompt
 is not available. Remote executions do not trigger network or SSH content reads.
 
@@ -158,7 +174,8 @@ not execution fees or tool-result size. Times are owning-turn timestamps, not to
 start/end times. Status and duration are not inferred. Aggregate-only sources retain
 the rankings and breakdowns without inventing a call ledger. No arguments, tool
 results or raw content keys enter the live extras or static report; opening a call
-does not add a raw web trace reader. Static HTML still omits Tools entirely.
+does not add a raw web trace reader. Static HTML includes this explorer only when
+exported with `--include-details`.
 
 ### Running the server
 
@@ -186,7 +203,8 @@ expansion and keyboard focus, and a Tools call jump opens the owning turn's brea
 These are answering-turn usage counts, not typed prompt size. One-hour cache writes
 are a subset, and separate reasoning can be zero when included in output. Recorded
 totals stay independent of category sums, with differences shown explicitly. The
-live payload adds only numeric counts; static reports and raw-content access are unchanged.
+detail projection adds only numeric counts to these breakdowns; `--include-details`
+embeds that same projection without adding raw-content access.
 
 The page's refresh button re-reads local data; it does not automatically re-pull
 remote machines. A pulled machine's own refresh button requests a new summary.
