@@ -1,6 +1,34 @@
 {
   "releases": [
     {
+      "version": "1.28.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Inspect Copilot turns, tool output, subagents and recorded file changes, and read or search its retained conversations. Refresh the index explicitly to include them.", "hint": {"text": "Open a Copilot session; Changes and raw traces are TUI-only"}},
+            {"text": "Find and resume local sessions through a fast cached fzf picker.", "hint": {"text": "Run opentab launch; use --refresh to update its session list"}},
+            {"text": "Copy a selected tool call with its full recorded arguments and output as Markdown.", "availability": "tui", "hint": {"text": "Open a turn, scroll to the call, then copy", "binding": {"context": "main", "action": "copy_conversation"}}}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Compare and sort Models and Harnesses by individual token categories, with a clearer token breakdown."},
+            {"text": "Estimate each request using its context-size pricing tier. Copilot estimates now use route rates and inferred GPT cache writes; recorded totals stay unchanged."},
+            {"text": "Rebuild OpenCode caches and refresh conversation indexes faster, with more detailed opt-in diagnostics."}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "Resume remote sessions with their shell environment and Hermes sessions without a saved directory; keep prices and project sorting consistent when changing visibility or filters."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.28.0"
+    },
+    {
       "version": "1.27.0",
       "sections": [
         {
