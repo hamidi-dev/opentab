@@ -75,6 +75,23 @@ def test_status_is_async_and_does_not_construct_or_discover_service():
         worker.close()
 
 
+def test_custom_harness_combination_reaches_search_service_without_widening_scope():
+    selected = "opencode,claude"
+    service = _Service()
+
+    def factory(args, source):
+        assert source == selected
+        assert args.conversation_sources_only
+        return service
+
+    worker = SearchWorker(_args(), selected, service_factory=factory)
+    try:
+        request = worker.submit("search", query="picker")
+        assert _wait(worker) == [(request, "search", {"query": "picker"}, None)]
+    finally:
+        worker.close()
+
+
 def test_service_is_lazy_thread_owned_and_receives_safe_args_snapshot():
     services = []
     original = _args(no_state=True)

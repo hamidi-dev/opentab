@@ -461,6 +461,8 @@ class App:
         self.machine_menu_index = 0
         self.harness_menu = False
         self.harness_menu_index = 0
+        self.harness_picker_multiple = False
+        self.harness_picker_selection: set[str] = set()
         self.sort_menu = False
         self.sort_menu_index = 0
         self.demo_menu = False
@@ -613,7 +615,7 @@ class App:
         self.machine_pick_index = 0
         self.machine_filter: str | None = None
         # Fleet machine and harness filters are orthogonal and compose globally.
-        self.harness_filter: str | None = None
+        self.harness_filter: frozenset[str] | None = None
         self.conversation_search: SearchWorkspace | None = None
         self.search_intro_seen = False
         self.renderer = Renderer(self)
@@ -651,7 +653,7 @@ class App:
         if self.machine_filter is not None:
             rows = [w for w in rows if self.machine_of(w) == self.machine_filter]
         if self.harness_filter is not None:
-            rows = [w for w in rows if (w.source or "unknown") == self.harness_filter]
+            rows = [w for w in rows if (w.source or "unknown") in self.harness_filter]
         if self.custom_since or self.custom_until:
             if self.custom_since:
                 rows = [w for w in rows if w.created_at[:10] >= self.custom_since]
@@ -1176,7 +1178,7 @@ class App:
         names = sorted(grouped, key=lambda n: grouped[n], reverse=True)
         out: list[tuple[str, str, bool]] = [("", "All harnesses", self.harness_filter is None)]
         for name in names:
-            out.append((name, name, self.harness_filter == name))
+            out.append((name, name, self.harness_filter == frozenset({name})))
         return out
 
     def can_harness_filter(self) -> bool:
@@ -1192,50 +1194,43 @@ class App:
             self.notify("only one harness in the fleet", "error")
             return
         options = self.harness_filter_options()
-        cur = next((i for i, (v, _l, _a) in enumerate(options) if v == self.harness_filter), 0)
+        cur = next((i for i, (_v, _l, active) in enumerate(options) if active), 0)
         self.harness_menu_index = cur
+        self.harness_picker_multiple = bool(self.harness_filter and len(self.harness_filter) > 1)
+        self.harness_picker_selection = set(self.harness_filter or (v for v, _, _ in options if v))
+        if self.harness_picker_multiple:
+            self.harness_menu_index = 0
         self.harness_menu = True
 
-    def select_harness_filter(self, name: str | None) -> None:
-        name = name or None
-        if name == self.harness_filter:
+    @property
+    def harness_filter_label(self) -> str:
+        return ", ".join(sorted(self.harness_filter or ()))
+
+    def select_harness_filter(self, name: str | frozenset[str] | None) -> None:
+        selected = frozenset({name}) if isinstance(name, str) and name else frozenset(name or ())
+        selected = selected or None
+        if selected == self.harness_filter:
             return
         self._tools_return = None
         anchor = self.selection_anchor()
-        self.harness_filter = name
+        self.harness_filter = selected
         self._invalidate_workflow_cache()
         self.restore_selection(anchor)
-        self.notify(f"harness: {name}" if name else "harness filter cleared", "success")
+        self.notify(
+            f"harness: {self.harness_filter_label}" if selected else "harness filter cleared",
+            "success",
+        )
 
     def _revalidate_harness_filter(self) -> None:
         if self.harness_filter is None:
             return
         present = {w.source or "unknown" for w in self.loaded}
-        if not self.machines_present or self.harness_filter not in present:
-            self.harness_filter = None
+        self.harness_filter = (
+            self.harness_filter & present or None if self.machines_present else None
+        )
 
     def handle_harness_menu_key(self, key: int | str) -> bool:
-        options = self.harness_filter_options()
-        if not options:
-            self.harness_menu = False
-            return True
-        if key == 3:  # Ctrl-C still quits
-            return False
-        act = self.keymap.action("menu.harness", key)
-        if act in ("down", "advance"):
-            self.harness_menu_index = (self.harness_menu_index + 1) % len(options)
-        elif act == "up":
-            self.harness_menu_index = (self.harness_menu_index - 1) % len(options)
-        elif act == "first":
-            self.harness_menu_index = 0
-        elif act == "last":
-            self.harness_menu_index = len(options) - 1
-        elif act == "select":
-            self.harness_menu = False
-            self.select_harness_filter(options[self.harness_menu_index % len(options)][0])
-        elif act == "cancel":
-            self.harness_menu = False
-        return True
+        return self._handle_harness_picker_key(key, fleet=True)
 
     def open_harness_picker(self) -> None:
         # Swapping stores would discard pulled machines, so fleets filter instead.
@@ -4164,7 +4159,84 @@ class App:
             return
         cur = self.source_key if self.source_key in order else order[0]
         self.source_menu_index = order.index(cur)
+        self.harness_picker_multiple = "," in self.source_key
+        self.harness_picker_selection = (
+            set(order) - {"all"} if self.source_key == "all" else set(self.source_key.split(","))
+        )
         self.source_menu = True
+
+    def harness_picker_entries(self, *, fleet: bool) -> list[tuple[str, str, bool]]:
+        entries = self.harness_filter_options() if fleet else self.source_menu_entries()
+        if not self.harness_picker_multiple:
+            return entries
+        return [
+            (key, label, key in self.harness_picker_selection)
+            for key, label, _active in entries
+            if key not in ("", "all")
+        ]
+
+    def set_harness_picker_mode(self, multiple: bool, *, fleet: bool) -> None:
+        if multiple == self.harness_picker_multiple:
+            return
+        index_attr = "harness_menu_index" if fleet else "source_menu_index"
+        entries = self.harness_picker_entries(fleet=fleet)
+        index = getattr(self, index_attr)
+        selected = entries[index % len(entries)][0] if entries else None
+        self.harness_picker_multiple = multiple
+        entries = self.harness_picker_entries(fleet=fleet)
+        setattr(
+            self, index_attr, next((i for i, row in enumerate(entries) if row[0] == selected), 0)
+        )
+
+    def _handle_harness_picker_key(self, key: int | str, *, fleet: bool) -> bool:
+        if key == 3:
+            return False
+        context = "menu.harness" if fleet else "menu.source"
+        menu_attr = "harness_menu" if fleet else "source_menu"
+        index_attr = "harness_menu_index" if fleet else "source_menu_index"
+        act = self.keymap.action(context, key)
+        entries = self.harness_picker_entries(fleet=fleet)
+        if act == "cancel" or not entries:
+            setattr(self, menu_attr, False)
+            return True
+        index = getattr(self, index_attr) % len(entries)
+        if act == "mode":
+            self.set_harness_picker_mode(not self.harness_picker_multiple, fleet=fleet)
+            return True
+        if act in ("down", "advance"):
+            index = (index + 1) % len(entries)
+        elif act == "up":
+            index = (index - 1) % len(entries)
+        elif act == "first":
+            index = 0
+        elif act == "last":
+            index = len(entries) - 1
+        elif act == "toggle" and self.harness_picker_multiple:
+            self.harness_picker_selection.symmetric_difference_update({entries[index][0]})
+        elif act == "check_all" and self.harness_picker_multiple:
+            keys = {row[0] for row in entries}
+            self.harness_picker_selection = set() if keys <= self.harness_picker_selection else keys
+        elif act == "select":
+            if self.harness_picker_multiple:
+                selected = [row[0] for row in entries if row[0] in self.harness_picker_selection]
+                if not selected:
+                    self.notify("select at least one harness", "error")
+                    return True
+                if fleet:
+                    self.select_harness_filter(
+                        None if len(selected) == len(entries) else frozenset(selected)
+                    )
+                else:
+                    self.select_source(
+                        "all" if len(selected) == len(entries) else ",".join(selected)
+                    )
+            elif fleet:
+                self.select_harness_filter(entries[index][0])
+            else:
+                self.select_source(entries[index][0])
+            setattr(self, menu_attr, False)
+        setattr(self, index_attr, index)
+        return True
 
     def theme_menu_entries(self) -> list[tuple[str, str, bool]]:
         return [(tid, t["name"], tid == self.theme_id) for tid, t in themes.THEMES.items()]
@@ -4222,7 +4294,7 @@ class App:
 
     def select_source(self, key: str) -> None:
         order = sources.source_cycle(self.args)
-        if key not in order:
+        if key not in order and not ("," in key and set(key.split(",")) <= (set(order) - {"all"})):
             return
         if key == self.source_key:
             self.notice = f"already on {SOURCE_LABELS.get(key, key)}"
@@ -4477,7 +4549,7 @@ class App:
             w.id
             for w in self.loaded
             if (self.machine_filter is None or self.machine_of(w) == self.machine_filter)
-            and (self.harness_filter is None or (w.source or "unknown") == self.harness_filter)
+            and (self.harness_filter is None or (w.source or "unknown") in self.harness_filter)
             and (
                 self.show_ignored_projects
                 or (
@@ -5136,30 +5208,7 @@ class App:
             self.notice = f"{kind}: {shorten(command, 50)}" if not where else f"{kind} on {where}"
 
     def handle_source_menu_key(self, key: int | str) -> bool:
-        # The `H` data-source picker: down/up move, select switches, cancel closes.
-        # advance (`H` again) walks the highlight so repeated taps still move.
-        order = sources.source_cycle(self.args)
-        if not order:
-            self.source_menu = False
-            return True
-        if key == 3:  # Ctrl-C still quits
-            return False
-        act = self.keymap.action("menu.source", key)
-        if act in ("down", "advance"):
-            self.source_menu_index = (self.source_menu_index + 1) % len(order)
-        elif act == "up":
-            self.source_menu_index = (self.source_menu_index - 1) % len(order)
-        elif act == "first":
-            self.source_menu_index = 0
-        elif act == "last":
-            self.source_menu_index = len(order) - 1
-        elif act == "select":
-            self.source_menu = False
-            self.select_source(order[self.source_menu_index % len(order)])
-        elif act == "cancel":
-            self.source_menu = False  # cancel, source unchanged
-        # any other key: ignore and keep the menu open
-        return True
+        return self._handle_harness_picker_key(key, fleet=False)
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.session_sort_key()
@@ -6926,7 +6975,11 @@ class App:
         if getattr(self.store, "demo", False):
             self.notify("conversation search is unavailable in demo mode", "error")
             return
-        if self.source_key and self.source_key not in sources.CONVERSATION_SOURCES | {"all"}:
+        if (
+            self.source_key
+            and self.source_key != "all"
+            and not (set(self.source_key.split(",")) & sources.CONVERSATION_SOURCES)
+        ):
             self.notify(
                 "conversation search needs local "
                 + ", ".join(sources.CONVERSATION_LABELS.values())
@@ -8736,14 +8789,41 @@ class App:
             elif click or double:
                 self.demo_menu = False  # click cancels, demo state unchanged
             return True
-        if self.source_menu:
-            order = sources.source_cycle(self.args)
-            if order and up:
-                self.source_menu_index = (self.source_menu_index - 1) % len(order)
-            elif order and down:
-                self.source_menu_index = (self.source_menu_index + 1) % len(order)
+        if self.source_menu or self.harness_menu:
+            fleet = self.harness_menu
+            entries = self.harness_picker_entries(fleet=fleet)
+            index_attr = "harness_menu_index" if fleet else "source_menu_index"
+            if entries and (up or down):
+                setattr(
+                    self, index_attr, (getattr(self, index_attr) + (-1 if up else 1)) % len(entries)
+                )
             elif click or double:
-                self.source_menu = False  # click cancels, source unchanged
+                # Modal hits take precedence over the view underneath.
+                for region in self.renderer.regions:
+                    if len(region) != 5 or region[0] not in (
+                        "harnesspickertab",
+                        "harnesspickerrow",
+                    ):
+                        continue
+                    kind, ry, x0, x1, index = region
+                    if ry != my or not x0 <= mx <= x1:
+                        continue
+                    if kind == "harnesspickertab":
+                        self.set_harness_picker_mode(bool(index), fleet=fleet)
+                    elif index < len(entries):
+                        setattr(self, index_attr, index)
+                        if self.harness_picker_multiple:
+                            self.harness_picker_selection.symmetric_difference_update(
+                                {entries[index][0]}
+                            )
+                        else:
+                            if fleet:
+                                self.select_harness_filter(entries[index][0])
+                            else:
+                                self.select_source(entries[index][0])
+                            self.source_menu = self.harness_menu = False
+                    return True
+                self.source_menu = self.harness_menu = False
             return True
         if self.machine_menu:
             options = self.machine_filter_options()
@@ -8753,15 +8833,6 @@ class App:
                 self.machine_menu_index = (self.machine_menu_index + 1) % len(options)
             elif click or double:
                 self.machine_menu = False  # click cancels, filter unchanged
-            return True
-        if self.harness_menu:
-            options = self.harness_filter_options()
-            if options and up:
-                self.harness_menu_index = (self.harness_menu_index - 1) % len(options)
-            elif options and down:
-                self.harness_menu_index = (self.harness_menu_index + 1) % len(options)
-            elif click or double:
-                self.harness_menu = False  # click cancels, filter unchanged
             return True
         if self.whatif_menu:
             rows = self.whatif_rows()  # the wheel walks what's on screen, filter included

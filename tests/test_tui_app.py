@@ -3359,6 +3359,112 @@ def test_source_menu_entries_label_all_and_mark_current():
         ot.sources.source_cycle = app._orig_cycle
 
 
+def test_source_menu_multiple_stages_combination_and_cancels_without_switching():
+    app, chosen = _menu_app(cycle=("opencode", "claude", "codex", "all"))
+    try:
+        app.open_source_menu()
+        app.handle_key(None, ord("\t"))
+        assert app.harness_picker_multiple
+        app.handle_key(None, ord("j"))
+        app.handle_key(None, ord(" "))
+        assert app.harness_picker_selection == {"opencode", "claude"}
+        assert not chosen and app.source_key == "opencode"
+        app.handle_key(None, ord("\t"))
+        app.handle_key(None, ord("\t"))
+        assert app.harness_picker_selection == {"opencode", "claude"}
+        app.handle_key(None, 27)
+        assert not chosen and not app.source_menu
+        app.open_source_menu()
+        app.handle_key(None, ord("\t"))
+        assert app.harness_picker_selection == {"opencode"}
+        app.handle_key(None, ord("j"))
+        app.handle_key(None, ord(" "))
+        app.handle_key(None, 10)
+        assert chosen["key"] == "opencode,claude"
+        assert not app.source_menu
+    finally:
+        ot.sources.source_cycle = app._orig_cycle
+
+
+def test_source_menu_multiple_reopens_custom_selection_and_requires_nonempty():
+    app, chosen = _menu_app("opencode,claude", ("opencode", "claude", "codex", "all"))
+    try:
+        app.open_source_menu()
+        assert app.harness_picker_multiple
+        assert [key for key, _, checked in app.harness_picker_entries(fleet=False) if checked] == [
+            "opencode",
+            "claude",
+        ]
+        app.handle_key(None, ord("a"))  # all
+        app.handle_key(None, ord("a"))  # none
+        app.handle_key(None, 10)
+        assert app.source_menu and not chosen
+        assert "at least one" in app.notice
+        app.handle_key(None, ord("a"))
+        app.handle_key(None, 10)
+        assert chosen["key"] == "all"
+    finally:
+        ot.sources.source_cycle = app._orig_cycle
+
+
+def test_source_menu_multiple_applies_real_store_and_search_scope():
+    app = app_with([workflow("old", "2026-06-01 12:00:00")])
+    app.source_key = "codex"
+    merged = FakeStore([workflow("new", "2026-06-01 12:00:00")])
+    with (
+        patch.object(
+            ot.sources, "source_cycle", return_value=["opencode", "claude", "codex", "all"]
+        ),
+        patch.object(ot.sources, "make_store", return_value=(merged, "")) as build,
+    ):
+        app.select_source("opencode,claude")
+        assert app.store is merged and app.source_key == "opencode,claude"
+        assert [row.id for row in app.all_workflows] == ["new"]
+        build.assert_called_once()
+        app.open_conversation_search()
+        assert app.conversation_search.source_key == "opencode,claude"
+        app._close_conversation_search()
+
+
+def test_harness_picker_small_screen_tabs_and_mouse_checkbox_ignore_underlying_regions():
+    cycle = tuple(f"harness-{i}" for i in range(20)) + ("all",)
+    app, chosen = _menu_app("all", cycle)
+    try:
+        app.open_source_menu()
+        with patch.object(ot.curses, "color_pair", return_value=0):
+            app.renderer.regions = [("detail", 0, 0, 80, 20)]
+            screen = FakeScreen(18, 80)
+            app.renderer.draw_source_menu(screen, 18, 80)
+            tab = next(r for r in app.renderer.regions if r[0] == "harnesspickertab" and r[-1] == 1)
+            with patch.object(
+                ot.curses,
+                "getmouse",
+                return_value=(0, tab[2], tab[1], 0, ot.curses.BUTTON1_CLICKED),
+            ):
+                app.handle_mouse()
+            assert app.source_menu and app.harness_picker_multiple
+            app.handle_key(None, ord("G"))
+            app.renderer.regions = []
+            screen = FakeScreen(18, 80)
+            app.renderer.draw_source_menu(screen, 18, 80)
+            text = screen_text(screen)
+            assert "[Multiple]" in text and "[x]  harness-19" in text
+            assert "apply" in text and "toggle" in text
+            row = next(
+                r for r in app.renderer.regions if r[0] == "harnesspickerrow" and r[-1] == 19
+            )
+            with patch.object(
+                ot.curses,
+                "getmouse",
+                return_value=(0, row[2], row[1], 0, ot.curses.BUTTON1_CLICKED),
+            ):
+                app.handle_mouse()
+            assert "harness-19" not in app.harness_picker_selection
+            assert app.source_menu and not chosen
+    finally:
+        ot.sources.source_cycle = app._orig_cycle
+
+
 # --- the machine dimension (fleet view: --pull/--remote) ----------------------
 
 
@@ -4839,6 +4945,37 @@ def test_harness_filter_narrows_by_tool_and_keeps_every_machine():
     assert {w.id for w in app.all_workflows} == {"a", "b", "c"}
 
 
+def test_fleet_multiple_harnesses_compose_with_machine_and_prices_and_revalidate():
+    app = _mixed_fleet()
+    extra = workflow("d", "2026-05-04 10:00:00", cost=2)
+    extra.source, extra.machine = "Codex", "server"
+    app.loaded.append(extra)
+    app._model_by_root = {row.id: [_model_row(row.id, row.total_cost, 100)] for row in app.loaded}
+    store = app.store
+    app.open_harness_menu()
+    app.handle_key(None, ord("\t"))
+    entries = app.harness_picker_entries(fleet=True)
+    app.harness_menu_index = next(i for i, row in enumerate(entries) if row[0] == "Codex")
+    app.handle_key(None, ord(" "))
+    assert app.harness_filter is None
+    app.handle_key(None, 10)
+    assert app.harness_filter == frozenset({"OpenCode", "Claude Code"})
+    assert {w.id for w in app.all_workflows} == {"a", "b", "c"}
+    assert set(app._priced_model_roots()) == {"a", "b", "c"}
+    assert app.store is store
+    app.open_harness_menu()
+    assert app.harness_picker_multiple
+    app.handle_key(None, ord("a"))
+    app.handle_key(None, 27)  # discard all-selection draft
+    assert app.harness_filter == frozenset({"OpenCode", "Claude Code"})
+    app.select_machine_filter("server")
+    assert {w.id for w in app.all_workflows} == {"b"}
+    assert set(app._priced_model_roots()) == {"b"}
+    app.loaded = [w for w in app.loaded if w.source != "Claude Code"]
+    app._revalidate_harness_filter()
+    assert app.harness_filter == frozenset({"OpenCode"})
+
+
 def test_H_in_a_fleet_filters_harness_and_never_swaps_the_store():
     app = _mixed_fleet()
     store_before = app.store
@@ -4848,7 +4985,7 @@ def test_H_in_a_fleet_filters_harness_and_never_swaps_the_store():
     assert opts[0] == ("", "All harnesses", True)
     app.harness_menu_index = next(i for i, (v, _l, _a) in enumerate(opts) if v == "Claude Code")
     app.handle_harness_menu_key(10)  # Enter arms it
-    assert app.harness_filter == "Claude Code"
+    assert app.harness_filter == frozenset({"Claude Code"})
     assert app.store is store_before  # store NOT swapped -- the pulled boxes are still here
     assert {w.id for w in app.all_workflows} == {"c"}
 
@@ -4883,7 +5020,7 @@ def test_armed_harness_filter_is_always_clearable_even_with_one_harness_left():
     app.select_harness_filter("OpenCode")
     app.loaded = [w for w in app.loaded if w.source == "OpenCode"]  # Claude's session gone
     app._revalidate_harness_filter()
-    assert app.harness_filter == "OpenCode"  # still a fleet with that harness -> kept
+    assert app.harness_filter == frozenset({"OpenCode"})  # still a fleet with that harness -> kept
     assert app.can_harness_filter() is True  # armed -> must stay reachable to clear
     app.open_harness_menu()
     assert app.harness_menu is True

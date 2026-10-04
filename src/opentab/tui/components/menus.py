@@ -99,6 +99,7 @@ def windowed_radio_menu(
     empty: StyledLine[str] | None = None,
     label_formatter: Callable[[Entry], str] = str,
     current_suffix: str = "  (current)",
+    checkboxes: bool = False,
 ) -> MenuLayout:
     index = selected_index(selection, len(entries))
     start, end = selection_window(len(entries), index, visible_count)
@@ -111,8 +112,8 @@ def windowed_radio_menu(
     for offset in range(start, end):
         entry, current = entries[offset]
         label = label_formatter(entry)
-        marker = "●" if current else "○"
-        suffix = current_suffix if current else ""
+        marker = ("[x]" if current else "[ ]") if checkboxes else ("●" if current else "○")
+        suffix = current_suffix if current and not checkboxes else ""
         lines.append(StyledLine(f" {marker}  {label}{suffix}", row_style(offset, index)))
         option_rows.append((len(lines) - 1, offset))
     below = len(entries) - end

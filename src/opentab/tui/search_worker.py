@@ -170,7 +170,9 @@ class SearchWorker:
                             "remote_unsupported",
                             "Conversation search requires a local source.",
                         )
-                    if self._source_key not in CONVERSATION_SOURCES | {"all"}:
+                    if self._source_key != "all" and not (
+                        set(self._source_key.split(",")) & CONVERSATION_SOURCES
+                    ):
                         raise ServiceError(
                             "unsupported_harness",
                             "Choose a local conversation harness: "

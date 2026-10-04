@@ -446,6 +446,12 @@ def resolve_source(args: argparse.Namespace, state: dict | None = None) -> str:
     saved = (state or {}).get("source")
     if saved in source_cycle(args):
         return saved
+    if isinstance(saved, str) and "," in saved:
+        # Restore a custom picker selection using only sources still present.
+        selected = set(saved.split(","))
+        keys = [key for key in available_sources(args) if key in selected]
+        if keys:
+            return ",".join(keys)
     if "all" in source_cycle(args):
         return "all"
     present = available_sources(args)
@@ -520,8 +526,12 @@ def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
 
 
 def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
-    if key == "all":
-        keys = available_sources(args)
+    if key == "all" or "," in key:
+        available = available_sources(args)
+        selected = set(key.split(","))
+        if key != "all" and not selected <= set(available):
+            raise SystemExit("selected harnesses are no longer available")
+        keys = available if key == "all" else [k for k in available if k in selected]
         if getattr(args, "conversation_sources_only", False):
             keys = [key for key in keys if key in CONVERSATION_SOURCES]
         subs = [make_store(args, k)[0] for k in keys]
@@ -535,7 +545,10 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
             raise SystemExit("no data sources found (no OpenCode DB, no Claude Code transcripts)")
         if len(subs) == 1:
             return subs[0], "OpenTab: loading…\r"
-        return CombinedStore(subs), "OpenTab: loading all sources…\r"
+        store = CombinedStore(subs)
+        if key != "all":
+            store.source_name = " + ".join(SOURCE_LABELS.get(k, k) for k in keys)
+        return store, "OpenTab: loading selected sources…\r"
     if key == "remote":
         from opentab.stores.remote import MachineTaggedStore
 

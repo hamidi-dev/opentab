@@ -1225,7 +1225,7 @@ KEYS: tuple[Key, ...] = (
         section="pickers",
         # Keep an armed fleet filter reachable to clear, but hide true no-op menus.
         when=lambda app: app.can_switch_source() or app.can_harness_filter(),
-        chip=lambda app: app.harness_filter if app.harness_filter else "harness",
+        chip=lambda app: app.harness_filter_label if app.harness_filter else "harness",
         active=lambda app: app.source_menu or app.harness_menu or bool(app.harness_filter),
     ),
     Key(
