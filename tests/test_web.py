@@ -593,7 +593,7 @@ def test_web_html_command_writes_the_report_file():
     # deep-link into the session (mirrors the TUI's Trends drill).
     assert "trendDrillRows" in text and "Sessions · " in text
     # Every scope Overview carries the TUI's Top sessions section, and the day
-    # Overview the full model mix (day has no Models tab).
+    # Overview the full model mix.
     assert "topSessionsTable" in text and "'Top sessions'" in text and "'Model mix'" in text
     # Turns ▸ headers unfold/hover the whole prompt (serve-only data, baked JS).
     assert "promptFull" in text and "prompt-full" in text
@@ -1256,6 +1256,12 @@ def test_web_model_and_harness_token_columns_execute_shipped_javascript():
         + r"""
 function all(el, tag) { return [...(el.tag === tag ? [el] : []), ...el.children.flatMap(n => all(n, tag))]; }
 const scope = DATA.workflows, models = modelAgg(scope);
+scope[0].date = '2026-05-02 10:00:00';
+scope[1].date = '2026-05-03 10:00:00';
+const dayScope = {kind: 'd', day: '2026-05-03'};
+assert.deepEqual(tabsFor(dayScope), ['Overview', 'Models', 'Projects', 'Sessions']);
+assert.deepEqual(scopeWorkflows(dayScope).map(w => w.id), ['b']);
+assert.equal(modelAgg(scopeWorkflows(dayScope))[0].input, 123);
 assert.equal(models[0].input, 246);
 assert.equal(models[0].reasoning, 912);
 for (const view of [modelsTable('models', scope.flatMap(w => DATA.models[w.id])), sourcesTable('sources', scope)]) {

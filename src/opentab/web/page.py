@@ -1344,7 +1344,7 @@ function tabsFor(sc) {
   const base = { all: ['Overview', 'Models', 'Projects', 'Sessions'],
     y: ['Overview', 'Models', 'Projects', 'Sessions'],
     m: ['Overview', 'Models', 'Projects', 'Sessions'],
-    d: ['Overview', 'Projects', 'Sessions'],
+    d: ['Overview', 'Models', 'Projects', 'Sessions'],
     p: ['Overview', 'Models', 'Sessions'],
     M: ['Overview', 'Sessions', 'Models', 'Projects'] }[sc.kind].slice();
   if (META.combined) base.splice(1, 0, 'Harnesses');

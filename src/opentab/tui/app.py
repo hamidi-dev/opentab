@@ -254,7 +254,7 @@ class App:
     )
     BROWSE_MODE_KEYS = tuple(m.key for m in BROWSE_MODES)
     workflow_tabs = ("Overview", "Subagents")
-    day_tabs = ("Overview", "Projects", "Sessions")
+    day_tabs = ("Overview", "Models", "Projects", "Sessions")
     month_tabs = ("Overview", "Models", "Projects", "Sessions")
     year_tabs = ("Overview", "Models", "Projects", "Sessions")
     project_tabs = ("Overview", "Models", "Sessions")
@@ -5627,25 +5627,7 @@ class App:
         return self.trends and self.trend_drill is None and bool(self.trend_sort_options())
 
     def active_session_sort_options(self) -> tuple[str, ...]:
-        # "last_activity" is a Months/Years feature, per spec, deliberately not Days:
-        # a single Day's Sessions list is read by start time, and an activity can run
-        # into a LATER day than the one the row is filed under -- ranking the list by
-        # a timestamp that can point outside its own scope would be more confusing
-        # than useful there, even though the values themselves are perfectly valid.
-        if self.browse_mode == "time" and self.focus == "days":
-            return tuple(k for k in self.sort_options if k != "last_activity")
         return self.sort_options
-
-    # Where a key the CONTEXT withdrew lands, as opposed to one that was never a
-    # session sort key at all. The two fallbacks are different questions and want
-    # different answers: sort_options[0] ("cost") is the escape hatch for an
-    # unreadable/pre-split state.json, where any stable column will do. A withdrawn
-    # key has a stored preference behind it, so it falls back inside its own column
-    # family -- "last_activity" to "date", the other timestamp on the same column,
-    # rather than to money. This is a first-frame path, not a corruption path:
-    # `focus` starts on "days", so a saved "last_activity" is withdrawn on the
-    # opening screen of every launch that doesn't restore a different panel.
-    SORT_FALLBACKS = {"last_activity": "date"}
 
     # The three lists' active sort keys, each validated against its own vocabulary.
     # Headers and sorters read these directly (never each other's, and never the
@@ -5655,15 +5637,10 @@ class App:
         options = self.active_session_sort_options()
         if self.sort_by in options:
             return self.sort_by
-        fallback = self.SORT_FALLBACKS.get(self.sort_by)
-        return fallback if fallback in options else options[0]
+        return options[0]
 
     def session_sort_reverse(self) -> bool:
-        # The direction belongs to the stored column; falling back to a different
-        # EFFECTIVE key (active_session_sort_options() dropped "last_activity" while
-        # the Days pane is focused) must not carry that column's own reversed flag
-        # onto the fallback column's natural order -- a direction flip saved for
-        # "last_activity" must not silently sort the Days pane oldest-first.
+        # A stale saved key must not reverse the fallback column's natural order.
         return self.sort_reverse if self.sort_by in self.active_session_sort_options() else False
 
     def project_sort_key(self) -> str:

@@ -569,10 +569,7 @@ def test_a_trend_direction_is_only_restored_with_its_column():
 
 
 def test_focused_time_panel_is_persisted_in_state():
-    # Quit reading a month and you come back to that month, not to today. This is
-    # also what keeps a saved "last_activity" sort alive across a restart: the sort
-    # is withdrawn on the Days pane, so without the focus the preference would be
-    # silently withdrawn on the first frame of every launch.
+    # Quit reading a month and you come back to that panel, with the sort intact.
     app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     assert app.focus == "days"  # the fresh-app default this test has to move off
     app.set_focus("months")

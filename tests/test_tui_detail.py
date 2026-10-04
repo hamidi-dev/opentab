@@ -86,6 +86,34 @@ def test_the_zoomed_models_tab_is_the_browse_table_plus_a_cursor():
     assert rows[cursor] == 0 and "opus" in zoomed[cursor]
 
 
+def test_day_models_render_and_drill_within_the_selected_day():
+    app = _models_tab_app()
+    app.focus = "days"
+    app.day_index = next(i for i, day in enumerate(app.panel_days) if day.day == "2026-05-03")
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    rnd = app.renderer
+    with patch("curses.color_pair", return_value=0):
+        screen = FakeScreen()
+        rnd.draw_day_detail(screen, 0, 0, 30, 116)
+    text = screen_text(screen)
+    assert "Daily Model Spend" in text and "haiku" in text and "opus" in text
+    assert "$0.60" in text and "$9.60" not in text
+    app.apply_sort_choice("model")
+    app.model_pick_index = 0
+    assert app.zoom_selected_model() == "haiku"
+    app.drill_in()
+    assert app.active_tab_name() == "Economics" and app.zoom_model == "haiku"
+    assert [w.id for w in app.current_sessions()] == ["c"]
+    app.tab = app.current_tabs().index("Sessions")
+    app.drill_in()
+    assert app.view == "session" and app.current_session().id == "c"
+    app.drill_out()
+    app.drill_out()
+    assert app.active_tab_name() == "Models" and app.zoom_selected_model() == "haiku"
+    assert app.selected_day_summary.day == "2026-05-03"
+
+
 def test_the_models_filter_still_narrows_model_names_in_a_zoom():
     app = _models_tab_app()
     app.drill_in()

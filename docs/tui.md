@@ -175,7 +175,7 @@ the overlay and back.
 
 Selecting a Models row arms `zoom_model` and opens **Economics**, followed by
 **Sessions**. This is more than a session filter: every model-specific metric
-answers what that model contributed within the enclosing year, month, project,
+answers what that model contributed within the enclosing year, month, day, project,
 or machine scope. The model-name filter is cleared on entry so it does not become
 an unrelated session-title query.
 
