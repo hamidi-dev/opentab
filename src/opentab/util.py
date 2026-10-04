@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
+from opentab import progress
 from opentab.accounting.models import Workflow
 from opentab.persistence import paths
 
@@ -149,10 +150,13 @@ def read_files_parallel(paths, max_workers: int | None = None):
     paths = list(paths)
     if not paths:
         return
-    workers = max_workers or _read_worker_count(len(paths))
-    if workers <= 1 or len(paths) == 1:
-        for path in paths:
+    total = len(paths)
+    progress.advance(0, total)
+    workers = max_workers or _read_worker_count(total)
+    if workers <= 1 or total == 1:
+        for done, path in enumerate(paths, 1):
             text = _read_text(path)
+            progress.advance(done)
             if text is not None:
                 yield path, text
         return
@@ -163,7 +167,8 @@ def read_files_parallel(paths, max_workers: int | None = None):
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="opentab-read") as ex:
         for start in range(0, len(paths), window):
             batch = paths[start : start + window]
-            for path, text in zip(batch, ex.map(_read_text, batch)):
+            for done, (path, text) in enumerate(zip(batch, ex.map(_read_text, batch)), start + 1):
+                progress.advance(done)
                 if text is not None:
                     yield path, text
 
