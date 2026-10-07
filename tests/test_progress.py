@@ -2,6 +2,7 @@ import io
 import os
 import tempfile
 import threading
+import time
 
 from opentab import progress, util
 from opentab.stores.combined import CombinedStore
@@ -79,6 +80,22 @@ def test_board_paints_rows_and_erases_them_on_close():
     board.close()
     # Three painted lines: header, OpenCode, summary -> up two, clear below.
     assert out.getvalue().endswith("\r\x1b[2A\x1b[J")
+
+
+def test_a_loop_waiting_for_the_lock_does_not_paint_after_close():
+    out = _Tty()
+    board = progress.Board(out, delay=60)
+    board._delay = 0
+    with board._lock:
+        # Past the stop check and blocked on the lock, as when close() erases first.
+        loop = threading.Thread(target=board._loop)
+        loop.start()
+        time.sleep(0.1)
+        board._stop.set()
+        board._erase()
+    loop.join(timeout=1.0)
+    board.close()
+    assert out.getvalue() == ""
 
 
 def test_a_fast_start_never_paints():
