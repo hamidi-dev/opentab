@@ -830,10 +830,12 @@ class SearchWorkspace:
                 return False
             return True
         if self.consent:
-            if key in (10, 13, ord("y"), ord("Y")):
+            # The menu keys drive the dialog's buttons; y/n stay as the classic answers.
+            action = keymap.action("menu", key)
+            if action == "select" or key in (10, 13, ord("y"), ord("Y")):
                 self._confirm_index()
                 return True
-            if key in (27, ord("n"), ord("N")):
+            if action == "cancel" or key in (27, ord("n"), ord("N")):
                 self.consent = ""
                 self._index_offered = True
                 self.notice = "Index update cancelled; nothing was written."

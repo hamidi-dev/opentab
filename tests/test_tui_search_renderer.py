@@ -76,7 +76,15 @@ def test_search_intro_fits_compact_terminal_and_blocks_underlying_mouse_regions(
             "Back",
         ):
             assert expected in text, (height, width, expected, text)
-        assert not app.renderer.regions
+        # Only the dialog's own buttons are live; nothing underneath is clickable.
+        buttons = {r[4][1]: r for r in app.renderer.regions if r[0] == "button"}
+        assert len(buttons) == len(app.renderer.regions) and set(buttons) == {"select", "cancel"}
+        _kind, y, x0, _x1, _action = buttons["select"]
+        with patch.object(
+            ot.curses, "getmouse", return_value=(0, x0 + 1, y + 1, 0, ot.curses.BUTTON1_CLICKED)
+        ):
+            app.handle_key(None, ot.curses.KEY_MOUSE)
+        assert ws.consent == "" and ws.active
 
 
 def test_search_wheel_reuses_hit_regions_for_the_pane_under_the_pointer():
@@ -540,7 +548,7 @@ def test_search_help_clears_underlying_mouse_regions():
     app, ws = _app()
     ws.help = True
     _paint(app)
-    assert app.renderer.regions == []
+    assert [region[0] for region in app.renderer.regions] == ["button"]  # only its own Close
 
 
 def test_short_preview_keeps_exact_anchor_at_top_across_idle_paints():

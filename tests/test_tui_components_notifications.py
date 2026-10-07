@@ -75,7 +75,6 @@ def test_history_viewport_clamps_scroll_and_stays_inside_narrow_dimensions():
         bottom=12,
         width=20,
         scroll=10_000,
-        close_key="N",
         scroll_keys="j/k",
         fallback_sigil="*",
     )
@@ -84,7 +83,7 @@ def test_history_viewport_clamps_scroll_and_stays_inside_narrow_dimensions():
     assert viewport.y >= 2 and viewport.y + viewport.height <= 12
     assert viewport.scroll == viewport.total_rows - viewport.visible_rows
     assert viewport.rows[-1].text.endswith("0")
-    assert viewport.scroll_hint == " j/k scroll "
+    assert viewport.scroll_hint == "j/k scroll"
 
 
 def test_history_viewport_declines_unpaintable_space():
@@ -96,7 +95,6 @@ def test_history_viewport_declines_unpaintable_space():
             bottom=6,
             width=17,
             scroll=0,
-            close_key="q",
             scroll_keys="j/k",
         )
         is None

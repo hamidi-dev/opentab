@@ -6925,6 +6925,24 @@ class App:
             self.whats_new_index = index
             self.whats_new_scroll = 0
 
+    def press_clicked_button(self, my: int, mx: int) -> bool:
+        # A button click presses the button's own key, so it can never do anything the
+        # keyboard wouldn't. Matched by kind, newest first, never through hit(): overlay
+        # buttons float over body regions registered earlier.
+        for region in reversed(self.renderer.regions):
+            if len(region) != 5 or region[0] != "button":
+                continue
+            _kind, ry, x0, x1, (context, action) = region
+            if ry != my or not x0 <= mx <= x1:
+                continue
+            for spec in self.keymap.specs(context, action):
+                for code in bindings.parse_key(spec):
+                    if self.keymap.action(context, code) == action:
+                        self.handle_key(None, code)
+                        return True
+            return True  # a stale button whose key was unbound: swallow the click
+        return False
+
     def _announce_whats_new(self) -> None:
         main = self.keymap.label("main", "whats_new")
         help_key = self.keymap.label("help", "whats_new")
@@ -7961,6 +7979,9 @@ class App:
         if act == "prices":
             self.open_prices()  # floats over the charts; closing it lands back here
             return True
+        if act == "whats_new":
+            self.open_whats_new()  # floats over the charts; closing it lands back here
+            return True
         if act == "theme":
             self.open_theme_menu()  # live-previews with the charts as the swatch
             return True
@@ -8632,6 +8653,9 @@ class App:
         if act == "trends":
             self.open_trends()  # floats over the table; closing it lands back here
             return True
+        if act == "whats_new":
+            self.open_whats_new()  # floats over the table; closing it lands back here
+            return True
         if act == "help":
             self.help = True
             self.help_scroll = 0
@@ -8758,8 +8782,12 @@ class App:
         click = bool(bstate & curses.BUTTON1_CLICKED)
         double = bool(bstate & curses.BUTTON1_DOUBLE_CLICKED)
 
+        # A labelled button is a deliberate choice, even on the prompts below that
+        # otherwise ignore clicks.
+        if (click or double) and self.press_clicked_button(my, mx):
+            return True
         if self.startup_warning is not None:
-            return True  # a click cannot accidentally dismiss a data-loss warning
+            return True  # a stray click cannot dismiss a data-loss warning
         if self.star_prompt:
             return True  # no click-through to the view underneath the request
         if self.price_prompt:

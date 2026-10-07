@@ -47,6 +47,7 @@ from opentab.tui.components.boxes import (
 from opentab.tui.components.boxes import (
     box_top as component_box_top,
 )
+from opentab.tui.components.buttons import Button, button_bar_layout, button_bar_width
 from opentab.tui.components.charts import bar_chart, treemap_rects
 from opentab.tui.components.modal import StyledLine, modal_layout
 from opentab.tui.components.navigation import (
@@ -252,14 +253,18 @@ class Renderer:
     def _keys(self, ctx: str, *actions: str) -> str:
         return "/".join(filter(None, (self.app.keymap.label(ctx, a) for a in actions)))
 
-    def _menu_title(self, title: str, ctx: str) -> str:
-        parts = [
-            title,
-            self._keys(ctx, "down", "up"),
-            self._key(ctx, "select"),
-            self._key(ctx, "cancel"),
-        ]
-        return " · ".join(p for p in parts if p)
+    def _menu_buttons(
+        self, ctx: str, select: str = "Select", cancel: str = "Cancel", extra=(), status=()
+    ) -> dict:
+        # A picker's bottom border: its own actions, the choice, then Cancel last.
+        return {
+            "buttons": [
+                *extra,
+                self._button(ctx, "select", select),
+                self._button(ctx, "cancel", cancel),
+            ],
+            "status": list(status),
+        }
 
     def __init__(self, app: App) -> None:
         self.app = app
@@ -983,13 +988,15 @@ class Renderer:
                     muted,
                 ),
                 ("   The index stores conversation text locally as plaintext.", muted),
-                ("", 0),
-                (
-                    f" {self._key('menu', 'select')}  Got it     {self._key('menu', 'cancel')}  Back ",
-                    accent | curses.A_REVERSE,
-                ),
             ]
-            self.draw_modal(stdscr, height, width, "Search your past conversations", lines)
+            self.draw_modal(
+                stdscr,
+                height,
+                width,
+                "Search your past conversations",
+                lines,
+                buttons=self._menu_buttons("menu", "Got it", "Back"),
+            )
             return
 
         if ws.consent:
@@ -1007,12 +1014,6 @@ class Renderer:
                 ),
                 ("Source records stay read-only.", muted),
                 ("Running updates may finish after search closes.", muted),
-                ("", 0),
-                (
-                    " Enter / y   " + ("Build index " if building else "Update index "),
-                    accent | curses.A_REVERSE,
-                ),
-                ("Esc / n   Cancel", muted),
             ]
             self.draw_modal(
                 stdscr,
@@ -1021,6 +1022,7 @@ class Renderer:
                 "Build search index?" if building else "Update search index?",
                 lines,
                 center=True,
+                buttons=self._menu_buttons("menu", "Build index" if building else "Update index"),
             )
             return
 
@@ -1242,8 +1244,10 @@ class Renderer:
             if menu == "scope"
             else f"Filter {menu}"
         )
-        title = self._menu_title(title, "menu.search-project" if menu == "project" else "menu")
-        y, x, _h, w = self.draw_modal(stdscr, height, width, title, lines)
+        ctx = "menu.search-project" if menu == "project" else "menu"
+        y, x, _h, w = self.draw_modal(
+            stdscr, height, width, title, lines, buttons=self._menu_buttons(ctx)
+        )
         if menu == "project":
             self.regions.append(("searchfilter-query", y + 2, x, x + w - 1, 0))
         for row, option_index in enumerate(range(start, start + len(visible)), start=y + 4):
@@ -1643,6 +1647,37 @@ class Renderer:
         layout = keybar_layout(parts, width, trailing=trailing)
         for span in layout.spans:
             self.write(stdscr, y, span.x, span.text, attrs[span.style])
+
+    def _button(self, ctx: str, action: str, label: str, enabled: bool = True) -> Button:
+        return Button(self._key(ctx, action), label, action, ctx, enabled)
+
+    def draw_buttons(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        width: int,
+        *,
+        buttons: list[Button] = (),
+        status: list[str] = (),
+    ) -> None:
+        # Centered in [x, x + width), usually an overlay's bottom border. A click on a
+        # button presses its key: App.press_clicked_button reads the ("button", ...,
+        # (ctx, action)) region registered here.
+        layout = button_bar_layout(width, buttons=buttons, status=status)
+        reverse = curses.A_REVERSE
+        ok = self._buttons_ok
+        attrs = {
+            "gap": curses.A_NORMAL,
+            "text": curses.color_pair(1),
+            "key": (curses.color_pair(self._BUTTON_KEY_PAIR) if ok else reverse) | curses.A_BOLD,
+            "label": curses.color_pair(self._TAB_PAIR) if ok else reverse,
+            "off": curses.color_pair(self._BUTTON_OFF_PAIR) if ok else curses.A_DIM,
+        }
+        for span in layout.spans:
+            self.write(stdscr, y, x + span.x, span.text, attrs[span.style])
+        for hit in layout.hits:
+            self.regions.append(("button", y, x + hit.x0, x + hit.x1, (hit.context, hit.action)))
 
     # Each visible list owns its sort arrow; shared screens must not use effective_sort_by.
     def sort_heading(self, key: str, label: str) -> str:
@@ -5299,7 +5334,7 @@ class Renderer:
             box_x,
             box_h,
             box_w,
-            f"Keys · v{__version__} · {self._key('help', 'close')} close",
+            f"Keys · v{__version__}",
             active=True,
         )
 
@@ -5313,15 +5348,16 @@ class Renderer:
             for dx, text, attr in segments:
                 self.write(stdscr, row_y, box_x + 2 + dx, text, attr)
         self._paint_scrollbar(stdscr, box_y + 1, box_x + box_w - 1, len(lines), visible, scroll)
-        if len(lines) > visible:  # only then is there anything to scroll
-            hint = f" {self._keys('help', 'down', 'up')} scroll "
-            self.write(
-                stdscr,
-                box_y + box_h - 1,
-                box_x + max(2, box_w - len(hint) - 2),
-                hint,
-                curses.color_pair(1),
-            )
+        scroll_keys = self._keys("help", "down", "up")
+        self.draw_buttons(
+            stdscr,
+            box_y + box_h - 1,
+            box_x + 2,
+            box_w - 4,
+            buttons=[self._button("help", "close", "Close")],
+            # Only a clipped page has anything to scroll.
+            status=[f"{scroll_keys} scroll" if len(lines) > visible and scroll_keys else ""],
+        )
 
     def whats_new_lines(self, inner_w: int) -> list[list[tuple[int, str, int]]]:
         notes = self.app.whats_new_notes
@@ -5387,8 +5423,6 @@ class Renderer:
         box_y, box_x, box_h, box_w = layout.y, layout.x, layout.height, layout.width
         for row in range(box_y, box_y + box_h):
             self.write(stdscr, row, box_x, " " * box_w)
-        close = self._key("whats-new", "close")
-        release = self._key("whats-new", "open_release")
         viewed_version = (self.app.whats_new_notes or {}).get("version", self.app.whats_new_version)
         title = f"What's New · v{viewed_version}"
         border = curses.color_pair(6) | curses.A_BOLD
@@ -5404,33 +5438,26 @@ class Renderer:
                 self.write(stdscr, row_y, box_x + 3 + dx, text, attr)
         self._paint_scrollbar(stdscr, box_y + 1, box_x + box_w - 1, len(lines), visible, scroll)
         scroll_keys = self._keys("whats-new", "down", "up")
-        older = self._key("whats-new", "older")
-        newer = self._key("whats-new", "newer")
-        position = (
-            f"{self.app.whats_new_index + 1}/{len(self.app.whats_new_history)}"
-            if self.app.whats_new_history
-            else ""
+        history = len(self.app.whats_new_history)
+        position = f"{self.app.whats_new_index + 1}/{history}" if history else ""
+        index = self.app.whats_new_index
+        # Newer/Older keep their places at either end of the history, greyed out.
+        self.draw_buttons(
+            stdscr,
+            box_y + box_h - 1,
+            box_x + 2,
+            box_w - 4,
+            buttons=[
+                self._button("whats-new", "newer", "Newer", index > 0),
+                self._button("whats-new", "older", "Older", index + 1 < history),
+                self._button("whats-new", "open_release", "Full release"),
+                self._button("whats-new", "close", "Close"),
+            ],
+            status=[
+                f"{scroll_keys} scroll" if len(lines) > visible and scroll_keys else "",
+                position,
+            ],
         )
-        hints = [
-            f"{newer} newer" if newer and self.app.whats_new_index > 0 else "",
-            position,
-            f"{older} older"
-            if older and self.app.whats_new_index + 1 < len(self.app.whats_new_history)
-            else "",
-            f"{close} close" if close else "",
-            f"{release} full release" if release else "",
-            f"{scroll_keys} scroll" if len(lines) > visible and scroll_keys else "",
-        ]
-        hint = " · ".join(part for part in hints if part)
-        if hint:
-            label = f" {shorten(hint, box_w - 6)} "
-            self.write(
-                stdscr,
-                box_y + box_h - 1,
-                box_x + (box_w - display_width(label)) // 2,
-                label,
-                curses.color_pair(1),
-            )
 
     def _price_source_description(self) -> str:
         # Catalog metadata remains a pricing lookup; the view only receives display text.
@@ -5710,7 +5737,6 @@ class Renderer:
             bottom=bottom,
             width=width,
             scroll=self.app.toast_history_scroll,
-            close_key=self._key("notices", "close"),
             scroll_keys=self._keys("notices", "down", "up"),
             fallback_sigil=None if unicode_screen() else "*",
         )
@@ -5740,14 +5766,14 @@ class Renderer:
             layout.visible_rows,
             layout.scroll,
         )
-        if layout.scroll_hint:
-            self.write(
-                stdscr,
-                layout.y + layout.height - 1,
-                layout.scroll_hint_x,
-                layout.scroll_hint,
-                curses.color_pair(1),
-            )
+        self.draw_buttons(
+            stdscr,
+            layout.y + layout.height - 1,
+            layout.x + 2,
+            layout.width - 4,
+            buttons=[self._button("notices", "close", "Close")],
+            status=[layout.scroll_hint],
+        )
 
     @staticmethod
     def _menu_attr(style: str) -> int:
@@ -5773,6 +5799,7 @@ class Renderer:
         lines: list,
         center: bool = False,
         alert: bool = False,
+        buttons: dict | None = None,
     ) -> tuple[int, int, int, int]:
         # A small centered popup box floating over the current view (cleared interior so
         # the view doesn't bleed through). `lines` is a list of (text, attr); the caller
@@ -5780,11 +5807,19 @@ class Renderer:
         # the bad-role border; callers can center their rows instead of picker-aligning them.
         # Returns the box geometry (y, x, h, w) so a caller can post-paint richer rows --
         # the `w` picker lays its tier tab strip over a placeholder line this way.
+        # `buttons` holds draw_buttons' left/center/right zones for the bottom border.
         content = [
             line if isinstance(line, StyledLine) else StyledLine(str(line[0]), line[1])
             for line in lines
         ]
-        layout = modal_layout(scr_h, scr_w, title, content, center_rows=center)
+        layout = modal_layout(
+            scr_h,
+            scr_w,
+            title,
+            content,
+            center_rows=center,
+            footer_width=button_bar_width(**buttons) if buttons else 0,
+        )
         for row in range(layout.y, layout.y + layout.height):  # clear the footprint first
             self.write(stdscr, row, layout.x, " " * layout.width)
         if alert:
@@ -5803,6 +5838,9 @@ class Renderer:
             )
         for row in layout.rows:
             self.write(stdscr, row.y, row.x, row.text, row.style)
+        if buttons:
+            bottom = layout.y + layout.height - 1
+            self.draw_buttons(stdscr, bottom, layout.x + 2, layout.width - 4, **buttons)
         return layout.y, layout.x, layout.height, layout.width
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -5819,23 +5857,23 @@ class Renderer:
             "harness": "Filter harnesses across machines:",
             "machine": "Filter machines across harnesses:",
         }[kind]
+        extra = []
         if multiple:
             count = sum(checked for _key, _label, checked in entries)
             intro = f"{count} selected" if count else f"Select at least one {noun}."
-            hint = f"{self._key(context, 'toggle')} toggle · {self._key(context, 'check_all')} all/none · "
-        else:
-            hint = ""
-        hint += f"{self._key(context, 'select')} apply · {self._key(context, 'cancel')} cancel"
+            extra = [
+                self._button(context, "toggle", "Toggle"),
+                self._button(context, "check_all", "All/none"),
+            ]
         layout = menus.windowed_radio_menu(
             [
-                StyledLine("Single    Multiple", menus.NORMAL),  # post-painted tabs
+                StyledLine(" " * 20, menus.NORMAL),  # room for the post-painted, centered tabs
                 StyledLine(f"{self._key(context, 'mode')} mode · {intro}", menus.MUTED),
                 StyledLine("", menus.NORMAL),
             ],
             [(label, checked) for _key, label, checked in entries],
             index,
-            menus.option_budget(scr_h, 14),  # chrome, headings, both more-markers, footer
-            footer=[StyledLine(hint, menus.SUBTLE)],
+            menus.option_budget(scr_h, 13),  # chrome, headings, both more-markers
             checkboxes=multiple,
         )
         my, mx, mh, mw = self.draw_modal(
@@ -5844,6 +5882,7 @@ class Renderer:
             scr_w,
             "Machines" if kind == "machine" else "Harnesses",
             self._menu_lines(layout),
+            buttons=self._menu_buttons(context, "Apply", extra=extra),
         )
         if mh > 4:
             self.draw_tabs(
@@ -5854,6 +5893,7 @@ class Renderer:
                 ("Single", "Multiple"),
                 int(multiple),
                 kind="scopepickertab",
+                center=True,
             )
         for row, option in layout.option_rows:
             if row < mh - 4:
@@ -5874,12 +5914,18 @@ class Renderer:
             [(label, checked) for _cat, label, checked in entries],
             self.demo_menu_index,
         )
-        title = (
-            f"Demo · {self._key('menu.demo', 'toggle')} · "
-            f"{self._key('menu.demo', 'check_all')} all · "
-            f"{self._key('menu.demo', 'select')} · {self._key('menu.demo', 'cancel')}"
+        extra = [
+            self._button("menu.demo", "toggle", "Toggle"),
+            self._button("menu.demo", "check_all", "All/none"),
+        ]
+        self.draw_modal(
+            stdscr,
+            scr_h,
+            scr_w,
+            "Demo",
+            self._menu_lines(layout),
+            buttons=self._menu_buttons("menu.demo", "Apply", extra=extra),
         )
-        self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
 
     def draw_machine_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         self._draw_scope_picker(stdscr, scr_h, scr_w, "machine")
@@ -5941,14 +5987,6 @@ class Renderer:
             return f"{pad(shorten(name, namew), namew)} {cell:>10}"
 
         menu_entries = [(row, row[0] == self.whatif_model) for row in entries]
-        hint = (
-            f"{self._key('menu.whatif.filter', 'select')} selects · "
-            f"{self._key('menu.whatif.filter', 'cancel')} drops the filter"
-            if self.whatif_filter_active
-            else f"{self._key('menu.whatif', 'filter')} filter · "
-            f"{self._key('menu.whatif', 'advance')} next · "
-            f"{self._key('menu.whatif', 'cancel')} cancels"
-        )
         erase = self._key("menu.whatif.filter", "erase")
         layout = menus.windowed_radio_menu(
             intro,
@@ -5956,7 +5994,6 @@ class Renderer:
             idx,
             max_rows,
             empty=StyledLine(f"    no model matches — {erase} to widen", menus.NOTICE),
-            footer=[StyledLine("", menus.NORMAL), StyledLine(hint, menus.SUBTLE)],
             label_formatter=format_entry,
             current_suffix="",
         )
@@ -5972,12 +6009,20 @@ class Renderer:
                 )
             )
         catalog = "/".join(bindings.pretty_key(spec) for spec in catalog_specs[:3])
-        ctx = "menu.whatif.filter" if self.whatif_filter_active else "menu.whatif"
-        title = (
-            f"What-if model · {self._keys(ctx, 'down', 'up')} · {catalog} · "
-            f"{self._key(ctx, 'select')} · {self._key(ctx, 'cancel')}"
+        tier_hint = f"{catalog} tier" if catalog else ""
+        if self.whatif_filter_active:
+            buttons = self._menu_buttons(
+                "menu.whatif.filter", cancel="Drop filter", status=[tier_hint]
+            )
+        else:
+            buttons = self._menu_buttons(
+                "menu.whatif",
+                extra=[self._button("menu.whatif", "filter", "Filter")],
+                status=[tier_hint],
+            )
+        my, mx, mh, mw = self.draw_modal(
+            stdscr, scr_h, scr_w, "What-if model", self._menu_lines(layout), buttons=buttons
         )
-        my, mx, mh, mw = self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
         # The tier switch is a real tab strip (the P overlay's view tabs, same renderer,
         # same clickable regions -- handle_mouse routes "whatiftab" hits to the flip):
         # [your models]  models.dev, with the tier's column meaning dimmed beside it.
@@ -6007,11 +6052,17 @@ class Renderer:
             self.theme_menu_index,
             max(4, scr_h - 12),
         )
-        title = (
-            f"Theme · {self._keys('menu.theme', 'down', 'up')} preview · "
-            f"{self._key('menu.theme', 'select')} keep · {self._key('menu.theme', 'cancel')} revert"
+        preview = self._keys("menu.theme", "down", "up")
+        self.draw_modal(
+            stdscr,
+            scr_h,
+            scr_w,
+            "Theme",
+            self._menu_lines(layout),
+            buttons=self._menu_buttons(
+                "menu.theme", "Keep", "Revert", status=[f"{preview} preview" if preview else ""]
+            ),
         )
-        self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
 
     # Friendlier one-word names for the raw sort keys shown in the `s` picker.
     SORT_LABELS = {
@@ -6073,8 +6124,9 @@ class Renderer:
             stdscr,
             scr_h,
             scr_w,
-            self._menu_title("Sort by", "menu.sort"),
+            "Sort by",
             self._menu_lines(layout),
+            buttons=self._menu_buttons("menu.sort"),
         )
 
     def draw_trace_call_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -6100,7 +6152,7 @@ class Renderer:
         # This modal owns hit testing; never let a row click reach the transcript behind it.
         self.regions.clear()
         y, x, _h, w = self.draw_modal(
-            stdscr, scr_h, scr_w, self._menu_title("Tool calls", "menu"), lines
+            stdscr, scr_h, scr_w, "Tool calls", lines, buttons=self._menu_buttons("menu")
         )
         for offset, (event, _row) in enumerate(calls[start : start + visible]):
             self._add_rows_region("trace-call-pick", y + 2 + offset, x + 1, x + w - 2, event, 1)
@@ -6141,17 +6193,14 @@ class Renderer:
             heading,
             rows,
             self.launch_menu_index,
-            footer=[
-                StyledLine("", menus.NORMAL),
-                StyledLine(f" {self._key('menu.launch', 'cancel')}  cancel", menus.NORMAL),
-            ],
         )
         self.draw_modal(
             stdscr,
             scr_h,
             scr_w,
-            self._menu_title("Launch session", "menu.launch"),
+            "Launch session",
             self._menu_lines(layout),
+            buttons=self._menu_buttons("menu.launch", "Launch"),
         )
 
     def draw_price_prompt(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -6165,14 +6214,10 @@ class Renderer:
         lines += [(f"  • {n}", curses.A_NORMAL) for n in shown]
         if len(names) > len(shown):
             lines.append((f"  … and {len(names) - len(shown)} more", curses.A_NORMAL))
-        accent = curses.color_pair(6) | curses.A_BOLD
         lines += [
             ("", 0),
             ("Fetch current list prices from models.dev?", curses.A_NORMAL),
-            ("", 0),
-            (f" {self._key('prompt.prices', 'accept')}   yes, fetch now", accent),
-            (f" {self._key('prompt.prices', 'decline')}   not now (ask again next run)", accent),
-            (f" {self._key('prompt.prices', 'never')}   don't ask again", accent),
+            ("Not now asks again next run.", curses.color_pair(1)),
             ("", 0),
             (
                 "anytime: --refresh-models, or "
@@ -6181,7 +6226,14 @@ class Renderer:
                 curses.color_pair(1),
             ),
         ]
-        self.draw_modal(stdscr, scr_h, scr_w, "Unpriced models found", lines)
+        buttons = [
+            self._button("prompt.prices", "accept", "Fetch now"),
+            self._button("prompt.prices", "never", "Never ask"),
+            self._button("prompt.prices", "decline", "Not now"),
+        ]
+        self.draw_modal(
+            stdscr, scr_h, scr_w, "Unpriced models found", lines, buttons={"buttons": buttons}
+        )
 
     def draw_star_prompt(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         accent = curses.color_pair(6) | curses.A_BOLD
@@ -6192,15 +6244,19 @@ class Renderer:
             ("For new releases, choose on GitHub:", curses.A_NORMAL),
             ("Watch > Custom > Releases", curses.A_NORMAL),
             ("", 0),
-            (f" {self._key('prompt.star', 'open')}   open repository", accent),
-            (f" {self._keys('prompt.star', 'remind')}   remind me in 30 days", accent),
-            (f" {self._key('prompt.star', 'dismiss')}   dismiss permanently", accent),
+            ("Later asks again in 30 days.", curses.color_pair(1)),
         ]
-        self.draw_modal(stdscr, scr_h, scr_w, "Support OpenTab", lines)
+        buttons = [
+            self._button("prompt.star", "open", "Open repository"),
+            self._button("prompt.star", "dismiss", "Don't ask again"),
+            self._button("prompt.star", "remind", "Later"),
+        ]
+        self.draw_modal(
+            stdscr, scr_h, scr_w, "Support OpenTab", lines, buttons={"buttons": buttons}
+        )
 
     def draw_startup_warning(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         warning = self.startup_warning or {}
-        accent = curses.color_pair(6) | curses.A_BOLD
         danger = curses.color_pair(5) | curses.A_BOLD
         lines = [
             (" DATA LOSS RISK ", danger | curses.A_REVERSE),
@@ -6213,21 +6269,7 @@ class Renderer:
         ]
         lines += [(text, curses.A_NORMAL) for text in warning.get("lines", [])]
         queued = len(self.startup_warnings()) - 1
-        lines += [
-            ("", 0),
-            (
-                f"{self._keys('prompt.warning', 'continue')}  continue for now"
-                + (f"  ({queued} more warning{'s' if queued > 1 else ''})" if queued > 0 else ""),
-                accent,
-            ),
-            (
-                f"{self._key('prompt.warning', 'never')}  "
-                + (
-                    "don't warn again" if self.startup_warning_can_persist else "close for this run"
-                ),
-                accent,
-            ),
-        ]
+        never = "Don't warn again" if self.startup_warning_can_persist else "Close for this run"
         self.draw_modal(
             stdscr,
             scr_h,
@@ -6236,6 +6278,15 @@ class Renderer:
             lines,
             center=True,
             alert=True,
+            buttons={
+                "buttons": [
+                    self._button("prompt.warning", "never", never),
+                    self._button("prompt.warning", "continue", "Continue for now"),
+                ],
+                "status": [
+                    f"{queued} more warning{'s' if queued > 1 else ''}" if queued > 0 else ""
+                ],
+            },
         )
 
     # --- Trends overlay -------------------------------------------------------
@@ -6568,6 +6619,9 @@ class Renderer:
     _DIFF_PAIR = 40  # 5 surfaces x 8 foregrounds; clear of all heat/token pairs
     _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
     _TAB_PAIR = 25  # inactive-tab chip (ink2 on panel2); free slot after the price ramp
+    _BUTTON_KEY_PAIR = 31  # a button's key (accent_bright on panel2); after the token ramp
+    _BUTTON_OFF_PAIR = 39  # a disabled button (mut on panel2); after the Tools ramp
+    _buttons_ok = False  # every button pair took; otherwise buttons paint in reverse video
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
     # Did the five token-type pairs take? False on a pair-starved terminal, where the
     # bar falls back to per-type glyphs. Class-level so a Renderer built without curses
@@ -6697,7 +6751,13 @@ class Renderer:
         # An inactive tab is a raised chip (secondary ink on the panel2 surface), so a tab
         # bar reads as tabs instead of grey text on the background. Pair-starved terminals
         # skip it and fall back to plain text -- the active tab's [brackets] still show which.
-        self._set_pair(self._TAB_PAIR, r(roles["ink2"]), r(roles["panel2"]))
+        tab_ok = self._set_pair(self._TAB_PAIR, r(roles["ink2"]), r(roles["panel2"]))
+        # A button is the same raised chip with its key in the focus accent.
+        self._buttons_ok = (
+            tab_ok
+            and self._set_pair(self._BUTTON_KEY_PAIR, r(roles["accent_bright"]), r(roles["panel2"]))
+            and self._set_pair(self._BUTTON_OFF_PAIR, r(roles["mut"]), r(roles["panel2"]))
+        )
         self._init_price_heat()
         self._init_tool_heat()
         self._init_token_series()

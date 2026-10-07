@@ -40,6 +40,10 @@ Stateless layout and formatting live outside those coordinators:
   Builders take explicit data and dimensions, returning text, style spans and
   local geometry. They do not receive App/Renderer or initialize curses. The
   renderer adopts their metadata and paints; App still owns input and loading.
+- Pop-up controls use the button bar (`components/buttons.py`): one centered block on
+  the bottom border, the dismissing action last, status text after it. Each button
+  names its keymap context and action, so its label follows remaps and a click
+  presses that key through `handle_key`; never wire a separate click action.
 - [`views/`](../src/opentab/tui/views/) composes those components into Prices,
   Trends, Tools, Turns, Changes and Subagents layouts. Views receive prepared
   records and display options, not App or stores. Renderer adapters retain lazy
