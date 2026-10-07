@@ -549,12 +549,16 @@ def refresh_model_prices(
 def _mode_price_name(name: str) -> str:
     """Retain mode identity in usage even while its rate card is unavailable."""
     if (
-        str(name).endswith("-fast")
-        and model_family(name) == "anthropic"
-        and not has_catalog_row(name)
+        not str(name).endswith("-fast")
+        or model_family(name) != "anthropic"
+        or has_catalog_row(name)
     ):
-        return name[:-5]
-    return name
+        return name
+    # A date pin precedes the mode suffix; its unpinned fast card beats base rates.
+    unpinned = _MODEL_DATE_SUFFIX.sub("", str(name)[:-5]) + "-fast"
+    if unpinned != name and has_catalog_row(unpinned):
+        return unpinned
+    return name[:-5]
 
 
 def model_price(
