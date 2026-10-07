@@ -1146,3 +1146,14 @@ def test_priority_processing_modes_become_priced_ids_of_their_own():
     assert ot.pricing.model_price("anthropic/claude-opus-5-fast") == tuple(
         2 * x for x in ot.pricing.model_price("anthropic/claude-opus-5")
     )
+
+
+def test_date_pinned_claude_fast_mode_uses_the_unpinned_fast_card():
+    fast = ot.pricing.model_price("claude-opus-5-fast")
+    assert ot.pricing.model_price("claude-opus-5-20260901-fast") == fast
+    assert ot.pricing.model_price("anthropic/claude-opus-5-2026-09-01-fast") == fast
+    # Without any fast card, a pinned fast spelling still falls back to its base rates.
+    assert not ot.pricing.has_catalog_row("claude-sonnet-4-5-fast")
+    assert ot.pricing.model_price("claude-sonnet-4-5-20250929-fast") == ot.pricing.model_price(
+        "claude-sonnet-4-5-20250929"
+    )
