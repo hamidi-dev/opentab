@@ -62,8 +62,7 @@ class HistoryViewport:
     total_rows: int
     visible_rows: int
     scroll: int
-    scroll_hint: str
-    scroll_hint_x: int
+    scroll_hint: str  # passive text for the bottom button bar; empty when all rows fit
 
 
 def wrap_notice(text: str, width: int) -> list[str]:
@@ -193,7 +192,6 @@ def toast_history_viewport(
     bottom: int,
     width: int,
     scroll: int,
-    close_key: str,
     scroll_keys: str,
     fallback_sigil: Optional[str] = None,
 ) -> Optional[HistoryViewport]:
@@ -223,13 +221,8 @@ def toast_history_viewport(
     visible = pager.viewport.visible
     scroll = pager.viewport.offset
     count = len(toasts)
-    title = (
-        f"Notifications ({count}) · {close_key} close"
-        if count
-        else f"Notifications · {close_key} close"
-    )
-    hint = f" {scroll_keys} scroll " if len(rows) > visible else ""
-    hint_x = pager.x + max(2, pager.width - len(hint) - 2) if hint else pager.x
+    title = f"Notifications ({count})" if count else "Notifications"
+    hint = f"{scroll_keys} scroll" if len(rows) > visible and scroll_keys else ""
     return HistoryViewport(
         y=pager.y,
         x=pager.x,
@@ -242,5 +235,4 @@ def toast_history_viewport(
         visible_rows=visible,
         scroll=scroll,
         scroll_hint=hint,
-        scroll_hint_x=hint_x,
     )

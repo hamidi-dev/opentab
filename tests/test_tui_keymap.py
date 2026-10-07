@@ -119,7 +119,7 @@ def test_whats_new_history_uses_remapped_navigation_and_opens_the_viewed_release
     finally:
         ot.curses.color_pair = original
     footer = screen_text(screen)
-    assert "n older" in footer and "p newer" in footer
+    assert "n Older" in footer and "p Newer" in footer
     assert f"2/{len(app.whats_new_history)}" in footer
     with patch("opentab.tui.app.open_path", return_value=True) as opened:
         app.handle_key(None, ord("o"))
@@ -212,10 +212,53 @@ def test_whats_new_uses_full_body_height_and_centers_both_border_labels():
             ot.curses.color_pair = original
         y, x, h, w, _ = frames[0]
         assert y == 3 and h == height - 5
-        for row, phrase in ((y, "What's New"), (y + h - 1, "full release")):
-            label = next(write for write in writes if write[0] == row and phrase in write[2])
-            _, label_x, text, _ = label
-            assert label_x == x + (w - ot.display_width(text)) // 2
+        title = next(write for write in writes if write[0] == y and "What's New" in write[2])
+        assert title[1] == x + (w - ot.display_width(title[2])) // 2
+        footer = [write for write in writes if write[0] == y + h - 1]
+        assert any("Full release" in write[2] for write in footer)
+        left = min(write[1] for write in footer)
+        right = max(write[1] + ot.display_width(write[2]) for write in footer)
+        assert abs((left - x) - (x + w - right)) <= 1
+
+
+def test_whats_new_opens_over_trends_and_prices_and_closes_back_to_them():
+    for opener, flag in (("open_trends", "trends"), ("open_prices", "show_prices")):
+        app = _keymap_app()
+        getattr(app, opener)()
+        app.handle_key(None, ord("W"))
+        assert app.whats_new and getattr(app, flag)
+        app.handle_key(None, 27)
+        assert not app.whats_new and getattr(app, flag)
+
+
+def test_whats_new_footer_buttons_are_clickable():
+    app = _keymap_app()
+    app.open_whats_new()
+    original = ot.curses.color_pair
+    try:
+        ot.curses.color_pair = lambda n: n
+        screen = FakeScreen(24, 80)
+        app.renderer.draw_whats_new(screen, 2, 23, 80)
+    finally:
+        ot.curses.color_pair = original
+    buttons = {r[4][1]: r for r in app.renderer.regions if r[0] == "button"}
+    assert "newer" not in buttons  # greyed out on the newest release, not clickable
+    assert "Newer" in screen_text(screen)
+    assert list(buttons) == ["older", "open_release", "close"]  # Close last
+
+    def click(action):
+        _kind, y, x0, _x1, _action = buttons[action]
+        original = ot.curses.getmouse
+        try:
+            ot.curses.getmouse = lambda: (0, x0, y, 0, ot.curses.BUTTON1_CLICKED)
+            app.handle_mouse()
+        finally:
+            ot.curses.getmouse = original
+
+    click("older")
+    assert app.whats_new and app.whats_new_index == 1
+    click("close")
+    assert not app.whats_new
 
 
 def _keymap_app(workflows=None):
@@ -739,7 +782,7 @@ def test_launch_hint_hides_a_target_shortcut_stolen_by_a_menu_remap():
     app.launch_targets = lambda: [("w", "window", "new window"), ("y", "copy", "copy command")]
     app.keymap = ot.tui.bindings.Keymap({("menu.launch", "down"): ["w"]})
     captured = []
-    app.renderer.draw_modal = lambda *args: captured.extend(args[-1])
+    app.renderer.draw_modal = lambda *args, **_kwargs: captured.extend(args[-1])
     original = ot.curses.color_pair
     try:
         ot.curses.color_pair = lambda n: 0

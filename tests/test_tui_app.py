@@ -110,8 +110,6 @@ def test_startup_warning_is_prominent_dismissible_and_prioritized_over_price_pro
         "DATA LOSS RISK",
         "Source data is temporary.",
         "OpenTab cannot rebuild deleted records.",
-        "continue for now",
-        "don't warn again",
     ):
         row = next(line for line in text.splitlines() if centered in line)
         inner = row[1:-1]
@@ -156,7 +154,7 @@ def test_startup_warnings_queue_so_a_second_harness_is_never_hidden():
         app.renderer.draw_startup_warning(screen, 24, 90)
     finally:
         ot.curses.color_pair = real_pair
-    assert "(1 more warning)" in screen_text(screen)
+    assert "1 more warning" in screen_text(screen)
 
     # "continue" advances rather than clearing the queue: it dismisses nothing.
     app.handle_key(None, 10)
@@ -224,9 +222,10 @@ def test_star_prompt_renders_choices_at_minimum_size_and_blocks_mouse_clickthrou
         "Support OpenTab",
         "A GitHub star helps",
         "Watch > Custom > Releases",
-        "o   open repository",
-        "remind me in 30 days",
-        "z   dismiss permanently",
+        "o Open repository",
+        "z Don't ask again",
+        "r Later",
+        "asks again in 30 days",
     ):
         assert line in text
     with patch.object(ot.curses, "getmouse", return_value=(0, 5, 5, 0, ot.curses.BUTTON1_CLICKED)):
@@ -3449,7 +3448,7 @@ def test_harness_picker_small_screen_tabs_and_mouse_checkbox_ignore_underlying_r
             app.renderer.draw_source_menu(screen, 18, 80)
             text = screen_text(screen)
             assert "[Multiple]" in text and "[x]  harness-19" in text
-            assert "apply" in text and "toggle" in text
+            assert "Apply" in text and "Toggle" in text
             row = next(r for r in app.renderer.regions if r[0] == "scopepickerrow" and r[-1] == 19)
             with patch.object(
                 ot.curses,
@@ -4905,7 +4904,7 @@ def test_machine_picker_mouse_tabs_checkboxes_and_scroll_fit_minimum_screen():
         screen = FakeScreen(18, 80)
         app.renderer.draw_machine_menu(screen, 18, 80)
         assert "[Multiple]" in screen_text(screen)
-        assert "[x]  box-19" in screen_text(screen) and "apply" in screen_text(screen)
+        assert "[x]  box-19" in screen_text(screen) and "Apply" in screen_text(screen)
         row = next(r for r in app.renderer.regions if r[0] == "scopepickerrow" and r[-1] == 19)
         with patch.object(
             ot.curses, "getmouse", return_value=(0, row[2], row[1], 0, ot.curses.BUTTON1_CLICKED)

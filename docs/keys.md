@@ -366,10 +366,11 @@ harness selections compose: selected machines **and** selected harnesses. Choosi
 all machines clears the machine filter. Fleet filters last for the current run;
 reloading drops unavailable selections and clears a filter if none remain.
 
-The global toggles stay live inside Trends and Prices: `?`, `Ctrl-F`, `C`, `H`, `M` (fleet),
-and `D`. Help, What's New and notification history also accept `Ctrl-F`; Help accepts
-the theme, harness, machine and demo pickers too. Other
-modals own their input and show their controls in their title or footer. The Help
+The global toggles stay live inside Trends and Prices: `?`, `W`, `Ctrl-F`, `C`, `H`,
+`M` (fleet), and `D`. Help, What's New and notification history also accept `Ctrl-F`;
+Help accepts the theme, harness, machine and demo pickers too. Other
+modals own their input and show their controls as buttons on their bottom border; a
+click on a button presses its key. The Help
 body describes the view underneath it; close Help before using that view's keys.
 
 `Space` is contextual rather than global. It pages down in browse, zoom and

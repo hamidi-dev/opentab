@@ -43,11 +43,16 @@ def modal_layout(
     lines: Sequence[StyledLine[Style]],
     *,
     center_rows: bool = False,
+    footer_width: int = 0,
 ) -> ModalLayout[Style]:
-    """Size a centered modal and place its visible content rows."""
+    """Size a centered modal and place its visible content rows.
+
+    `footer_width` is the button bar the bottom border must carry.
+    """
     content = tuple(StyledLine(str(line.text), line.style) for line in lines)
     inner_width = max(
-        [display_width(title) + 2, 16] + [display_width(line.text) for line in content]
+        [display_width(title) + 2, 16, footer_width]
+        + [display_width(line.text) for line in content]
     )
     width = min(inner_width + 4, max(24, screen_width - 4))
     height = min(len(content) + 4, max(6, screen_height - 4))

@@ -576,7 +576,7 @@ def test_whatif_picker_renders_the_tier_tab_strip():
             text = screen_text(screen)
             assert "[your models]" in text and " models.dev " in text
             assert "(current)" not in text
-            assert "w next" in text and "again clears" not in text
+            assert "f Filter" in text and "Esc Cancel" in text and "again clears" not in text
             app.handle_whatif_menu_key(ord("w"))
             assert app.whatif_menu_index == 1 and app.whatif_menu
             tabs = [r for r in app.renderer.regions if r[0] == "whatiftab"]
