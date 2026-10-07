@@ -63,7 +63,8 @@ Available tabs work from `file://` or a static host without API requests. Sessio
 without retained details keep those tabs hidden. Raw tool arguments/results,
 reasoning text, authored notes and received subagent prompts are not embedded.
 The file is a snapshot; regenerate it to include new usage. `--include-details`
-requires `--html`; ordinary exports and live startup retain lazy detail loading.
+requires `--html` and writes the report owner-only (`0600` on POSIX), also when
+replacing an existing file; ordinary exports and live startup retain lazy detail loading.
 
 A report generated from one selected harness contains only that loaded source. The
 Harnesses sidebar says so explicitly; generate with `opentab web --harness all` to
