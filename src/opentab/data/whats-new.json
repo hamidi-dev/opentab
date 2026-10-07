@@ -22,6 +22,7 @@
           "title": "Fixed",
           "items": [
             {"text": "Keep Claude Code fast-mode usage as its own -fast model, and refresh prices in the background without freezing the TUI."},
+            {"text": "Load OpenTab's MCP tools in current Claude Code, which rejected their tool list under its newest protocol."},
             {"text": "Detect Konsole and herdr before 0.8.2, which drop palette colours; fix remote sessions, notes saving and date-range labels."}
           ]
         }
