@@ -68,8 +68,11 @@ class Board:
         # A fast warm start finishes inside the delay and never paints at all.
         if self._stop.wait(self._delay):
             return
-        while not self._stop.is_set():
+        while True:
             with self._lock:
+                # Checked under the lock: close() may have erased while this waited.
+                if self._stop.is_set():
+                    return
                 self._paint()
             self._stop.wait(self._interval)
 
