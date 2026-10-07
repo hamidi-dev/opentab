@@ -11,6 +11,7 @@ from opentab.conversations.reader import ConversationError
 SERVER_NAME = "opentab"
 MODERN_VERSION = "2026-07-28"
 LEGACY_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
+TOOLS_LIST_TTL_MS = 3_600_000
 
 _QUERY_PROPERTIES = {
     "range": {
@@ -413,7 +414,13 @@ class McpServer:
                 return self._success(request_id, {})
             if method == "tools/list":
                 result = {"tools": list(TOOLS)}
-                return self._success(request_id, self._modern_result(result) if modern else result)
+                if modern:
+                    # 2026-07-28 makes list results cacheable. The tool set is fixed per
+                    # release and identical for every caller; raw access is gated per call.
+                    result = self._modern_result(
+                        {**result, "ttlMs": TOOLS_LIST_TTL_MS, "cacheScope": "public"}
+                    )
+                return self._success(request_id, result)
             if method == "tools/call":
                 name = params.get("name")
                 arguments = params.get("arguments", {})
