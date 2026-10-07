@@ -497,6 +497,15 @@ def session_extras(app: App, workflow_id: str) -> dict:
     }
 
 
+def _write_owner_only(path: str, text: str) -> None:
+    """Embedded prompts stay owner-only, including when replacing a shared report."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)  # an existing file keeps its mode through O_CREAT
+        fh.write(text)
+
+
 def html_command(app: App, args: argparse.Namespace) -> int:
     payload = build_payload(app)
     if getattr(args, "include_details", False):
@@ -507,8 +516,11 @@ def html_command(app: App, args: argparse.Namespace) -> int:
         }
     path = os.path.expanduser(args.html or DEFAULT_REPORT)
     text = render_html(payload)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    if "sessionExtras" in payload:
+        _write_owner_only(path, text)
+    else:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
     meta = payload["meta"]
     print(
         f"OpenTab browser: {path} ({len(text) // 1024} kB, "

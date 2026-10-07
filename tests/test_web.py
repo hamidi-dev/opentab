@@ -655,6 +655,23 @@ def test_web_detailed_html_embeds_live_projection_only_on_request():
     assert "never-ship-this" not in text  # no arguments, results or raw content keys
 
 
+def test_web_detailed_html_is_owner_only_even_when_replacing_a_shared_report():
+    if os.name == "nt":
+        return  # POSIX permission bits only
+    args = cli.parse_args(["web", "--html", "--no-state"])
+    app = ot.App(ToolsExplorerFakeStore([workflow("w1", "2026-05-01 10:00:00")]), args)
+    with tempfile.TemporaryDirectory() as tmp:
+        args.html = os.path.join(tmp, "report.html")
+        args.include_details = False
+        report.html_command(app, args)
+        os.chmod(args.html, 0o644)
+        args.include_details = True
+        report.html_command(app, args)
+        assert os.stat(args.html).st_mode & 0o777 == 0o600
+        with open(args.html, encoding="utf-8") as fh:
+            assert '"sessionExtras"' in fh.read()
+
+
 def test_web_daily_trend_charts_only_active_days():
     page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-07-01 10:00:00")])))
     # The Daily tab charts only up to the last day with spend, not the full calendar
