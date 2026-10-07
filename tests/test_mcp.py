@@ -139,6 +139,9 @@ def test_mcp_modern_discovery_and_tools_add_completion_metadata():
     assert discovered["result"]["supportedVersions"] == [MODERN_VERSION]
     listed = server.handle(_request("tools/list", meta))
     assert listed["result"]["resultType"] == "complete"
+    assert isinstance(listed["result"]["ttlMs"], int)
+    assert listed["result"]["cacheScope"] == "public"
+    assert "ttlMs" not in server.handle(_request("tools/list"))["result"]
     wrong = {
         "_meta": {
             "io.modelcontextprotocol/protocolVersion": "2099-01-01",
