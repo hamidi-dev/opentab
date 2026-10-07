@@ -1,6 +1,34 @@
 {
   "releases": [
     {
+      "version": "1.29.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Filter to any combination of harnesses or machines, or switch back to a single one or All.", "availability": "tui", "hint": {"text": "Open the picker and press Tab for Multiple; Space toggles", "binding": {"context": "main", "action": "harness"}}},
+            {"text": "Select tool calls inside a turn, jump between them, and copy just the command or just its output.", "availability": "tui", "hint": {"text": "Open a turn and pick a call from a numbered list", "binding": {"context": "main", "action": "trace_calls"}}},
+            {"text": "Bundle Turns, Tools and Context into a static HTML report for offline drill-down.", "availability": "web", "hint": {"text": "Run opentab web --html report.html --include-details"}}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Open subagents straight into their prompt and turns, follow-ups included.", "availability": "tui"},
+            {"text": "See per-harness progress bars while a cold start loads; day views gain a Models tab and Last Activity sorting."}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "Keep Claude Code fast-mode usage as its own -fast model, and refresh prices in the background without freezing the TUI."},
+            {"text": "Detect Konsole and herdr before 0.8.2, which drop palette colours; fix remote sessions, notes saving and date-range labels."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.29.0"
+    },
+    {
       "version": "1.28.0",
       "sections": [
         {
