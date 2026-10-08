@@ -1,4 +1,5 @@
 import tempfile
+from unittest.mock import patch
 
 import opentab as ot
 
@@ -12,6 +13,7 @@ from tests._support import (
     app_with,
     box_cells,
     screen_text,
+    text_before_cursor,
     workflow,
 )
 
@@ -489,6 +491,12 @@ def test_whatif_picker_filters_the_model_list():
         for ch in "opus4-5":  # a subsequence over the fully-qualified name
             app.handle_whatif_menu_key(ord(ch))
         assert [n for n, _t in app.whatif_rows()] == ["anthropic/claude-opus-4.5"]
+        screen = FakeScreen(30, 100)
+        app.renderer.text_cursor = None
+        with patch.object(ot.curses, "color_pair", return_value=0):
+            app.renderer.draw_whatif_menu(screen, 30, 100)
+        assert "█" not in screen_text(screen)
+        assert text_before_cursor(app, screen, len(" filter: opus4-5")) == " filter: opus4-5"
 
         app.handle_whatif_menu_key(10)
         assert app.whatif_model == "anthropic/claude-opus-4.5"

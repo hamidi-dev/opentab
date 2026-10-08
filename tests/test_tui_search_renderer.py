@@ -4,7 +4,7 @@ import opentab as ot
 from opentab.tui import bindings
 from opentab.tui.search_workspace import SearchWorkspace
 
-from tests._support import AttrScreen, app_with, screen_text
+from tests._support import AttrScreen, app_with, screen_text, text_before_cursor
 
 
 def _app():
@@ -490,7 +490,8 @@ def test_project_picker_search_scroll_and_mouse_work_at_minimum_size():
         app.handle_key(None, ord(char))
     ws.filter_menu_index = 35
     text = screen_text(_paint(app, 20, 80))
-    assert "Find project: project-_" in text and "project-35" in text and "36/40" in text
+    assert "Find project: project-" in text and "project-35" in text and "36/40" in text
+    assert "_" not in text.splitlines()[0]
     regions = [r for r in app.renderer.regions if r[0] == "searchfilter-option"]
     assert 0 < len(regions) < 40
     assert all(app.renderer.hit(r[1], r[2]) == ("searchfilter-option", r[4]) for r in regions)
@@ -614,3 +615,24 @@ def test_search_reuses_left_aligned_footer_and_styled_help_without_underlying_ac
     assert "Search keys" not in text and "Operators are not query syntax" not in text
     assert app.help and app.help_scroll == 71
     assert any(attr == ((2 << 8) | ot.curses.A_BOLD) for attr in screen.attrs.values())
+
+
+def test_search_inputs_use_the_terminal_cursor_instead_of_a_glyph():
+    app, ws = _app()
+    for editing, cursor in ((False, None), (True, "> needle")):
+        ws.editing = editing
+        app.renderer.text_cursor = None
+        screen = _paint(app)
+        assert "needle_" not in screen_text(screen)
+        if cursor is None:
+            assert app.renderer.text_cursor is None
+        else:
+            assert text_before_cursor(app, screen, len(cursor)) == cursor
+    ws.filter_menu = "project"
+    ws.project_query = "alp"
+    app.renderer.text_cursor = None
+    screen = _paint(app)
+    assert text_before_cursor(app, screen, len("Find project: alp")) == "Find project: alp"
+    ws.filter_menu = "filters"
+    screen = _paint(app)
+    assert app.renderer.text_cursor is None  # a plain menu covers the query field

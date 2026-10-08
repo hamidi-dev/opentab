@@ -872,8 +872,10 @@ class Renderer:
         if keymap.in_conversation_search(self.app):
             self.draw_conversation_search(stdscr, height, width)
             if self.launch_menu is not None:
+                self.text_cursor = None
                 self.draw_launch_menu(stdscr, height, width)
             self.draw_toasts(stdscr, height, width)
+            self.place_text_cursor(stdscr)
             stdscr.refresh()
             return
         self._search_layout_cache = None
@@ -1088,9 +1090,10 @@ class Renderer:
             else "Search:   "
         )
         query = snippet_lines(value, max(1, display_width(value)), max_lines=1)[0].text
+        shown = prefix + clip_tail(query, width - display_width(prefix) - 4)
+        text(1, shown, accent)
         if ws.editing or ws.filter_field:
-            query += "_"
-        text(1, prefix + clip_tail(query, width - display_width(prefix) - 4), accent)
+            self.text_cursor = (1, min(width - 3, 2 + display_width(shown)))
         self.regions.append(("search-query", 1, 0, width - 1, 0))
 
         scope = ws.scope
@@ -1217,11 +1220,13 @@ class Renderer:
         filter_menu = ws.filter_menu
         if filter_menu:
             self.regions.clear()
+            self.text_cursor = None  # the project menu's query claims it back
             self._draw_search_filter_menu(stdscr, height, width, filter_menu)
         elif ws.filter_field:
             self.regions.clear()
         elif ws.help:
             self.regions.clear()
+            self.text_cursor = None
             self.draw_help(stdscr, 3, height - 2, width)
 
     def _draw_search_filter_menu(self, stdscr, height: int, width: int, menu: str) -> None:
@@ -1243,7 +1248,7 @@ class Renderer:
             query = snippet_lines(
                 ws.project_query, max(1, display_width(ws.project_query)), max_lines=1
             )[0].text
-            intro = "Find project: " + clip_tail(query + "_", max(1, width - 26))
+            intro = "Find project: " + clip_tail(query, max(1, width - 27))
         lines = [(intro, muted), ("", 0)]
         current = ws.filter_current
         for offset, (value, label, enabled) in enumerate(visible, start=start):
@@ -1278,6 +1283,7 @@ class Renderer:
         )
         if menu == "project":
             self.regions.append(("searchfilter-query", y + 2, x, x + w - 1, 0))
+            self.text_cursor = (y + 2, min(x + w - 3, x + 2 + display_width(intro)))
         for row, option_index in enumerate(range(start, start + len(visible)), start=y + 4):
             if options[option_index][2]:
                 self.regions.append(("searchfilter-option", row, x, x + w - 1, option_index))
@@ -1642,10 +1648,11 @@ class Renderer:
                 stdscr,
                 height - 1,
                 0,
-                f" filter: {self.query}▌",
+                f" filter: {self.query}",
                 curses.color_pair(6) | curses.A_BOLD,
                 width,
             )
+            self.text_cursor = (height - 1, min(x, width - 1))
             self.write_seg(
                 stdscr,
                 height - 1,
@@ -6027,10 +6034,11 @@ class Renderer:
             StyledLine("", menus.NORMAL),
         ]
         tier_line = 2
+        filter_line = None
         if self.whatif_query or self.whatif_filter_active:
-            # A block cursor while the query is live, so it reads as an input, not a label.
-            cursor = "█" if self.whatif_filter_active else ""
-            intro.append(StyledLine(f" filter: {self.whatif_query}{cursor}", menus.MUTED))
+            # The terminal cursor sits after a live query, so it reads as an input.
+            filter_line = len(intro)
+            intro.append(StyledLine(f" filter: {self.whatif_query} ", menus.MUTED))
             intro.append(StyledLine("", menus.NORMAL))
 
         def format_entry(row):
@@ -6079,6 +6087,12 @@ class Renderer:
         my, mx, mh, mw = self.draw_modal(
             stdscr, scr_h, scr_w, "What-if model", self._menu_lines(layout), buttons=buttons
         )
+        if self.whatif_filter_active and filter_line is not None and filter_line < mh - 4:
+            text = f" filter: {self.whatif_query}"
+            self.text_cursor = (
+                my + 2 + filter_line,
+                min(mx + mw - 3, mx + 2 + display_width(text)),
+            )
         # The tier switch is a real tab strip (the P overlay's view tabs, same renderer,
         # same clickable regions -- handle_mouse routes "whatiftab" hits to the flip):
         # [your models]  models.dev, with the tier's column meaning dimmed beside it.

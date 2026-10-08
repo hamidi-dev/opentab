@@ -20,6 +20,7 @@ from tests._support import (
     box_title,
     fleet_app,
     screen_text,
+    text_before_cursor,
     workflow,
 )
 
@@ -2480,6 +2481,29 @@ def test_range_picker_minimum_viewport_shows_current_preview_and_long_edit_tail(
         assert "Enter Apply" in text and "Esc Cancel" in text
         assert picker.expression == "x" * 150 + "visible-tail"
         assert all(0 <= y < 18 and 0 <= x < 78 for y, x in screen.cells)
+
+
+def test_live_filter_shows_the_terminal_cursor_after_the_query():
+    app = app_with([workflow("a", "2026-05-01", title="beta")])
+    app.can_switch_source = lambda: False
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    shown = []
+    with (
+        patch.object(ot.curses, "color_pair", return_value=0),
+        patch.object(ot.curses, "curs_set", side_effect=shown.append),
+    ):
+        assert app.handle_key(None, ord("/")) and app.filter_active
+        _type(app, "be")
+        screen = FakeScreen(24, 80)
+        screen.erase = screen.cells.clear
+        screen.refresh = lambda: None
+        app.renderer.draw(screen)
+        assert shown[-1] == 1 and "▌" not in screen_text(screen)
+        assert text_before_cursor(app, screen, len(" filter: be")) == " filter: be"
+        app.handle_key(None, 27)
+        app.renderer.draw(screen)
+        assert shown[-1] == 0
 
 
 def _cells_before(screen, y, x, count):
