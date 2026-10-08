@@ -236,6 +236,14 @@ ownership to the highest active context, approximately in this order:
 1. Mouse/resize events, then blocking startup warnings and the price prompt.
 2. Conversation search, including its index confirmation, query, scope and reader states.
 3. Theme, demo, source, machine, harness, and what-if pickers.
+   The nonblocking date-range picker also owns input, painting and hit regions;
+   `range_picker.py` retains only pending values and a captured local today.
+   Parsing/preview never changes App scope; validation precedes the normal range
+   setter's drill clearing and reanchoring. Focus (Range field, presets, From, To)
+   picks both the keymap context — `[menu.range]` for presets, `[input.range]` for
+   fields — and the value `Enter` applies; all share the modal/button infrastructure.
+   A focused field sets `Renderer.text_cursor`; each frame shows the terminal's own
+   (blinking) cursor there and hides it otherwise.
 4. Help and notice history.
 5. Prices and Trends, including their sort, filter, and drill contexts.
 6. Ordinary sort/filter/launch input, then the main view.

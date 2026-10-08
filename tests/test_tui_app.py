@@ -1,11 +1,13 @@
 import contextlib
 import os
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import opentab as ot
 from opentab.tui import app as app_module
 from opentab.tui import bindings
+from opentab.tui.range_picker import FOCUSES
 from opentab.tui.search_workspace import SearchWorkspace
 
 from tests._support import (
@@ -1998,6 +2000,108 @@ def test_set_range_from_text_preserves_selection():
     assert app.selected_month_summary.month == "2026-05"
 
 
+def test_invalid_range_text_preserves_active_range_navigation_drills_and_tools_return():
+    for raw in ("banana", "0d", "2026-02-29", "2026-06-01..2026-05-01"):
+        app = _drill_app()
+        app.set_range_from_text("2026-05")
+        app.drill_in()
+        app.tab = app.current_tabs().index("Harnesses")
+        app.drill_in()
+        app.zoom_project = app.project_root("/work/alpha")
+        app.zoom_model = "haiku"
+        app.loaded[0].machine = "local"
+        app.zoom_machine = "local"
+        app.scroll = 3
+        app._tools_return = {"view": "zoom", "scroll": 7}
+        tools_return = app._tools_return
+        selected = app.current_session().id
+        fields = (
+            "range_days",
+            "range_months",
+            "custom_since",
+            "custom_until",
+            "view",
+            "focus",
+            "tab",
+            "year_index",
+            "month_index",
+            "day_index",
+            "project_index",
+            "source_index",
+            "machine_pick_index",
+            "model_pick_index",
+            "workflow_index",
+            "scroll",
+            "zoom_project",
+            "zoom_source",
+            "zoom_machine",
+            "zoom_model",
+            "notice",
+        )
+        before = {name: getattr(app, name) for name in fields}
+        ranged = [w.id for w in app.ranged_workflows]
+        total = app.range_cost_total()
+
+        try:
+            app.set_range_from_text(raw)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid range: {raw}")
+
+        assert {name: getattr(app, name) for name in fields} == before, raw
+        assert app._tools_return is tools_return, raw
+        assert app._tools_return == {"view": "zoom", "scroll": 7}, raw
+        assert [w.id for w in app.ranged_workflows] == ranged, raw
+        assert app.range_cost_total() == total, raw
+        assert app.current_session().id == selected, raw
+
+
+def test_quick_date_ranges_filter_inclusive_endpoints_and_keep_open_bounds():
+    app = app_with(
+        [
+            workflow("before", "2026-05-01 23:59:59"),
+            workflow("start", "2026-05-02 00:00:00"),
+            workflow("end", "2026-05-03 23:59:59"),
+            workflow("after", "2026-05-04 00:00:00"),
+        ]
+    )
+    for raw, expected in (
+        ("2026-05-02", {"start", "end", "after"}),
+        ("2026-05-02..", {"start", "end", "after"}),
+        ("..2026-05-03", {"before", "start", "end"}),
+        ("2026-05-02..2026-05-03", {"start", "end"}),
+        ("all", {"before", "start", "end", "after"}),
+    ):
+        app.set_range_from_text(raw)
+        assert {w.id for w in app.ranged_workflows} == expected, raw
+        assert app.range_cost_total() == len(expected), raw
+
+
+def test_quick_7d_keeps_historical_today_minus_seven_cutoff_without_upper_bound():
+    with patch.object(app_module, "datetime", wraps=datetime) as clock:
+        clock.now.return_value = datetime(2026, 1, 3, 15, 30)
+        app = app_with(
+            [
+                workflow("before", "2025-12-26 23:59:59"),
+                workflow("cutoff", "2025-12-27 00:00:00"),
+                workflow("preset-start", "2025-12-28 00:00:00"),
+                workflow("today", "2026-01-03 23:59:59"),
+                workflow("future", "2026-01-04 00:00:00"),
+            ]
+        )
+        for raw in ("7d", "7", "last 7 days"):
+            app.set_range_from_text(raw)
+            assert {w.id for w in app.ranged_workflows} == {
+                "cutoff",
+                "preset-start",
+                "today",
+                "future",
+            }, raw
+            assert app.range_cost_total() == 4, raw
+            assert app.range_input_value() == "7d", raw
+
+
 def test_set_all_time_preserves_current_month_selection():
     app = app_with(
         [
@@ -2012,6 +2116,460 @@ def test_set_all_time_preserves_current_month_selection():
     app.set_all_time()
 
     assert app.selected_month_summary.month == "2026-05"
+
+
+def _type(app, text):
+    for char in text:
+        assert app.handle_key(None, ord(char))
+
+
+def test_range_picker_cancel_keeps_scope_selection_drills_and_tools_return():
+    app = _drill_app()
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.drill_in()
+    app._tools_return = {"view": "zoom", "scroll": 7}
+    anchor = app.selection_anchor()
+    tools_return = app._tools_return
+    total = app.range_cost_total()
+    app.handle_key(None, ord("R"))
+    picker = app.range_picker
+    assert picker is not None
+    for key in (ord("\t"), ord("j"), ord("j"), ord("\t"), 21, ord("x"), 10):
+        app.handle_key(None, key)
+    assert picker.focus == "since" and picker.error and picker.since == "x"
+    assert app.zoom_model == "haiku" and app._tools_return is tools_return
+    app.handle_key(None, 27)
+    assert app.range_picker is None
+    assert app.range_input_value() == "all" and app.range_cost_total() == total
+    assert app.zoom_model == "haiku" and app._tools_return is tools_return
+    assert app.selection_anchor() == anchor
+
+
+def test_range_picker_opens_on_the_range_field_seeded_with_the_applied_expression():
+    app = app_with([workflow("a", "2026-05-01")])
+    for current, seeded in (("all", ""), ("7d", "7d"), ("2026-05-01..", "2026-05-01..")):
+        app.set_range_from_text(current)
+        app.prompt_range(None)
+        picker = app.range_picker
+        assert picker.focus == "expression" and picker.expression == seeded
+        assert picker.value() == seeded
+        app.handle_key(None, 27)
+    # The seed is preselected: the first character replaces it, Backspace edits it.
+    app.set_range_from_text("30d")
+    app.prompt_range(None)
+    picker = app.range_picker
+    _type(app, "7d")
+    assert picker.expression == "7d"
+    app.prompt_range(None)
+    picker = app.range_picker
+    app.handle_key(None, 127)
+    assert picker.expression == "30"
+    _type(app, "m")
+    assert picker.expression == "30m"
+
+
+def test_range_picker_field_types_menu_letters_and_tab_reaches_presets_and_dates():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.prompt_range(None)
+    picker = app.range_picker
+    _type(app, "jkgGaq/")  # every menu-bound key is text while the field has focus
+    assert picker.focus == "expression" and picker.expression == "jkgGaq/"
+    assert app.range_picker is picker and app.range_input_value() == "all"
+    for focus in ("presets", "since", "until", "expression"):
+        app.handle_key(None, ord("\t"))
+        assert picker.focus == focus
+    for focus in ("until", "since", "presets", "expression"):
+        app.handle_key(None, ot.curses.KEY_BTAB)
+        assert picker.focus == focus
+    app.handle_key(None, ot.curses.KEY_DOWN)
+    assert picker.focus == "presets"
+    app.handle_key(None, ord("/"))  # back to the field in place, never a new view
+    assert picker.focus == "expression" and picker.expression == "jkgGaq/"
+    app.handle_key(None, ot.curses.KEY_DOWN)
+    _type(app, "x")  # unbound keys over the list type into the field
+    assert picker.focus == "expression" and picker.expression == "jkgGaq/x"
+
+
+def test_range_picker_preset_commit_filters_exact_seven_dates_and_reset_clears_scope():
+    app = app_with(
+        [
+            workflow("legacy-cutoff", "2025-12-27 23:59:59"),
+            workflow("first", "2025-12-28 00:00:00"),
+            workflow("last", "2026-01-03 23:59:59"),
+            workflow("future", "2026-01-04 00:00:00"),
+        ]
+    )
+    app.handle_key(None, ord("R"))
+    app.range_picker.today = datetime(2026, 1, 3)
+    app.handle_key(None, ot.curses.KEY_DOWN)
+    for _ in range(3):
+        app.handle_key(None, ot.curses.KEY_DOWN)
+    assert app.range_picker.index == 3
+    assert {w.id for w in app.ranged_workflows} == {"legacy-cutoff", "first", "last", "future"}
+    app.handle_key(None, 10)
+    assert app.range_picker is None
+    assert {w.id for w in app.ranged_workflows} == {"first", "last"}
+    assert (app.custom_since, app.custom_until) == ("2025-12-28", "2026-01-03")
+    app.handle_key(None, ord("R"))
+    app.handle_key(None, ord("\t"))
+    app.handle_key(None, ord("a"))
+    assert app.range_picker is None and app.range_input_value() == "all"
+    assert len(app.ranged_workflows) == 4
+
+
+def test_range_picker_custom_edit_validation_recovery_and_field_navigation():
+    app = app_with([workflow("leap", "2024-02-29 23:59:59")])
+    app.set_range_from_text("2024-02")
+    app.handle_key(None, ord("R"))
+    picker = app.range_picker
+    app.handle_key(None, ord("\t"))
+    app.handle_key(None, ord("\t"))
+    assert picker.focus == "since"
+    assert (picker.since, picker.until) == ("2024-02-01", "2024-02-29")
+    app.handle_key(None, 21)
+    _type(app, "2025-02-29")
+    app.handle_key(None, 10)
+    assert app.range_picker is picker and picker.error
+    assert (picker.since, picker.until) == ("2025-02-29", "2024-02-29")
+    assert app.range_input_value() == "2024-02-01..2024-02-29"
+    app.handle_key(None, 21)
+    _type(app, "2024-02-29")
+    assert not picker.error
+    app.handle_key(None, 10)
+    assert app.range_picker is None
+    assert app.custom_since == app.custom_until == "2024-02-29"
+    assert [w.id for w in app.ranged_workflows] == ["leap"]
+
+
+def test_range_picker_quick_expression_retains_invalid_text_and_main_keys_type():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.keymap = bindings.Keymap({("main", "quit"): ["b"]})
+    app.handle_key(None, ord("R"))
+    _type(app, "banana")
+    picker = app.range_picker
+    assert picker.focus == "expression" and picker.expression == "banana"
+    app.handle_key(None, 10)
+    assert app.range_picker is picker and picker.error and picker.expression == "banana"
+    assert app.range_input_value() == "all"
+    app.handle_key(None, 21)
+    _type(app, "..2026-05-01")
+    assert not picker.error
+    app.handle_key(None, 10)
+    assert app.range_picker is None and app.custom_until == "2026-05-01"
+    assert app.custom_since is None
+
+
+def test_range_picker_remaps_open_navigation_commit_cancel_reset_and_edit():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.keymap = bindings.Keymap(
+        {
+            ("main", "range"): ["F5"],
+            ("input.range", "next_field"): ["ctrl-n"],
+            ("menu.range", "down"): ["n"],
+            ("menu.range", "select"): ["x"],
+            ("menu.range", "cancel"): ["z"],
+            ("menu.range", "all_time"): ["v"],
+            ("input.range", "kill_line"): ["ctrl-g"],
+            ("input.range", "confirm"): ["ctrl-t"],
+            ("input.range", "cancel"): ["ctrl-e"],
+        }
+    )
+    app.handle_key(None, ord("R"))
+    assert app.range_picker is None
+    app.handle_key(None, ot.curses.KEY_F0 + 5)
+    picker = app.range_picker
+    picker.today = datetime(2026, 5, 1)
+    app.handle_key(None, ord("\t"))  # Tab relinquished to Ctrl-N
+    assert picker.focus == "expression"
+    app.handle_key(None, 14)
+    assert picker.focus == "presets"
+    app.handle_key(None, ord("n"))
+    assert picker.index == 1
+    app.handle_key(None, ord("x"))
+    assert app.custom_since == app.custom_until == "2026-05-01"
+    app.prompt_range(None)
+    app.handle_key(None, 14)
+    app.handle_key(None, ord("z"))
+    assert app.range_picker is None and app.custom_since == "2026-05-01"
+    app.prompt_range(None)
+    app.handle_key(None, 14)
+    app.handle_key(None, ord("v"))
+    assert app.range_input_value() == "all" and app.range_picker is None
+    app.prompt_range(None)
+    picker = app.range_picker
+    _type(app, "7")
+    app.handle_key(None, 21)  # Ctrl-U relinquishes its clear action.
+    assert picker.expression == "7"
+    app.handle_key(None, 7)
+    assert picker.expression == ""
+    _type(app, "2026-05")
+    app.handle_key(None, 20)
+    assert app.range_picker is None and app.custom_until == "2026-05-31"
+    app.prompt_range(None)
+    _type(app, "7")
+    app.handle_key(None, 5)
+    assert app.range_picker is None and app.custom_until == "2026-05-31"
+
+
+def _range_mouse(app, x, y, event):
+    with patch.object(
+        ot.curses,
+        "getmouse",
+        return_value=(
+            0,
+            x + app.renderer.ox,
+            y + app.renderer.oy,
+            0,
+            event,
+        ),
+    ):
+        assert app.handle_mouse()
+
+
+def _range_region(app, kind, index):
+    return next(
+        region
+        for region in app.renderer.regions
+        if region[0] == "rows" and region[1] == kind and region[-1] == index
+    )
+
+
+def test_range_picker_mouse_focuses_rows_and_fields_and_presses_remapped_apply():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.keymap = bindings.Keymap({("menu.range", "select"): ["x"]})
+    app.prompt_range(None)
+    picker = app.range_picker
+    picker.today = datetime(2026, 5, 1)
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        app.renderer.regions = [("detail", 0, 0, 80, 24)]
+        app.renderer.draw_range_picker(FakeScreen(24, 80), 24, 80)
+        assert all(region[0] != "detail" for region in app.renderer.regions)
+        row = _range_region(app, "range-preset", 1)
+        _range_mouse(app, row[4], row[2], ot.curses.BUTTON1_CLICKED)
+        assert (picker.focus, picker.index) == ("presets", 1)
+        assert app.range_input_value() == "all"
+        app.renderer.draw_range_picker(FakeScreen(24, 80), 24, 80)
+        button = next(
+            region
+            for region in app.renderer.regions
+            if region[0] == "button" and region[-1] == ("menu.range", "select")
+        )
+        _range_mouse(app, button[2], button[1], ot.curses.BUTTON1_CLICKED)
+        assert app.range_picker is None and app.custom_since == app.custom_until == "2026-05-01"
+        app.prompt_range(None)
+        picker = app.range_picker
+        for index, focus in ((3, "until"), (2, "since"), (0, "expression")):
+            app.renderer.draw_range_picker(FakeScreen(24, 80), 24, 80)
+            field = _range_region(app, "range-field", index)
+            _range_mouse(app, field[5], field[2], ot.curses.BUTTON1_CLICKED)
+            assert picker.focus == focus
+        app.renderer.draw_range_picker(FakeScreen(24, 80), 24, 80)
+        row = _range_region(app, "range-preset", 0)
+        _range_mouse(app, row[4], row[2], ot.curses.BUTTON1_DOUBLE_CLICKED)
+        assert app.range_picker is None and app.range_input_value() == "all"
+
+
+def test_range_picker_outside_mouse_click_and_wheel_do_not_change_pending_or_underlying_state():
+    app = _drill_app()
+    app.prompt_range(None)
+    picker = app.range_picker
+    picker.index = 3
+    anchor = app.selection_anchor()
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        app.renderer.draw_range_picker(FakeScreen(24, 80), 24, 80)
+        _range_mouse(app, 0, 0, ot.curses.BUTTON1_CLICKED)
+        assert picker.index == 3 and picker.focus == "expression"
+        assert app.selection_anchor() == anchor
+        _range_mouse(app, 0, 0, ot.curses.BUTTON4_PRESSED)
+        assert picker.index == 3 and app.selection_anchor() == anchor
+        row = _range_region(app, "range-preset", 0)
+        _range_mouse(app, row[4], row[2], ot.curses.BUTTON4_PRESSED)
+        assert picker.index == 2 and picker.focus == "presets"
+        assert app.selection_anchor() == anchor
+        app._wheel_down = (
+            getattr(ot.curses, "BUTTON5_PRESSED", 0) or ot.curses.REPORT_MOUSE_POSITION
+        )
+        _range_mouse(app, row[4], row[2], app._wheel_down)
+        assert picker.index == 3 and app.selection_anchor() == anchor
+
+
+def test_range_picker_layout_keeps_field_presets_dates_and_controls_at_small_sizes():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.prompt_range(None)
+    picker = app.range_picker
+    picker.today = datetime(2026, 5, 1)
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        for height, width in ((24, 80), (18, 78), (18, 58), (10, 38)):
+            for focus in FOCUSES:
+                for index in (0, 7):
+                    picker.focus, picker.index = focus, index
+                    screen = FakeScreen(height, width)
+                    app.renderer.draw_range_picker(screen, height, width)
+                    assert all(0 <= y < height and 0 <= x < width for y, x in screen.cells)
+                    for row in app.renderer.regions:
+                        if row[0] == "rows":
+                            assert 0 <= row[2] <= row[3] < height, row
+                            assert 0 <= row[4] <= row[5] < width, row
+                        else:
+                            assert 0 <= row[1] < height and 0 <= row[2] <= row[3] < width, row
+                    if height >= 18:
+                        text = screen_text(screen)
+                        assert "This year" if index == 7 else "All time" in text
+                        assert "Range:" in text and "From:" in text and "To:" in text
+                        assert "Cancel" in text
+        picker.focus, picker.since, picker.until = "since", "invalid", "2026-05-01"
+        app._apply_pending_range()
+        app.handle_key(None, ot.curses.KEY_RESIZE)
+        assert app.range_picker is picker and picker.since == "invalid" and picker.error
+        screen = FakeScreen(18, 78)
+        app.renderer.draw_range_picker(screen, 18, 78)
+        assert picker.error in screen_text(screen)
+
+
+def test_range_picker_tab_button_names_the_next_field_and_follows_remaps():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.keymap = bindings.Keymap({("menu.range", "next_field"): ["ctrl-n"]})
+    app.prompt_range(None)
+    picker = app.range_picker
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        for focus, label in (
+            ("expression", "Tab Presets"),
+            ("presets", "^N Dates"),
+            ("since", "Tab To"),
+            ("until", "Tab Range"),
+        ):
+            picker.focus = focus
+            screen = FakeScreen(24, 80)
+            app.renderer.draw_range_picker(screen, 24, 80)
+            assert label in screen_text(screen), focus
+
+
+def test_range_picker_minimum_viewport_shows_current_preview_and_long_edit_tail():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.set_range_from_text("2026-05")
+    app.prompt_range(None)
+    picker = app.range_picker
+    picker.today = datetime(2026, 5, 15)
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        screen = FakeScreen(18, 78)  # Inner viewport of the real 80x20 minimum.
+        app.renderer.draw_range_picker(screen, 18, 78)
+        text = screen_text(screen)
+        assert "Current: 2026-05-01..2026-05-31" in text
+        assert "Range: 2026-05-01..2026-05-31 " in text and "▏" not in text
+        cy, cx = app.renderer.text_cursor  # the terminal cursor sits after the value
+        assert _cells_before(screen, cy, cx, 10) == "2026-05-31"
+        assert "From: 2026-05-01   To: 2026-05-31" in text
+        assert "Preview: 2026-05-01 → 2026-05-31 (inclusive)" in text
+        picker.focus, picker.index = "presets", 5
+        screen = FakeScreen(18, 78)
+        app.renderer.draw_range_picker(screen, 18, 78)
+        assert "This month  (current)" in screen_text(screen)
+        picker.focus = "expression"
+        app.handle_key(None, 21)
+        _type(app, "x" * 150 + "visible-tail")
+        assert "Preview: invalid range" in _draw_text(app, 18, 78)
+        app.handle_key(None, 10)
+        assert app.range_picker is picker and picker.error
+        screen = FakeScreen(18, 78)
+        app.renderer.draw_range_picker(screen, 18, 78)
+        text = screen_text(screen)
+        assert "visible-tail" in text and picker.error in text
+        cy, cx = app.renderer.text_cursor
+        assert _cells_before(screen, cy, cx, 12) == "visible-tail"
+        assert "Enter Apply" in text and "Esc Cancel" in text
+        assert picker.expression == "x" * 150 + "visible-tail"
+        assert all(0 <= y < 18 and 0 <= x < 78 for y, x in screen.cells)
+
+
+def _cells_before(screen, y, x, count):
+    return "".join(screen.cells.get((y, col), " ") for col in range(x - count, x))
+
+
+def test_range_picker_shows_the_terminal_cursor_only_in_a_focused_field():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.prompt_range(None)
+    picker = app.range_picker
+    shown = []
+    with (
+        patch.object(ot.curses, "color_pair", return_value=0),
+        patch.object(ot.curses, "curs_set", side_effect=shown.append),
+    ):
+        for focus in FOCUSES:
+            picker.focus = focus
+            screen = FakeScreen(24, 80)
+            screen.erase = screen.cells.clear
+            screen.refresh = lambda: None
+            app.can_switch_source = lambda: False
+            moves = []
+            screen.move = lambda y, x, moves=moves: moves.append((y, x))
+            app.renderer.draw(screen)
+            if focus == "presets":
+                assert shown[-1] == 0 and not moves
+                continue
+            assert shown[-1] == 1
+            y, x = moves[-1]
+            label = {"expression": "Range: ", "since": "From: ", "until": "To: "}[focus]
+            assert _cells_before(screen, y, x, len(label)) == label, focus
+        app.handle_key(None, 27)
+        app.renderer.draw(screen)
+        assert shown[-1] == 0
+
+
+def _draw_text(app, height, width):
+    screen = FakeScreen(height, width)
+    app.renderer.draw_range_picker(screen, height, width)
+    return screen_text(screen)
+
+
+def test_range_picker_tiny_full_frame_reports_minimum_and_keeps_edit_draft():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.prompt_range(None)
+    app.handle_key(None, ord("x"))
+    picker = app.range_picker
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        for height, width in ((20, 60), (12, 40)):
+            screen = FakeScreen(height, width)
+            screen.erase = screen.cells.clear
+            screen.refresh = lambda: None
+            app.renderer.regions = [("detail", 0, 0, 78, 18)]
+            app.renderer.draw(screen)
+            assert "Terminal too small. Need at least 80x20" in screen_text(screen)
+            assert not app.renderer.regions
+            assert app.range_picker is picker and picker.expression == "x"
+            assert app.range_input_value() == "all"
+
+
+def test_range_picker_full_frame_suppresses_toast_overlap_without_discarding_history():
+    app = app_with([workflow("a", "2026-05-01")])
+    app.can_switch_source = lambda: False
+    app._toast_clock = lambda: 0.0
+    app.set_range_from_text("2026-05")
+    app.prompt_range(None)
+    history = list(app.toast_log)
+    active = list(app.toasts)
+    assert history and active
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        for height in (20, 24):
+            screen = FakeScreen(height, 80)
+            screen.erase = screen.cells.clear
+            screen.refresh = lambda: None
+            with patch.object(app.renderer, "draw_toasts", wraps=app.renderer.draw_toasts) as cards:
+                app.renderer.draw(screen)
+                cards.assert_not_called()
+            text = screen_text(screen)
+            assert "Current: 2026-05-01..2026-05-31" in text
+            assert "Preview: 2026-05-01 → 2026-05-31 (inclusive)" in text
+            assert app.toast_log == history and app.toasts == active
+        app.handle_key(None, 27)
+        with patch.object(app.renderer, "draw_toasts", wraps=app.renderer.draw_toasts) as cards:
+            app.renderer.draw(screen)
+            cards.assert_called_once()
+        assert app.toast_log == history and app.toasts == active
+        assert any(
+            "range: since 2026-05-01 until 2026-05-31" in text
+            for text, _kind in app.renderer.toast_history_lines(78)
+        )
 
 
 def test_clear_filter_reports_when_nothing_to_clear():

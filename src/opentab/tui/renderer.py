@@ -1,6 +1,7 @@
 """Renderer: all drawing."""
 from __future__ import annotations
 
+import contextlib
 import textwrap
 from collections import defaultdict
 from datetime import datetime
@@ -279,6 +280,9 @@ class Renderer:
         # origin; it remains zero for headless tests that call drawers directly.
         self.oy = 0
         self.ox = 0
+        # Where a painted text field wants the terminal's own (blinking) cursor, in
+        # content coordinates; None keeps it hidden.
+        self.text_cursor: tuple[int, int] | None = None
         # Paint side channels are initialized here for headless line-builder tests.
         self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
         self._theme_color_cache: dict[str, int] = {}
@@ -842,6 +846,7 @@ class Renderer:
         stdscr.erase()
         self.regions = []  # rebuilt for this frame's clicks
         self.sort_regions = []
+        self.text_cursor = None
         self._line_sort_headers = {}
         self._box_headers = set()
         self._period_cols = None
@@ -854,6 +859,7 @@ class Renderer:
             self.write(
                 stdscr, 0, 0, "Terminal too small. Need at least 80x20.", curses.color_pair(1)
             )
+            self.place_text_cursor(stdscr)
             stdscr.refresh()
             return
 
@@ -953,6 +959,8 @@ class Renderer:
             self.draw_price_prompt(stdscr, height, width)
         elif self.star_prompt:
             self.draw_star_prompt(stdscr, height, width)
+        elif self.app.range_picker is not None:
+            self.draw_range_picker(stdscr, height, width)
         elif self.theme_menu:
             self.draw_theme_menu(stdscr, height, width)
         elif self.demo_menu:
@@ -972,10 +980,23 @@ class Renderer:
         elif self.app._trace_call_menu is not None:
             self.draw_trace_call_menu(stdscr, height, width)
 
-        # Toasts float above modals, except their own history reader.
-        self.draw_toasts(stdscr, height, width)
+        # Range previews must stay readable, especially when reopened after Apply.
+        # Suppress only painting; notifications and their history remain intact.
+        if self.app.range_picker is None:
+            self.draw_toasts(stdscr, height, width)
 
+        self.place_text_cursor(stdscr)
         stdscr.refresh()
+
+    def place_text_cursor(self, stdscr: curses.window) -> None:
+        # The terminal's cursor blinks (or not) as its own settings say, like the
+        # bottom-line prompts; every frame without a focused field hides it again.
+        cursor = self.text_cursor
+        with contextlib.suppress(curses.error):
+            curses.curs_set(1 if cursor else 0)
+        if cursor is not None:
+            with contextlib.suppress(curses.error, AttributeError):
+                stdscr.move(cursor[0] + self.oy, cursor[1] + self.ox)
 
     def draw_conversation_search(self, stdscr, height: int, width: int) -> None:
         ws = self.app.conversation_search
@@ -6069,6 +6090,124 @@ class Renderer:
             note = "eff $/M at your mix" if self.whatif_catalog else "tokens you ran through each"
             if tabs_w + 2 + len(note) <= field:
                 self.write(stdscr, ty, tx + field - len(note), note, curses.A_DIM)
+
+    # The Tab button names where focus lands next.
+    RANGE_NEXT_LABELS = {
+        "expression": "Presets",
+        "presets": "Dates",
+        "since": "To",
+        "until": "Range",
+    }
+
+    def draw_range_picker(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        from opentab.tui.range_picker import PRESETS
+
+        picker = self.app.range_picker
+        if picker is None:
+            return
+        # Own hit testing, including outside clicks: no table behind the popup is live.
+        self.regions.clear()
+        focus = picker.focus
+        # Fields look like the bottom-line prompts: the focused one is orange with a
+        # cursor, the placeholder slate, and no row-wide reverse bar.
+        typed = curses.color_pair(6) | curses.A_BOLD
+        hint = curses.color_pair(4)
+
+        def field(label: str, name: str, width: int, placeholder: str) -> list:
+            # (text, attr, the terminal cursor follows this text)
+            focused = focus == name
+            value = clip_tail(getattr(picker, name), width)
+            parts = [(f"{label}: {value}", typed if focused else curses.A_NORMAL, focused)]
+            if not value:
+                parts.append(((" " if focused else "") + placeholder, hint, False))
+            elif focused:
+                parts.append((" ", curses.A_NORMAL, False))  # the cursor's own cell
+            return parts
+
+        range_parts = field(
+            "Range", "expression", max(1, scr_w - 20), "e.g. 30d · 2m · 2026-05 · a..b"
+        )
+        since_parts = field("From", "since", 10, "open")
+        until_parts = field("To", "until", 10, "open")
+        # Spare height buys breathing room around the preset list.
+        spacer = [StyledLine("", menus.NORMAL)] if scr_h - 14 - len(PRESETS) >= 2 else []
+        current = "All time" if picker.current == "all" else picker.current
+        heading = [
+            # Padded to a full two-date preview so the box keeps its width while
+            # focus, the Tab label and the preview change underneath it.
+            StyledLine(f"Current: {current}".ljust(46), menus.MUTED),
+            StyledLine("".join(part[0] for part in range_parts), menus.NORMAL),
+            *spacer,
+        ]
+        gap = [("   ", curses.A_NORMAL, False)]
+        bounds_parts = since_parts + gap + until_parts
+        since_w = sum(len(part[0]) for part in since_parts)
+        # A half-typed range is not an error yet; Enter reports why it fails.
+        preview = picker.preview()
+        if picker.error:
+            status = StyledLine(picker.error, menus.NORMAL)
+        elif preview.startswith("Invalid:"):
+            status = StyledLine("Preview: invalid range", menus.MUTED)
+        else:
+            status = StyledLine(f"Preview: {preview}", menus.NOTICE)
+        layout = menus.windowed_radio_menu(
+            heading,
+            [(label, picker.is_current(i)) for i, label in enumerate(PRESETS)],
+            picker.index,
+            menus.option_budget(scr_h, 14 + len(spacer) * 2),
+            footer=[
+                *spacer,
+                StyledLine("".join(part[0] for part in bounds_parts), menus.NORMAL),
+                status,
+            ],
+        )
+        lines = self._menu_lines(layout)
+        if focus != "presets":  # the highlight only shows where keys go
+            for row, index in layout.option_rows:
+                if index == picker.index:
+                    lines[row] = (lines[row][0], self._menu_attr(menus.NORMAL))
+        if picker.error:
+            lines[-1] = (picker.error, curses.color_pair(5))
+        ctx = "menu.range" if focus == "presets" else "input.range"
+        buttons = {
+            "buttons": [
+                self._button(ctx, "next_field", self.RANGE_NEXT_LABELS[focus]),
+                self._button(
+                    ctx, "select" if focus == "presets" else "confirm", "Apply", primary=True
+                ),
+                self._button(ctx, "cancel", "Cancel"),
+            ]
+        }
+        y, x, height, width = self.draw_modal(
+            stdscr, scr_h, scr_w, "Date range", lines, buttons=buttons
+        )
+        x0, x1 = max(0, x + 1), min(scr_w - 1, x + width - 2)
+        bottom = min(y + height - 2, scr_h)
+
+        def region(row: int, index: int, kind: str, left: int, right: int) -> None:
+            if y + 2 + row < bottom and left <= right:
+                self._add_rows_region(kind, y + 2 + row, left, right, index, 1)
+
+        for row, index in layout.option_rows:
+            region(row, index, "range-preset", x0, x1)
+        # Field indices follow FOCUSES: 0 range, 2 From, 3 To.
+        region(1, 0, "range-field", x0, x1)
+        bounds_row = len(lines) - 2
+        split = min(x1, x + 2 + since_w + 1)
+        region(bounds_row, 2, "range-field", x0, split)
+        region(bounds_row, 3, "range-field", split + 1, x1)
+        for row, parts in ((1, range_parts), (bounds_row, bounds_parts)):
+            if y + 2 + row >= bottom:
+                continue
+            col, end = x + 2, x + width - 2
+            for text, attr, cursor in parts:
+                if col >= end:
+                    break
+                text = shorten(text, end - col)
+                self.write(stdscr, y + 2 + row, col, text, attr)
+                col += display_width(text)
+                if cursor:
+                    self.text_cursor = (y + 2 + row, min(col, end - 1))
 
     def draw_theme_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `C` (Colours) picker: a modal list of the themes (shared with the web

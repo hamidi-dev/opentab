@@ -278,11 +278,43 @@ harnesses are detected; the browse mode remains available with a single source.
 | Key | Action |
 |-----|--------|
 | `Ctrl-F` | Search retained conversation text in the current local catalog; available from the main views and supported overlays |
-| `R` | Set the date range — `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` |
+| `R` | Date-range picker: type `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` straight away, or `Tab` to presets and From / To dates |
 | `a` | Back to all time, keeping the current selection where possible |
 | `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`). Sessions offer **Start Date** (`created_at`, default) and **Last Activity** (`ended_at`, including subagent activity where tracked), also in the **Days** pane. Day membership follows the session's start date; Last Activity ranks those sessions by their latest activity, falling back to the start when unavailable. The Date column follows whichever is active, and its header shows "Last act" under the latter. In Days it shows the activity time for same-day activity, or the date for activity on a later day. Projects offer the matching pair: **Recency** (the newest session's *start*) and **Last Activity** (the newest activity in any of the project's sessions, subagents included) |
 | `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**) and projects. Sessions rank by match quality; projects keep the selected column sort. Model lists (`P`, `w`) match word-anchored (letters may scatter inside a word, a new word only joins at its first letter — `opus48` works, `opus` no longer drags in `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**), routes by substring. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
 | `x` | Clear the filter |
+
+### Date-range picker
+
+`R` opens one popup with three areas: the **Range** field, the preset list and the
+**From / To** dates. The Range field has focus on open, seeded with the applied
+expression (empty for all time); the first character you type replaces the seed,
+`Backspace` edits it. Every key types there, including menu letters such as `j` or
+`a`, and the preview line shows the resolved bounds before `Enter` applies them.
+
+`Tab` / `Shift-Tab` cycle Range → presets → From → To; the Tab button names where
+focus goes next. `↓` / `↑` in a field also move to the presets, and `/` in the
+presets returns to the Range field. `Enter` applies whichever area has focus: the
+typed expression, the highlighted preset, or From..To. `Esc` cancels without
+changing scope.
+
+In the presets, `j`/`k`, arrows and `g`/`G` move the highlight and `a` resets to all
+time; any other printable key types into the Range field. Click focuses a field or
+selects a preset, double-click applies a preset, and the wheel moves the highlight.
+Presets include All time, Today, Yesterday, Last 7/30 days, This month, Last month
+and This year. Last 7/30 days covers exactly that many inclusive dates through
+today; month/year presets cover the full calendar period, including future dates.
+Dates use local today, captured when the picker opens. No range is persisted.
+
+From / To take `YYYY-MM-DD`; leave either blank for an open bound. Invalid input
+stays in place with an inline error. `Ctrl-U` clears a field and `Ctrl-W` deletes a
+word. The preset list follows `[menu.range]` / shared `[menu]`; the fields follow
+`[input.range]` / `[input]` remaps.
+
+Quick expressions retain their existing semantics: `30d` starts on today minus
+30 days with no upper bound; `2m` includes the current and previous calendar month
+with no upper bound. A single `YYYY-MM-DD` means **since** that date, not just that
+day. The preview explicitly shows `Any start` / `No end` for open bounds.
 
 ### Drilling a model
 
@@ -464,8 +496,9 @@ for the searchable project picker, `[trends]`
 (+ `[trends.chart]` for a focused chart, `[trends.drill]` for a ranked row's session
 list), `[prices]` (+ `[prices.sessions]`), `[help]`, `[whats-new]`, `[notices]`, the shared `[menu]`
 with per-picker overrides (`[menu.sort]`, `[menu.theme]`, `[menu.launch]`,
-`[menu.whatif]`, …), `[filter]` for the live filter line, `[input]` for the note/range
-prompts, and `[prompt.prices]`. A sub-context falls back to its family for anything it
+`[menu.whatif]`, `[menu.range]` for range presets, …), `[filter]` for the live filter
+line, `[input]` for text prompts such as notes, `[input.range]` for editing range
+expressions and From / To fields, and `[prompt.prices]`. A sub-context falls back to its family for anything it
 doesn't name; anything the file doesn't name falls back to the built-in default — so
 the file survives upgrades, and deleting a line (or the whole file) restores stock
 behavior.
