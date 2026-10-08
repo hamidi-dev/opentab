@@ -363,6 +363,13 @@ class AttrScreen(FakeScreen):
             self.attrs[(y, x + i)] = attr
 
 
+def text_before_cursor(app, screen, count):
+    # The renderer's terminal cursor is in content coordinates; cells are absolute.
+    cy, cx = app.renderer.text_cursor
+    y, x = cy + app.renderer.oy, cx + app.renderer.ox
+    return "".join(screen.cells.get((y, col), " ") for col in range(x - count, x))
+
+
 def screen_text(screen):
     # Flatten the painted cells back into newline-joined rows (gaps become spaces).
     rows = {}

@@ -242,8 +242,6 @@ ownership to the highest active context, approximately in this order:
    setter's drill clearing and reanchoring. Focus (Range field, presets, From, To)
    picks both the keymap context — `[menu.range]` for presets, `[input.range]` for
    fields — and the value `Enter` applies; all share the modal/button infrastructure.
-   A focused field sets `Renderer.text_cursor`; each frame shows the terminal's own
-   (blinking) cursor there and hides it otherwise.
 4. Help and notice history.
 5. Prices and Trends, including their sort, filter, and drill contexts.
 6. Ordinary sort/filter/launch input, then the main view.
@@ -281,6 +279,12 @@ become concrete inclusive UTC dates. Session scope is a filter, not a back stack
 clearing project/harness/date filters keeps the session scope and query. Filters
 uses `Ctrl-G`: macOS can intercept `Ctrl-O` as the terminal's discard-output key
 even in curses cbreak mode.
+
+Text inputs never draw a cursor glyph. A painter whose field has focus sets
+`Renderer.text_cursor` (content coordinates, just after the value); the end of each
+frame shows the terminal's own cursor there, so blink and shape follow the user's
+terminal, and hides it on frames without one. The blocking `prompt_text` line does
+the same itself. Leave one blank cell after the value for the cursor to sit on.
 
 ### Notifications
 
