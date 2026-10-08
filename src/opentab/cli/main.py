@@ -660,9 +660,10 @@ def _build_parser() -> argparse.ArgumentParser:
     launch = subs.add_parser(
         "launch",
         help="pick a cached local session in fzf and resume it in this terminal",
-        description="Pick a local session by title, harness, project and activity. Reads only "
-        "existing OpenTab rollup caches unless --refresh is supplied. Requires fzf on PATH.",
-        epilog="Examples:\n  opentab launch\n  opentab launch --refresh\n\n"
+        description="Pick a local session by title, harness, project and activity. Opens "
+        "instantly from existing OpenTab rollup caches, refreshes them in the background "
+        "and swaps in the updated list (fzf 0.36+). Requires fzf on PATH.",
+        epilog="Examples:\n  opentab launch\n  opentab launch --refresh\n  opentab launch --no-refresh\n\n"
         "Cache behavior: docs/caching.md",
     )
     _add_command_global_args(
@@ -701,7 +702,12 @@ def _build_parser() -> argparse.ArgumentParser:
     launch.add_argument(
         "--refresh",
         action="store_true",
-        help="refresh ordinary local rollup caches before picking (reads harness data)",
+        help="refresh ordinary local rollup caches before opening the picker",
+    )
+    launch.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="show only the existing caches; never read harness data",
     )
     doctor = subs.add_parser(
         "doctor",
@@ -870,8 +876,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         launch: (
             "Choose a cached local session in fzf, then resume it in this terminal.\n"
-            "--refresh updates local caches first; default never scans harness records.",
-            {"refresh", "source"},
+            "Opens from cache and swaps in a background refresh; --refresh waits for it\n"
+            "first, --no-refresh never reads harness records.",
+            {"refresh", "no_refresh", "source"},
         ),
         doctor: (
             "Find missing sources and configuration problems. Read-only; nothing repaired.\n"
@@ -919,6 +926,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "batch": "Print target<TAB>price rows; omit unpriceable targets.",
         "json": "Output JSON instead of the text report.",
         "full": "Include absolute paths and machine names; for local use.",
+        "refresh": "Refresh local caches before opening the picker.",
+        "no_refresh": "Show existing caches only; never read harness records.",
     }
     for command in (tui, web, status, launch, doctor, pull, remote, export, forget):
         arrange_help(

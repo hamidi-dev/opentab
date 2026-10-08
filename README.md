@@ -142,9 +142,11 @@ sessions behind it. Filter as you type, change the date range, and keep explorin
 
   `opentab launch` opens an external [fzf](https://github.com/junegunn/fzf) picker of
   cached local sessions, then resumes the selected harness in the current terminal
-  from its recorded project directory. It reads only existing OpenTab rollup caches
-  by default; use `opentab launch --refresh` to update the local caches first. Esc
-  or Ctrl-C cancels without launching. fzf is optional and must be on `PATH`.
+  from its recorded project directory. It opens instantly from OpenTab's rollup
+  caches, refreshes them in the background and swaps in the updated list (fzf 0.36+).
+  `--refresh` waits for the refresh before opening; `--no-refresh` never reads
+  harness records. Esc or Ctrl-C cancels without launching. fzf is optional and
+  must be on `PATH`.
 - **Make it yours.** Keyboard and mouse navigation, 30 bundled themes, and remappable
   keys. Your sort, selected tool, theme, bookmarks, and pricing view are remembered; the
   date range is not, so every launch starts on the default window.
