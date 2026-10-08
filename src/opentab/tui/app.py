@@ -91,6 +91,7 @@ from opentab.presentation.whats_new import RELEASES_URL, load_release_history, s
 from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, diff_pager, exporting, keymap
 from opentab.tui.price_worker import PriceRefreshJob
+from opentab.tui.range_picker import FOCUSES, PRESETS, RangePicker
 from opentab.tui.renderer import Renderer
 from opentab.tui.search_workspace import SearchWorkspace
 from opentab.util import (
@@ -475,6 +476,7 @@ class App:
             self.theme_id = themes.DEFAULT_THEME
         self.theme = themes.resolve_theme(self.theme_id)
         self.theme_menu = False
+        self.range_picker: RangePicker | None = None
         self.theme_menu_index = 0
         self._theme_before = self.theme_id
         self.day_index = 0
@@ -789,11 +791,12 @@ class App:
         return "all"
 
     def set_range_from_text(self, raw: str) -> None:
+        # Validate before clearing drills: rejected input must leave scope untouched.
+        days, months, since, until = parse_range_text(raw)
         # Capture first because clearing drills widens the list containing the selection.
         self._tools_return = None
         anchor = self.selection_anchor()
         self._clear_zoom_drills()
-        days, months, since, until = parse_range_text(raw)
         self.range_days = days
         self.range_months = months
         self.custom_since = since
@@ -8070,6 +8073,8 @@ class App:
         # The C (Colours), H (source) and M (machine filter) pickers float above
         # everything -- they can be opened from inside Trends / P / help now, so they must
         # see keys before the overlays do (draw() already paints these small modals on top).
+        if self.range_picker is not None:
+            return self.handle_range_picker_key(key)
         if self.theme_menu:
             return self.handle_theme_menu_key(key)
         if self.demo_menu:
@@ -8809,6 +8814,20 @@ class App:
                 self.price_prompt = False  # click = not now
                 self.notice = f"skipped — {self.price_fetch_hint()}"
             return True
+        if self.range_picker is not None:
+            picker = self.range_picker
+            target = self.renderer.hit(my, mx)
+            if (up or down) and target and target[0] == "range-preset":
+                picker.focus = "presets"
+                picker.index = (picker.index + (-1 if up else 1)) % len(PRESETS)
+            elif click or double:
+                if target and target[0] == "range-preset":
+                    picker.focus, picker.index, picker.error = "presets", target[1], ""
+                    if double:
+                        self._apply_pending_range()
+                elif target and target[0] == "range-field":
+                    picker.focus, picker.error = FOCUSES[target[1]], ""
+            return True
         if self.launch_menu is not None:
             if click or double:
                 self.launch_menu = None  # click cancels the launch picker
@@ -9286,20 +9305,67 @@ class App:
             self.drill_in()
 
     def prompt_range(self, stdscr: curses.window) -> None:
-        initial = "" if self.range_input_value() == "all" else self.range_input_value()
-        value = self.prompt_text(
-            stdscr,
-            "range: ",
-            "all · 30d · 2m · 2026 · 2026-05 · start..end · "
-            f"{self.keymap.label('input', 'cancel')} cancel",
-            initial,
-        )
-        if value is None:
+        self.range_picker = RangePicker.open(self.range_input_value())
+
+    def handle_range_picker_key(self, key: int | str) -> bool:
+        if key == 3:
+            return False
+        picker = self.range_picker
+        if picker is None:
+            return True
+        context = "menu.range" if picker.focus == "presets" else "input.range"
+        act = self.keymap.action(context, key)
+        if act == "cancel":
+            self.range_picker = None
+        elif act in ("next_field", "previous_field"):
+            picker.cycle(1 if act == "next_field" else -1)
+        elif act in ("select", "confirm"):
+            self._apply_pending_range()
+        elif picker.focus == "presets":
+            if act in ("down", "up"):
+                picker.index = (picker.index + (1 if act == "down" else -1)) % len(PRESETS)
+            elif act in ("first", "last"):
+                picker.index = 0 if act == "first" else len(PRESETS) - 1
+            elif act == "quick_expression":
+                picker.focus, picker.error = "expression", ""
+            elif act == "all_time":
+                self.set_all_time()
+                self.range_picker = None
+            elif (char := bindings.typed_char(key)) is not None:
+                # Typing over the list goes to the range field, as if it had focus.
+                picker.focus = "expression"
+                self._edit_range_field(picker, None, char)
+        elif act == "presets":
+            picker.focus, picker.error = "presets", ""
+        else:
+            self._edit_range_field(picker, act, bindings.typed_char(key))
+        return True
+
+    @staticmethod
+    def _edit_range_field(picker: RangePicker, act: str | None, char: str | None) -> None:
+        field = picker.focus
+        value = getattr(picker, field)
+        fresh = picker.fresh and field == "expression"
+        if act == "erase":
+            value = value[:-1]
+        elif act == "kill_line":
+            value = ""
+        elif act == "kill_word":
+            value = value.rstrip().rsplit(" ", 1)[0] if " " in value.rstrip() else ""
+        elif char is not None and (fresh or len(value) < 256):
+            value = char if fresh else value + char
+        else:
             return
-        try:
-            self.set_range_from_text(value)
-        except ValueError as exc:
-            self.notify(f"range error: {exc}", "error")
+        if field == "expression":
+            picker.fresh = False
+        setattr(picker, field, value)
+        picker.error = ""
+
+    def _apply_pending_range(self) -> None:
+        picker = self.range_picker
+        if picker is not None and picker.valid():
+            self.set_range_from_text(picker.value())
+            self.range_picker = None
 
     def prompt_text(
         self,
@@ -9315,8 +9381,8 @@ class App:
         # slate -- never a whole-orange line. The real cursor sits at the value's end.
         #
         # How much you may TYPE (max_chars) and how much FITS on the line (max_len)
-        # are two different limits. A range or filter query is short by nature, so
-        # they coincide by default -- but a note is prose, and capping it at the
+        # are two different limits. Short prompts use the visible limit by default,
+        # but a note is prose, and capping it at the
         # visible field would silently truncate it at ~26 chars on an 80-column
         # terminal. With max_chars set, the value scrolls instead: the field shows
         # the tail (where the cursor is), "…"-marked at the left when there's more.

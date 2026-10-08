@@ -441,6 +441,17 @@ REGISTRY: tuple[Context, ...] = (
         (Action("advance", ("s",), "s again walks the list"),),
     ),
     Context(
+        "menu.range",
+        "R date-range presets; unbound printable keys type into the range field.",
+        "menu",
+        (
+            Action("next_field", ("tab",), "next field: From / To, then the range"),
+            Action("previous_field", ("shift-tab",), "previous field"),
+            Action("quick_expression", ("/",), "back to the range field"),
+            Action("all_time", ("a",), "reset to all time"),
+        ),
+    ),
+    Context(
         "menu.theme",
         "The C theme picker (j/k live-preview; Esc reverts).",
         "menu",
@@ -504,7 +515,7 @@ REGISTRY: tuple[Context, ...] = (
     ),
     Context(
         "input",
-        "The one-line prompts: the n note, the R range (printables type).",
+        "Text prompts and date-range fields (printables type).",
         None,
         (
             Action("confirm", ("enter",), "accept the value"),
@@ -512,6 +523,16 @@ REGISTRY: tuple[Context, ...] = (
             Action("erase", ("backspace",), "delete the last character"),
             Action("kill_line", ("ctrl-u",), "clear the whole line"),
             Action("kill_word", ("ctrl-w",), "delete the last word"),
+        ),
+    ),
+    Context(
+        "input.range",
+        "The R range field (focused on open) and From / To; empty bounds stay open.",
+        "input",
+        (
+            Action("next_field", ("tab",), "next field: range, presets, From, To"),
+            Action("previous_field", ("shift-tab",), "previous field"),
+            Action("presets", ("down", "up"), "move to the preset list"),
         ),
     ),
     Context(
