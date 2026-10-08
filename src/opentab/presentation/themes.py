@@ -846,3 +846,28 @@ def ramp(hexes: list[str], n: int) -> list[str]:
         b = round(stops[lo][2] + (stops[hi][2] - stops[lo][2]) * f)
         out.append(f"#{r:02x}{g:02x}{b:02x}")
     return out
+
+
+def mix(color: str, other: str, weight: float) -> str:
+    """`color` moved `weight` (0..1) of the way toward `other`, in plain RGB."""
+    a, b = hex_rgb(color), hex_rgb(other)
+    return "#" + "".join(f"{round(x + (y - x) * weight):02x}" for x, y in zip(a, b))
+
+
+def button_surfaces(roles: dict, dark: bool) -> dict:
+    """The raised face and cast shadow of a terminal button.
+
+    The face is lifted off the panel tone (toward the ink on a dark theme, toward white
+    on a light one) so a button never reads as an inactive tab chip. The shadow keeps
+    the theme's own hue: the background tinted a little toward the accent, darkened on
+    a light theme, so it reads as depth rather than a black slab.
+    """
+    if dark:
+        return {
+            "face": mix(roles["panel2"], roles["ink"], 0.16),
+            "shadow": mix(roles["bg"], roles["accent"], 0.45),
+        }
+    return {
+        "face": mix(roles["panel"], "#ffffff", 0.5),
+        "shadow": mix(mix(roles["bg"], roles["accent"], 0.45), "#000000", 0.12),
+    }

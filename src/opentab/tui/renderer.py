@@ -19,7 +19,14 @@ from opentab.accounting.models import (
     YearSummary,
 )
 from opentab.accounting.tiers import detail_api_cost
-from opentab.presentation.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
+from opentab.presentation.themes import (
+    button_surfaces,
+    hex_rgb1000,
+    ink_on,
+    nearest_8,
+    nearest_256,
+    ramp,
+)
 from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, keymap
 from opentab.tui.components import menus
@@ -260,7 +267,7 @@ class Renderer:
         return {
             "buttons": [
                 *extra,
-                self._button(ctx, "select", select),
+                self._button(ctx, "select", select, primary=True),
                 self._button(ctx, "cancel", cancel),
             ],
             "status": list(status),
@@ -1648,8 +1655,10 @@ class Renderer:
         for span in layout.spans:
             self.write(stdscr, y, span.x, span.text, attrs[span.style])
 
-    def _button(self, ctx: str, action: str, label: str, enabled: bool = True) -> Button:
-        return Button(self._key(ctx, action), label, action, ctx, enabled)
+    def _button(
+        self, ctx: str, action: str, label: str, enabled: bool = True, primary: bool = False
+    ) -> Button:
+        return Button(self._key(ctx, action), label, action, ctx, enabled, primary)
 
     def draw_buttons(
         self,
@@ -1664,20 +1673,46 @@ class Renderer:
         # Centered in [x, x + width), usually an overlay's bottom border. A click on a
         # button presses its key: App.press_clicked_button reads the ("button", ...,
         # (ctx, action)) region registered here.
-        layout = button_bar_layout(width, buttons=buttons, status=status)
-        reverse = curses.A_REVERSE
         ok = self._buttons_ok
+        layout = button_bar_layout(
+            width, buttons=buttons, status=status, pressed=self.pressed_button if ok else None
+        )
+        reverse = curses.A_REVERSE
+        key = curses.color_pair(self._BUTTON_KEY_PAIR) if ok else reverse
+        label = curses.color_pair(self._BUTTON_LABEL_PAIR) if ok else reverse
+        primary = curses.color_pair(self._BUTTON_PRIMARY_PAIR) if ok else reverse
         attrs = {
             "gap": curses.A_NORMAL,
             "text": curses.color_pair(1),
-            "key": (curses.color_pair(self._BUTTON_KEY_PAIR) if ok else reverse) | curses.A_BOLD,
-            "label": curses.color_pair(self._TAB_PAIR) if ok else reverse,
+            "key": key | curses.A_BOLD,
+            "label": label,
+            "primary-key": primary | curses.A_BOLD,
+            "primary-label": primary,
             "off": curses.color_pair(self._BUTTON_OFF_PAIR) if ok else curses.A_DIM,
+            "cap": curses.color_pair(self._BUTTON_SHADOW_PAIR),
         }
         for span in layout.spans:
-            self.write(stdscr, y, x + span.x, span.text, attrs[span.style])
+            # Without the button colours a shadow glyph would be a stray block.
+            if ok or span.style != "cap":
+                self.write(stdscr, y, x + span.x, span.text, attrs[span.style])
+        if ok:
+            shade = curses.color_pair(self._BUTTON_SHADOW_PAIR)
+            for span in layout.shadow:
+                for dx, glyph in enumerate(span.text):
+                    # The shadow row lies outside the box: draw only on empty cells, so
+                    # a frame line or text below keeps running under the button.
+                    if self._blank_cell(stdscr, y + 1, x + span.x + dx):
+                        self.write(stdscr, y + 1, x + span.x + dx, glyph, shade)
         for hit in layout.hits:
             self.regions.append(("button", y, x + hit.x0, x + hit.x1, (hit.context, hit.action)))
+
+    def _blank_cell(self, stdscr: curses.window, y: int, x: int) -> bool:
+        # A space in that content cell? inch only returns a codepoint's low byte, so a
+        # box-drawing glyph reads as non-blank, which is the side to err on.
+        try:
+            return stdscr.inch(y + self.oy, x + self.ox) & curses.A_CHARTEXT == ord(" ")
+        except (curses.error, AttributeError):
+            return False
 
     # Each visible list owns its sort arrow; shared screens must not use effective_sort_by.
     def sort_heading(self, key: str, label: str) -> str:
@@ -5354,7 +5389,7 @@ class Renderer:
             box_y + box_h - 1,
             box_x + 2,
             box_w - 4,
-            buttons=[self._button("help", "close", "Close")],
+            buttons=[self._button("help", "close", "Close", primary=True)],
             # Only a clipped page has anything to scroll.
             status=[f"{scroll_keys} scroll" if len(lines) > visible and scroll_keys else ""],
         )
@@ -5771,7 +5806,7 @@ class Renderer:
             layout.y + layout.height - 1,
             layout.x + 2,
             layout.width - 4,
-            buttons=[self._button("notices", "close", "Close")],
+            buttons=[self._button("notices", "close", "Close", primary=True)],
             status=[layout.scroll_hint],
         )
 
@@ -6619,8 +6654,13 @@ class Renderer:
     _DIFF_PAIR = 40  # 5 surfaces x 8 foregrounds; clear of all heat/token pairs
     _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
     _TAB_PAIR = 25  # inactive-tab chip (ink2 on panel2); free slot after the price ramp
-    _BUTTON_KEY_PAIR = 31  # a button's key (accent_bright on panel2); after the token ramp
-    _BUTTON_OFF_PAIR = 39  # a disabled button (mut on panel2); after the Tools ramp
+    _BUTTON_KEY_PAIR = 31  # a button's key (accent_bright on its face); after the token ramp
+    _BUTTON_OFF_PAIR = 39  # a disabled, flat button (mut on panel2); after the Tools ramp
+    _BUTTON_LABEL_PAIR = 80  # a button's label (ink on its face); past the diff pairs
+    _BUTTON_PRIMARY_PAIR = 81  # the default button (ink_on(accent) on accent)
+    _BUTTON_SHADOW_PAIR = 82  # the cast shadow (shadow on bg), drawn in half blocks
+    _BUTTON_COLOR_BASE = 64  # button face + shadow colour slots, after the diff colours
+    pressed_button: tuple[str, str] | None = None  # (context, action) held down this frame
     _buttons_ok = False  # every button pair took; otherwise buttons paint in reverse video
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
     # Did the five token-type pairs take? False on a pair-starved terminal, where the
@@ -6752,17 +6792,36 @@ class Renderer:
         # bar reads as tabs instead of grey text on the background. Pair-starved terminals
         # skip it and fall back to plain text -- the active tab's [brackets] still show which.
         tab_ok = self._set_pair(self._TAB_PAIR, r(roles["ink2"]), r(roles["panel2"]))
-        # A button is the same raised chip with its key in the focus accent.
-        self._buttons_ok = (
-            tab_ok
-            and self._set_pair(self._BUTTON_KEY_PAIR, r(roles["accent_bright"]), r(roles["panel2"]))
-            and self._set_pair(self._BUTTON_OFF_PAIR, r(roles["mut"]), r(roles["panel2"]))
-        )
+        # A button is lifted off that chip tone and casts a shadow, so it never reads as
+        # a tab; the default one is filled in the accent.
+        self._buttons_ok = tab_ok and self._init_button_colors()
         self._init_price_heat()
         self._init_tool_heat()
         self._init_token_series()
         self._init_diff_colors()
         self._sync_heat_palette()
+
+    def _init_button_colors(self) -> bool:
+        roles = self.app.theme["roles"]
+        r = self._color_index
+        surfaces = button_surfaces(roles, bool(self.app.theme.get("dark", True)))
+        if self.has256:
+            face = self._heat_index(self._BUTTON_COLOR_BASE, surfaces["face"])
+            shadow = self._heat_index(self._BUTTON_COLOR_BASE + 1, surfaces["shadow"])
+        else:
+            face, shadow = r(roles["panel2"]), nearest_8("#000000")
+        bg = self._bg_index
+        return all(
+            (
+                self._set_pair(self._BUTTON_KEY_PAIR, r(roles["accent_bright"]), face),
+                self._set_pair(self._BUTTON_LABEL_PAIR, r(roles["ink"]), face),
+                self._set_pair(
+                    self._BUTTON_PRIMARY_PAIR, r(ink_on(roles["accent"])), r(roles["accent"])
+                ),
+                self._set_pair(self._BUTTON_SHADOW_PAIR, shadow, bg),
+                self._set_pair(self._BUTTON_OFF_PAIR, r(roles["mut"]), r(roles["panel2"])),
+            )
+        )
 
     def _init_diff_colors(self) -> None:
         roles = self.app.theme["roles"]

@@ -68,3 +68,21 @@ def test_nearest_8_maps_roles_onto_the_basic_ansi_palette():
     for theme in ot.THEMES.values():  # every bundled role resolves in-palette
         for hexval in theme["roles"].values():
             assert 0 <= ot.nearest_8(hexval) <= 7
+
+
+def test_button_faces_stand_off_the_tab_chip_and_shadows_stay_a_quiet_theme_tint():
+    def luma(color):
+        r, g, b = ot.themes.hex_rgb(color)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    assert ot.themes.mix("#000000", "#ffffff", 0.5) == "#808080"
+    for tid, theme in ot.THEMES.items():
+        roles = theme["roles"]
+        surfaces = ot.themes.button_surfaces(roles, theme["dark"])
+        shadow, bg, accent = surfaces["shadow"], roles["bg"], roles["accent"]
+        assert surfaces["face"] != roles["panel2"], tid
+        assert shadow != bg, tid
+        # Quieter than the accent: an edge, not a second highlight.
+        assert abs(luma(shadow) - luma(bg)) < abs(luma(accent) - luma(bg)), tid
+        if not theme["dark"]:
+            assert luma(shadow) < luma(bg), tid
