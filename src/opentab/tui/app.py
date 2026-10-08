@@ -6925,7 +6925,7 @@ class App:
             self.whats_new_index = index
             self.whats_new_scroll = 0
 
-    def press_clicked_button(self, my: int, mx: int) -> bool:
+    def press_clicked_button(self, my: int, mx: int, stdscr: curses.window | None = None) -> bool:
         # A button click presses the button's own key, so it can never do anything the
         # keyboard wouldn't. Matched by kind, newest first, never through hit(): overlay
         # buttons float over body regions registered earlier.
@@ -6935,6 +6935,8 @@ class App:
             _kind, ry, x0, x1, (context, action) = region
             if ry != my or not x0 <= mx <= x1:
                 continue
+            if stdscr is not None:
+                self._show_button_press(stdscr, context, action)
             for spec in self.keymap.specs(context, action):
                 for code in bindings.parse_key(spec):
                     if self.keymap.action(context, code) == action:
@@ -6942,6 +6944,18 @@ class App:
                         return True
             return True  # a stale button whose key was unbound: swallow the click
         return False
+
+    _BUTTON_PRESS_MS = 90  # long enough to see the button go down, short of feeling slow
+
+    def _show_button_press(self, stdscr: curses.window, context: str, action: str) -> None:
+        # curses only reports a finished click, so the press is played back afterwards:
+        # one frame with the button flat (its shadow gone), then the action repaints.
+        self.renderer.pressed_button = (context, action)
+        try:
+            self.renderer.draw(stdscr)
+            curses.napms(self._BUTTON_PRESS_MS)
+        finally:
+            self.renderer.pressed_button = None
 
     def _announce_whats_new(self) -> None:
         main = self.keymap.label("main", "whats_new")
@@ -8013,7 +8027,7 @@ class App:
 
     def handle_key(self, stdscr: curses.window, key: int | str) -> bool:
         if key == curses.KEY_MOUSE:
-            return self.handle_mouse()
+            return self.handle_mouse(stdscr)
         if key == curses.KEY_RESIZE:
             # A SIGWINCH (terminal/font resize) surfaces as a keystroke; it is not one.
             # Popup startup can resize after the first paint. Terminal reflow can leave
@@ -8763,7 +8777,7 @@ class App:
         self.source_index = 0
         self.machine_pick_index = 0
 
-    def handle_mouse(self) -> bool:
+    def handle_mouse(self, stdscr: curses.window | None = None) -> bool:
         # The screen's clickable regions were registered by the last draw(), so a
         # click resolves against exactly what the user sees. Wheel scrolls the
         # current context; a click selects; a double-click selects then drills in.
@@ -8784,7 +8798,7 @@ class App:
 
         # A labelled button is a deliberate choice, even on the prompts below that
         # otherwise ignore clicks.
-        if (click or double) and self.press_clicked_button(my, mx):
+        if (click or double) and self.press_clicked_button(my, mx, stdscr):
             return True
         if self.startup_warning is not None:
             return True  # a stray click cannot dismiss a data-loss warning

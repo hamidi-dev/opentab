@@ -261,6 +261,19 @@ def test_whats_new_footer_buttons_are_clickable():
     assert not app.whats_new
 
 
+def test_a_clicked_button_is_shown_pressed_before_its_key_runs():
+    app = _keymap_app()
+    app.handle_key(None, ord("?"))
+    app.renderer.regions = [("button", 5, 10, 20, ("help", "close"))]
+    frames = []
+    app.renderer.draw = lambda _screen: frames.append((app.renderer.pressed_button, app.help))
+    with patch.object(ot.curses, "napms", lambda _ms: None):
+        assert app.press_clicked_button(5, 12, FakeScreen(24, 80))
+
+    assert frames == [(("help", "close"), True)]  # sunk while the overlay is still up
+    assert app.renderer.pressed_button is None and not app.help
+
+
 def _keymap_app(workflows=None):
     app = app_with(workflows or [workflow("a", "2026-06-01 12:00:00")])
     app.can_switch_source = lambda: False  # the bare test Args carries no source flags

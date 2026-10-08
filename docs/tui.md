@@ -44,6 +44,10 @@ Stateless layout and formatting live outside those coordinators:
   the bottom border, the dismissing action last, status text after it. Each button
   names its keymap context and action, so its label follows remaps and a click
   presses that key through `handle_key`; never wire a separate click action.
+  Enabled buttons are raised: a face lifted off the tab-chip tone with a thin,
+  theme-tinted shadow edge (`▎` right, `▔` on the row below the border); the default
+  choice is `primary` (accent fill). A click first paints one frame with the button
+  flat, then runs the key. Disabled buttons lie flat.
 - [`views/`](../src/opentab/tui/views/) composes those components into Prices,
   Trends, Tools, Turns, Changes and Subagents layouts. Views receive prepared
   records and display options, not App or stores. Renderer adapters retain lazy
