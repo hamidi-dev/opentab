@@ -522,12 +522,23 @@ workflow/model/provenance stashes together on a hit, keeping them one answer.
 
 ## Cost polling and direct entry
 
-`opentab launch` reads only existing, version-compatible rollup JSON for the
-configured local resumable harness roots. It does not check harness availability,
-fingerprint records, or update caches by default. `--refresh` explicitly loads
-local stores headlessly and completes both workflow and model reads to persist
-their normal caches before opening fzf. Missing or stale sessions remain absent
-until a refresh; a missing directory or executable at selection time is reported.
+`opentab launch` opens fzf from existing, version-compatible rollup JSON for the
+configured local resumable harness roots, without checking harness availability or
+fingerprinting records first. It reads a picker-row index under the cache
+directory's `launch/` folder instead of those rollups while every rollup it was
+built from keeps its inode, size and mtime (caches are replaced, never rewritten in
+place); otherwise it parses the rollups and rewrites the index. A background thread
+then runs the ordinary refresh (both workflow and model reads, which persist the
+normal caches), merges the refreshed harnesses' rows with cached rows for harnesses
+that are not available, saves the index, and hands fzf the updated list through a
+private FIFO: `load` fires once on the cached input and
+triggers `reload-sync`, which keeps the cached list on screen until the write
+completes. Refreshed rows carry `r`-prefixed keys so a selection resolves against
+the list it was made from. A failed refresh re-sends the cached rows; fzf older than
+0.36, Windows, or a temporary path fzf could misparse skips the reload. `--refresh`
+runs the same refresh before opening fzf; `--no-refresh` reads caches only. Missing
+or stale sessions remain absent from that path, and a missing directory or
+executable at selection time is reported.
 Ignored sessions and projects are hidden unless `--no-state` is used. fzf sorts
 matches by relevance, breaking ties in the original newest-activity order.
 The picker uses aligned tool, compact project, updated-time and session columns;

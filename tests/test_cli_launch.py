@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -47,6 +48,7 @@ def test_cached_launch_is_headless_unique_and_argv_safe():
             [
                 "launch",
                 "--no-state",
+                "--no-refresh",
                 "--db",
                 os.path.join(tmp, "oc.db"),
                 "--claude-dir",
@@ -88,7 +90,9 @@ def test_launch_missing_cache_cancel_and_refresh():
     with tempfile.TemporaryDirectory() as tmp, patch(
         "opentab.stores.cached.cache_dir", return_value=tmp
     ):
-        args = cli.parse_args(["launch", "--no-state", "--harness", "codex", "--codex-dir", tmp])
+        args = cli.parse_args(
+            ["launch", "--no-state", "--no-refresh", "--harness", "codex", "--codex-dir", tmp]
+        )
         with contextlib.redirect_stderr(io.StringIO()) as error:
             assert cli._run(args) == 1
         assert "--refresh" in error.getvalue()
@@ -102,6 +106,7 @@ def test_launch_missing_cache_cancel_and_refresh():
         class Store:
             def workflows(self):
                 events.append("workflows")
+                return [_row("abc", "Codex", tmp)]
 
             def model_breakdown(self):
                 events.append("models")
@@ -144,7 +149,9 @@ def test_launch_ignored_missing_fzf_and_missing_directory():
     with tempfile.TemporaryDirectory() as tmp, patch(
         "opentab.stores.cached.cache_dir", return_value=tmp
     ):
-        args = cli.parse_args(["launch", "--harness", "claude", "--claude-dir", tmp])
+        args = cli.parse_args(
+            ["launch", "--no-refresh", "--harness", "claude", "--claude-dir", tmp]
+        )
         _cache(args, "claude", [_row("ignore-me", "Claude Code", tmp)])
         with patch.object(picker, "load_state", return_value={"ignored_sessions": ["ignore-me"]}):
             with contextlib.redirect_stderr(io.StringIO()) as error:
@@ -192,7 +199,9 @@ def test_cached_hermes_without_cwd_launches_from_local_home():
     with tempfile.TemporaryDirectory() as tmp, patch(
         "opentab.stores.cached.cache_dir", return_value=tmp
     ):
-        args = cli.parse_args(["launch", "--no-state", "--harness", "hermes", "--hermes-db", tmp])
+        args = cli.parse_args(
+            ["launch", "--no-state", "--no-refresh", "--harness", "hermes", "--hermes-db", tmp]
+        )
         _cache(args, "hermes", [_row("hermes-id", "Hermes", "(unknown)")])
         with patch.object(
             picker.shutil, "which", side_effect=lambda name: "/bin/" + name
@@ -263,7 +272,15 @@ def test_real_fzf_matches_titles_and_preserves_recency_ties():
         "opentab.stores.cached.cache_dir", return_value=tmp
     ):
         args = cli.parse_args(
-            ["launch", "--no-state", "--harness", "opencode", "--db", "cache-only.db"]
+            [
+                "launch",
+                "--no-state",
+                "--no-refresh",
+                "--harness",
+                "opencode",
+                "--db",
+                "cache-only.db",
+            ]
         )
         old = _row("older", "OpenCode", tmp, title="needle session", activity="2026-01-01T00:00:00")
         new = _row("newer", "OpenCode", tmp, title="needle session", activity="2025-01-01T00:00:00")
@@ -303,7 +320,9 @@ def test_launch_honors_qualified_and_project_ignores():
     with tempfile.TemporaryDirectory() as tmp, patch(
         "opentab.stores.cached.cache_dir", return_value=tmp
     ):
-        args = cli.parse_args(["launch", "--db", tmp + "/oc.db", "--claude-dir", tmp])
+        args = cli.parse_args(
+            ["launch", "--no-refresh", "--db", tmp + "/oc.db", "--claude-dir", tmp]
+        )
         _cache(args, "opencode", [_row("same", "OpenCode", tmp, title="hidden")])
         _cache(args, "claude", [_row("same", "Claude Code", tmp, title="visible")])
         ref = SessionRef(local_machine_name(), "opencode", "same").encode()
@@ -331,7 +350,7 @@ def test_launch_errors_never_resume_a_session():
         "opentab.stores.cached.cache_dir", return_value=tmp
     ):
         args = cli.parse_args(
-            ["launch", "--no-state", "--harness", "opencode", "--db", tmp + "/db"]
+            ["launch", "--no-state", "--no-refresh", "--harness", "opencode", "--db", tmp + "/db"]
         )
         _cache(args, "opencode", [_row("session", "OpenCode", tmp)])
         for code, output, message in [
@@ -390,3 +409,174 @@ def test_windows_launch_leaves_interrupt_handling_to_harness():
                 [os.path.abspath("/bin/opencode"), "--session", "session"], cwd=tmp
             )
             process.kill.assert_not_called()
+
+
+def _background_args(tmp, *extra):
+    return cli.parse_args(
+        ["launch", "--no-state", *extra, "--harness", "claude", "--claude-dir", tmp]
+    )
+
+
+def _fresh_store(args, tmp, rows):
+    class Store:
+        records_cost = True
+
+        def cache_inputs(self):
+            return []
+
+        def workflows(self):
+            return rows
+
+        def model_breakdown(self):
+            return []
+
+    return CachedStore(Store(), f"claude|{tmp}", args), ""
+
+
+def test_background_refresh_swaps_in_sessions_newer_than_the_cache():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = _background_args(tmp)
+        old = _row("old", "Claude Code", tmp, title="cached")
+        new = _row("new", "Claude Code", tmp, title="fresh", activity="2026-03-01T00:00:00")
+        _cache(args, "claude", [old])
+        shown = []
+
+        def fake_fzf(argv, **kwargs):
+            if argv[1:] == ["--version"]:
+                return subprocess.CompletedProcess(argv, 0, "0.54.1 (brew)\n", "")
+            shown.append(kwargs["input"].decode())
+            bind = argv[argv.index("--bind") + 1]
+            assert bind.startswith("load:unbind(load)+reload-sync:cat ")
+            with open(shlex.split(bind.split("reload-sync:", 1)[1])[1], "rb") as fh:
+                shown.append(fh.read().decode())
+            chosen = shown[-1].split("\0")[0]
+            return subprocess.CompletedProcess(argv, 0, chosen.encode() + b"\0", b"")
+
+        with patch.object(
+            picker.sources, "make_store", return_value=_fresh_store(args, tmp, [old, new])
+        ), patch.object(picker.sources, "available_sources", return_value=["claude"]), patch.object(
+            picker.shutil, "which", side_effect=lambda name: "/bin/" + name
+        ), patch.object(picker.subprocess, "run", side_effect=fake_fzf), patch.object(
+            picker.os, "execv"
+        ) as execute, patch.object(picker.os, "chdir"), patch.object(
+            picker.sys, "platform", "linux"
+        ):
+            assert cli._run(args) == 0
+        assert shown[0].startswith("0\t") and "cached" in shown[0] and "fresh" not in shown[0]
+        assert shown[1].startswith("r0\t") and "fresh" in shown[1].split("\0")[0]
+        execute.assert_called_once_with("/bin/claude", ["/bin/claude", "--resume", "new"])
+        # The refresh persisted, so the next launch opens with the new session.
+        assert [row.id for row in picker._cached_sessions(args)] == ["old", "new"]
+
+
+def test_background_refresh_failure_or_old_fzf_keeps_the_cached_list():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = _background_args(tmp)
+        _cache(args, "claude", [_row("old", "Claude Code", tmp)])
+        menus = []
+
+        def fake_fzf(version):
+            def run(argv, **kwargs):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, version, "")
+                if "--bind" in argv:
+                    bind = argv[argv.index("--bind") + 1]
+                    with open(shlex.split(bind.split("reload-sync:", 1)[1])[1], "rb") as fh:
+                        menus.append(fh.read().decode())
+                else:
+                    menus.append(None)
+                return subprocess.CompletedProcess(argv, 130, b"", b"")
+
+            return run
+
+        broken = patch.object(
+            picker.sources, "make_store", side_effect=sqlite3.DatabaseError("broken source")
+        )
+        with broken, patch.object(
+            picker.sources, "available_sources", return_value=["claude"]
+        ), patch.object(picker.shutil, "which", return_value="/bin/fzf"), patch.object(
+            picker.sys, "platform", "linux"
+        ), contextlib.redirect_stderr(io.StringIO()) as error:
+            with patch.object(picker.subprocess, "run", side_effect=fake_fzf("0.54.1\n")):
+                assert cli._run(args) == 0
+            with patch.object(picker.subprocess, "run", side_effect=fake_fzf("0.35.1\n")):
+                assert cli._run(args) == 0
+            with patch.object(picker.subprocess, "run", side_effect=fake_fzf("garbage")):
+                assert cli._run(args) == 0
+        assert error.getvalue() == ""
+        # A failed refresh re-sends the cached rows under their original keys.
+        assert menus[0].startswith("0\t") and menus[1:] == [None, None]
+
+
+def test_no_refresh_never_probes_fzf_or_reads_harness_records():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = _background_args(tmp, "--no-refresh")
+        _cache(args, "claude", [_row("old", "Claude Code", tmp)])
+
+        def fake_fzf(argv, **kwargs):
+            assert "--version" not in argv and "--bind" not in argv
+            return subprocess.CompletedProcess(argv, 130, b"", b"")
+
+        with patch.object(
+            picker.sources, "make_store", side_effect=AssertionError("built store")
+        ), patch.object(picker.shutil, "which", return_value="/bin/fzf"), patch.object(
+            picker.subprocess, "run", side_effect=fake_fzf
+        ):
+            assert cli._run(args) == 0
+
+
+def test_index_skips_rollup_parsing_until_a_cache_is_replaced():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = cli.parse_args(["launch", "--harness", "claude", "--claude-dir", tmp])
+        _cache(args, "claude", [_row("one", "Claude Code", tmp)])
+        assert [row.id for row in picker._load(args)] == ["one"]
+        with patch.object(picker, "_cached_sessions", side_effect=AssertionError("parsed")):
+            assert [row.id for row in picker._load(args)] == ["one"]
+        # Caches are replaced, never rewritten in place: with the same size and mtime,
+        # the new inode alone still invalidates the index.
+        path = picker._cache_path("claude", tmp)
+        before = os.stat(path)
+        with open(path + ".new", "w") as fh, open(path) as old:
+            fh.write(old.read().replace('"one"', '"two"'))
+        os.utime(path + ".new", ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(path + ".new", path)
+        assert os.stat(path).st_size == before.st_size
+        assert [row.id for row in picker._load(args)] == ["two"]
+        index = picker._index_path(args, picker._cache_files(args))
+        for damage in ("{", '{"version": 1}', json.dumps({"version": 1, "rows": 3})):
+            with open(index, "w") as fh:
+                fh.write(damage)
+            assert [row.id for row in picker._load(args)] == ["two"]
+        with open(index) as fh:
+            payload = json.load(fh)
+        payload["rows"][0]["machine"] = "remote"
+        with open(index, "w") as fh:
+            json.dump(payload, fh)
+        assert [row.id for row in picker._load(args)] == ["two"]
+
+
+def test_refresh_keeps_unavailable_harness_rows_and_updates_the_index():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = cli.parse_args(["launch", "--claude-dir", tmp, "--codex-dir", tmp])
+        _cache(args, "codex", [_row("codex-old", "Codex", tmp)])
+        _cache(args, "claude", [_row("claude-old", "Claude Code", tmp)])
+        cached = picker._load(args)
+        fresh = [_row("claude-new", "Claude Code", tmp), _row("remote", "Claude Code", tmp)]
+        fresh[1].machine = "laptop"
+        with patch.object(
+            picker.sources, "make_store", return_value=_fresh_store(args, tmp, fresh)
+        ), patch.object(picker.sources, "available_sources", return_value=["claude"]):
+            rows = picker._refreshed(args, cached)
+        assert sorted(row.id for row in rows) == ["claude-new", "codex-old"]
+        with patch.object(picker, "_cached_sessions", side_effect=AssertionError("parsed")):
+            assert sorted(row.id for row in picker._load(args)) == ["claude-new", "codex-old"]
