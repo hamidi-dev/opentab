@@ -429,6 +429,69 @@ def test_copilot_folds_desktop_child_sessions_into_their_coordinator():
         assert [r["parts"][0]["text"] for r in kid["records"]] == ["Count the stores"]
 
 
+def test_copilot_child_family_conversation_manifest_and_changes():
+    from opentab.stores.copilot_changes import read_changes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(otel, [_otel_chat("coord", "claude-sonnet-5.5", 100, 5)])
+        state = os.path.join(tmp, ".copilot", "session-state")
+
+        def session(sid, cwd):
+            # One successful `create` of the same relative path, in its own checkout.
+            os.makedirs(os.path.join(state, sid), exist_ok=True)
+            _write_jsonl(
+                os.path.join(state, sid, "events.jsonl"),
+                [
+                    _event("session.start", {"sessionId": sid, "context": {"cwd": cwd}}, "s"),
+                    _event(
+                        "assistant.message",
+                        {
+                            "messageId": "m",
+                            "toolRequests": [
+                                {"toolCallId": "t", "name": "create", "arguments": {"path": "a.py"}}
+                            ],
+                        },
+                        "a",
+                    ),
+                    _event(
+                        "tool.execution_complete",
+                        {"toolCallId": "t", "success": True, "result": {"content": ""}},
+                        "c",
+                    ),
+                ],
+            )
+
+        session("coord", os.path.join(tmp, "one"))
+        session("deep", os.path.join(tmp, "two"))
+        _write_events(otel, "third", [])
+        # "hole" has no session file: its child attaches to the nearest one that does.
+        _app_links(otel, [("hole", "coord"), ("deep", "hole")], chat_links=[("third", "coord")])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.session_family("coord") == [
+            ("coord", None),
+            ("deep", "coord"),
+            ("third", "coord"),
+        ]
+        tree = {e["id"]: e["parent_id"] for e in store.conversation_source("coord")["executions"]}
+        assert tree == {"coord": None, "deep": "coord", "third": "coord"}
+        # Same label, different checkouts: two files, never one merged entry.
+        files = read_changes(store, "coord")["files"]
+        assert [(f["file"], f["status"], len(f["edits"])) for f in files] == [
+            ("a.py", "added", 1),
+            ("a.py", "added", 1),
+        ]
+
+        before = store.conversation_manifest("coord")
+        con = sqlite3.connect(os.path.join(tmp, ".copilot", "data.db"))
+        con.execute("UPDATE chat_parent_links SET parent_session_id = 'deep'")
+        con.commit()
+        con.close()
+        # Re-parenting alone, with no event file touched, must refresh the index.
+        after = ot.CopilotStore(otel, _copilot_args(otel)).conversation_manifest("coord")
+        assert after != before and json.loads(json.dumps(before)) == before
+
+
 def test_copilot_skips_the_vscode_extensions_own_export():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")

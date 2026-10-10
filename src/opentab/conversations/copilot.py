@@ -67,8 +67,12 @@ def event_agent(event: dict, agents: dict) -> str | None:
 def manifest(store, root_id: str):
     if store.demo:
         return None
-    paths = [store._events.path(sid) for sid, _parent in store.session_family(root_id)]
-    return source_manifest(paths) if all(p is not None for p in paths) else None
+    family = store.session_family(root_id)
+    paths = [store._events.path(sid) for sid, _parent in family]
+    if any(p is None for p in paths):
+        return None
+    # A re-parented child changes every snapshot's executions without touching a file.
+    return [source_manifest(paths), [[sid, parent] for sid, parent in family]]
 
 
 def read_source(store, root_id: str, execution_id: str | None = None) -> dict:
