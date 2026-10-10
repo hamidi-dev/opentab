@@ -386,8 +386,8 @@ def test_copilot_folds_desktop_child_sessions_into_their_coordinator():
                 _event("assistant.message", {"apiCallId": "k2", "model": model}, "xa", "x"),
             ],
         )
-        _write_events(otel, "gap", [])
-        _write_events(otel, "grand", [])
+        for sid in ("gap", "grand", "loop1", "loop2"):
+            _write_events(otel, sid, [])
         _app_links(
             otel,
             [("kid", "coord"), ("gap", "coord"), ("loop1", "loop2"), ("loop2", "loop1")],
@@ -397,6 +397,7 @@ def test_copilot_folds_desktop_child_sessions_into_their_coordinator():
         assert os.path.join(os.path.dirname(otel), "data.db") in store.cache_inputs()
         rows = {w.id: w for w in store.workflows()}
         assert sorted(rows) == ["coord", "loop1", "loop2"]  # a cycle stays unfolded
+        assert store.session_family("loop1") == [("loop1", None)]  # in every view
         coord = rows["coord"]
         assert (coord.total_cost, coord.root_cost, coord.subagents) == (0.1, 0.02, 3)
         nodes = store.workflow_nodes("coord")
