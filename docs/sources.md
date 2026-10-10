@@ -197,7 +197,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   the JetBrains plugin. Each session's `workspace.yaml` names its client, shown as
   **Client** in the session overview (TUI and web), and supplies the title and folder
   when the session store has no row yet. A client only shows up once it writes the
-  OpenTelemetry export: an IDE launched outside your shell may not inherit the env var.
+  OpenTelemetry export. The JetBrains plugin strips the env var unless its own setting
+  is on: enable *Settings → Tools → GitHub Copilot → Chat → Open Telemetry*, set
+  **Output file** (the default OTLP endpoint is plain http, which Copilot refuses to
+  export to), and restart the IDE. A path your shell exports still takes precedence.
 - **Background calls**: a session the client created and deleted again, absent from
   both the session store and `session-state` (the desktop app's session naming, for
   example), is titled "(background call)" and grouped under the project
