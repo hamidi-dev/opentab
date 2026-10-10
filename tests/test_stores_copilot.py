@@ -599,6 +599,60 @@ def test_copilot_events_join_exact_calls_prompts_tools_and_reasoning_lazily():
         )
 
 
+def test_copilot_autopilot_continuation_stays_under_the_human_prompt():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(
+            otel,
+            [
+                _otel_chat("s", "gpt-5.6-terra", 1000, 20, resp="r1"),
+                _otel_chat("s", "gpt-5.6-terra", 1200, 30, resp="r2", trace="t2", span="s2"),
+            ],
+        )
+        _write_events(
+            otel,
+            "s",
+            [
+                _event("user.message", {"messageId": "u1", "content": "Compare apps"}, "u1"),
+                _event(
+                    "assistant.message",
+                    {"apiCallId": "r1", "originatingMessageId": "u1", "content": "Answer"},
+                    "a1",
+                ),
+                # Recorded by the desktop app's autopilot: empty, not typed by the user.
+                _event(
+                    "user.message",
+                    {
+                        "messageId": "u2",
+                        "content": "",
+                        "transformedContent": "<tools_changed_notice>",
+                        "source": "autopilot",
+                        "isAutopilotContinuation": True,
+                    },
+                    "u2",
+                ),
+                _event(
+                    "assistant.message",
+                    {"apiCallId": "r2", "originatingMessageId": "u2", "content": "Done"},
+                    "a2",
+                ),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        turns = store.message_timeline("s")
+        assert [(r["prompt_id"], r["prompt_full"]) for r in turns] == [
+            ("u1", "Compare apps"),
+            ("u1", "Compare apps"),
+        ]
+        source = store.conversation_source("s")
+        assert [(r["role"], r["parts"][0]["text"]) for r in source["records"]] == [
+            ("user", "Compare apps"),
+            ("assistant", "Answer"),
+            ("assistant", "Done"),
+        ]
+        assert "autopilot_continuations_excluded" in source["limitations"]
+
+
 def test_copilot_subagents_keep_exact_nested_ownership_and_root_model_shares():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")

@@ -34,6 +34,11 @@ def node_id(session: str, agent: str) -> str:
     )
 
 
+def continuation(data: dict) -> bool:
+    """Autopilot injects an empty user.message to continue its own run."""
+    return data.get("isAutopilotContinuation") is True or data.get("source") == "autopilot"
+
+
 def _tools(data: dict) -> list[dict]:
     requests = data.get("toolRequests")
     if not isinstance(requests, list):
@@ -267,7 +272,12 @@ class CopilotEvents:
                 mid = _string(data.get("messageId")) or _string(event.get("id"))
                 text = _string(data.get("content"))
                 prompt = (mid, _clean_prompt(text), text)
-                if mid and text:
+                if continuation(data):
+                    # Autopilot's own "keep going" nudge is not a human prompt;
+                    # its calls stay under the request that started the run.
+                    if mid and aid in current:
+                        prompts[(aid, mid)] = current[aid]
+                elif mid and text:
                     prompts[(aid, mid)] = current[aid] = prompt
             elif kind == "assistant.message":
                 key = call_key(session, _string(data.get("apiCallId")))
