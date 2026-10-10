@@ -295,6 +295,13 @@ input, keeping their sum within the recorded input budget. Copilot's shutdown
 AI-credit charge reproduces from output alone, so adding reasoning counts it twice.
 Total-only records need back-filling rather than being discarded.
 
+The JetBrains plugin cross-wires `gen_ai.request.model` and `gen_ai.response.model`
+while subagents run in parallel: the call that starts them carries the subagent's
+response model, later main-agent calls its request model. When the two disagree, the
+one whose `github-copilot` list rates reproduce the recorded charge wins; uncharged
+calls fall back to the vendor named by an Anthropic `msg_` response id, then to the
+response model.
+
 One call can appear across several files as a chat span, inference log, agent-turn
 log and agent-summary span, in that fidelity order. Deduplication spans the entire
 export, and response ids take precedence over trace ids: several distinct calls

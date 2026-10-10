@@ -20,7 +20,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 22  # Copilot OTEL AI-credit charges are recorded spend
+CACHE_VERSION = 23  # Copilot: output includes reasoning; JetBrains models resolved by charge
 
 
 # Required because cache readers index these fields directly.
