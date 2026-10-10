@@ -834,6 +834,36 @@ def test_vendor_route_beats_a_gateway_markup_for_every_family():
     assert not ot.pricing.is_vendor_route("zhipuai", "glm-4.6")
 
 
+def test_dotted_claude_ids_resolve_to_the_vendors_dashed_card():
+    """Copilot spells Claude versions with dots. Only resellers list that spelling, so the
+    lookup stopped at a reseller's card (double the cache-read rate) and never reached
+    Anthropic's own dashed one."""
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    def card(i, o, r, w):
+        return {"cost": {"input": i, "output": o, "cache_read": r, "cache_write": w}}
+
+    raw = {
+        "anthropic": {"models": {"claude-sonnet-5-5": card(2.0, 10.0, 0.1, 2.5)}},
+        "cortecs": {"models": {"claude-sonnet-5.5": card(2.25, 11.25, 0.225, 2.8)}},
+        "openai": {"models": {"gpt-5.4-mini": card(0.75, 4.5, 0.075, 0.0)}},
+    }
+    layer = pricing._parse_catalog(
+        {"providers": pricing.prune_models_dev(raw), "fetched_at": "2099"}
+    )
+    pricing.model_tiers.cache_clear()
+    try:
+        with patch.object(pricing, "_layers", return_value=[layer]):
+            assert pricing.model_price("anthropic/claude-sonnet-5.5") == (2.0, 10.0, 0.1, 2.5)
+            assert pricing.model_price("claude-sonnet-5-5") == (2.0, 10.0, 0.1, 2.5)
+            # OpenAI's own ids are dotted and stay untouched.
+            assert pricing.model_price("openai/gpt-5.4-mini") == (0.75, 4.5, 0.075, 0.0)
+    finally:
+        pricing.model_tiers.cache_clear()
+
+
 def test_a_zero_rate_card_never_wins_on_being_the_vendor():
     """A vendor lists an all-zero card for models it only sells inside a plan. That is not
     a rate card, so it must not shadow a route that publishes real rates -- zhipuai prices

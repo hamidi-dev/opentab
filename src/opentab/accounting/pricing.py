@@ -610,6 +610,15 @@ def model_price_source(name: str) -> dict | None:
     return dict(card[1] or {}) if card is not None else price_source_meta()
 
 
+def _vendor_spelling(mid: str, vendor: dict) -> str:
+    """Copilot spells Claude versions with dots (claude-sonnet-5.5); Anthropic's own card
+    uses dashes. Without this the dotted id resolves to a reseller's card instead."""
+    if model_family(mid) == "openai":
+        return mid  # OpenAI's own ids are dotted; _gpt_version_to_dots already applied
+    dashed = dots_to_dashes(mid)
+    return dashed if dashed != mid and vendor.get(dashed) and not vendor.get(mid) else mid
+
+
 @lru_cache(maxsize=8192)
 def model_tiers(name: str) -> tuple:
     """Return the selected rate card's context tiers, with the same alias/route rules."""
@@ -622,9 +631,10 @@ def model_tiers(name: str) -> tuple:
             (t["tier"]["size"], _with_openai_cache_write(name, tuple(t["cost"])))
             for t in card[0].get("tiers", [])
         )
-    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
-    plain = display_model(mid)
+    spelled = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     for prices, _limits, _tree, _meta, vendor in _layers():
+        mid = _vendor_spelling(spelled, vendor)
+        plain = display_model(mid)
         selected = mid
         row = prices.get(mid)
         if row is None:
@@ -650,9 +660,10 @@ def _base_model_price(name: str) -> tuple[float, float, float, float]:
     card = _copilot_card(name)
     if card is not None:
         return _with_openai_cache_write(name, card[0]["cost"])
-    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
-    plain = display_model(mid)
+    mid = spelled = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     for prices, _limits, _tree, _meta, vendor in _layers():
+        mid = _vendor_spelling(spelled, vendor)
+        plain = display_model(mid)
         row = prices.get(mid)
         if row is None:
             # Prefer a real unpinned catalog card before family guesses.
