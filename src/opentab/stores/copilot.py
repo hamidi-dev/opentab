@@ -496,8 +496,12 @@ class CopilotStore:
         reproduce from those counts at list rates, yet the runtime's own running total
         (``session.usage_checkpoint`` in session-state) and GitHub's quota both move by
         half. The CLI and desktop app match their checkpoints exactly. Both signals are
-        required, so a fixed exporter or an unrelated session is never halved.
+        required, so a fixed exporter or an unrelated session is never halved. Only the
+        JetBrains client qualifies: a running CLI session's earlier checkpoint can sit in
+        the same window, and its counts may happen to be all even.
         """
+        if self._workspace(sid).get("client_name") != "copilot-intellij":
+            return False
         charged = sum(c["cost"] for c in calls)
         if charged <= 0 or any(c[k] % 2 for c in calls for k in self._USAGE_FIELDS):
             return False
@@ -516,6 +520,14 @@ class CopilotStore:
         if c["context_tokens"] is not None:
             c["context_tokens"] //= 2
         c["cost"] /= 2
+        # The doubled context can cross a long-context price tier the real call never
+        # reached, so a swapped model pair is matched again against the true charge.
+        attrs, fallback = c["model_attrs"]
+        inp = c["input"] + c["cache_read"] + c["cache_write"]
+        model = cls._call_model(
+            attrs, inp, c["output"], c["cache_read"], c["cache_write"], charged=c["cost"]
+        )
+        c["model"] = cls._prefix_model(model or fallback or "unknown")
 
     @classmethod
     def _file_records(cls, lines: list[str]) -> list[dict]:
@@ -596,7 +608,13 @@ class CopilotStore:
 
     @classmethod
     def _call_model(
-        cls, attrs: dict, inp: int, out: int, cache_read: int, cache_write: int
+        cls,
+        attrs: dict,
+        inp: int,
+        out: int,
+        cache_read: int,
+        cache_write: int,
+        charged: float | None = None,
     ) -> str | None:
         resp = cls._attr_str(attrs, "gen_ai.response.model")
         req = cls._attr_str(attrs, "gen_ai.request.model")
@@ -607,7 +625,8 @@ class CopilotStore:
         # every later main-agent call its request model. Neither attribute is reliable, but
         # GitHub bills at its list rates, so exactly one candidate reproduces the charge
         # (verified on every swapped call, Claude/GPT and GPT/GPT pairs alike).
-        charged = cls._nano_aiu_usd(attrs)
+        if charged is None:
+            charged = cls._nano_aiu_usd(attrs)
         if charged > 0:
             fits = [
                 m
@@ -667,9 +686,8 @@ class CopilotStore:
             return None  # a non-usage record (metric, tool span, ...)
         tid = self._trace_id(rec)
         ctx = trace_ctx.get(tid) if tid else None
-        model = self._call_model(attrs, inp, out, cache_read, cache_write) or (
-            ctx["model"] if ctx else None
-        )
+        fallback = ctx["model"] if ctx else None
+        model = self._call_model(attrs, inp, out, cache_read, cache_write) or fallback
         # Take the trace's best session id when it outranks this record's own. Keeping
         # only the local one meant a record whose sole session attribute is the per-call
         # gen_ai.response.id (priority 1) held onto it even when a sibling on the same
@@ -689,6 +707,7 @@ class CopilotStore:
             "trace_id": tid,
             "response_id": self._attr_str(attrs, "gen_ai.response.id"),
             "model": self._prefix_model(model or "unknown"),
+            "model_attrs": (attrs, fallback),
             "session_id": sid,
             "ts_ms": ts_ms,
             "input": uncached,

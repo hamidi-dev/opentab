@@ -304,9 +304,12 @@ response model.
 
 The same plugin also reports every usage value twice over: tokens and charge alike,
 so the charge still matches list rates, while the runtime's `session.usage_checkpoint`
-and GitHub's quota move by half. A session is halved only when all its token counts
-are even and its last checkpoint is 45–75% of the exported charge; the upper slack
-covers calls the export drops outright, whose spend stays missing. It also exports
+and GitHub's quota move by half. A session is halved only when its `workspace.yaml`
+names the JetBrains client, all its token counts are even, and its last checkpoint is
+45–75% of the exported charge; the upper slack covers calls the export drops outright,
+whose spend stays missing. A running CLI session's earlier checkpoint can fall in that
+window too, hence the client gate. A swapped model pair is matched again on the halved
+counts, since the doubled context can cross a long-context price tier. It also exports
 each subagent as one chat span summing all of its calls, and saved events carry no
 per-call usage, so a subagent shows a single turn. When a subagent finishes, the main
 agent resumes from an internal notification rather than a `user.message`; its calls
