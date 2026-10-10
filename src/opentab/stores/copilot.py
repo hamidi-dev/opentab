@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -21,15 +22,20 @@ class CopilotStore:
 
     A call may appear as chat, inference, agent-turn, and summary records; retain that
     fidelity order and deduplicate by response/trace identity. Input includes cache reads/writes
-    and reasoning remains inside output. OTEL records no cost or prompt text. Session cwd
-    and title are enriched read-only from the sibling ``session-store.db``.
+    and reasoning remains inside output. Chat spans record GitHub's AI-credit charge
+    (``github.copilot.nano_aiu``), kept as recorded spend; calls without it stay unpriced
+    for "$". OTEL records no prompt text. Session cwd and title are enriched read-only
+    from the sibling ``session-store.db``.
     """
 
-    records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
     records_reasoning = True  # readable reasoningText/blocks when the model records them
     combined = False
     source_name = "Copilot"
 
+    # GitHub AI credits: 1e9 nano-AIU per credit, $0.01 per credit.
+    _NANO_AIU_ATTR = "github.copilot.nano_aiu"
+    _USD_PER_NANO_AIU = 1e-11
+    _FIELDS = ("input", "output", "reasoning", "cache_read", "cache_write", "tokens_total")
     # OTEL GenAI semantic-convention attribute names.
     _MODEL_ATTRS = ("gen_ai.response.model", "gen_ai.request.model")
     # (attribute, priority); the highest-priority present id wins, first listed breaks ties.
@@ -47,6 +53,7 @@ class CopilotStore:
         self.args = args
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None
+        self._records_cost: bool | None = None  # resolved lazily (records_cost property)
         self._git_root_cache: dict[str, str] = {}
         self._meta: dict[str, tuple[str, str]] | None = None  # id -> (cwd, summary)
         # GitHub's documented single-file exporter target (can live outside root_dir).
@@ -83,10 +90,47 @@ class CopilotStore:
             self._git_root_cache[cwd] = git_root(cwd)
         return self._git_root_cache[cwd]
 
-    @staticmethod
-    def _new_acc() -> dict:
-        return {
+    @property
+    def records_cost(self) -> bool:
+        # True iff any kept call carries an AI-credit charge. Lazy so construction never
+        # reads the export; the probe runs only when asked before any parse.
+        if self._sessions is not None:
+            return any(s["total_cost"] > 0 for s in self._sessions.values())
+        if self._records_cost is None:
+            self._records_cost = self._probe_records_cost()
+        return self._records_cost
+
+    def _probe_records_cost(self) -> bool:
+        needle = f'"{self._NANO_AIU_ATTR}"'
+        for path in self._files():
+            try:
+                fh = open(path, encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            with fh:
+                for line in fh:
+                    if needle not in line:
+                        continue
+                    rec = self._loads(line)
+                    attrs = rec.get("attributes") if isinstance(rec, dict) else None
+                    if isinstance(attrs, dict) and self._nano_aiu_usd(attrs) > 0:
+                        return True
+        return False
+
+    @classmethod
+    def _nano_aiu_usd(cls, attrs: dict) -> float:
+        value = attrs.get(cls._NANO_AIU_ATTR)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        if not math.isfinite(value) or value <= 0:
+            return 0.0
+        return value * cls._USD_PER_NANO_AIU
+
+    @classmethod
+    def _new_acc(cls) -> dict:
+        acc = {
             "runs": 0,
+            "cost": 0.0,  # recorded AI-credit spend in USD
             "input": 0,  # uncached input (OTEL input_tokens minus cache reads/writes)
             "output": 0,  # reasoning folded in so it is priced once, never twice
             "reasoning": 0,  # kept 0 (folded into output)
@@ -94,6 +138,18 @@ class CopilotStore:
             "cache_write": 0,
             "tokens_total": 0,
         }
+        acc.update({"unpriced_" + field: 0 for field in cls._FIELDS})
+        return acc
+
+    @classmethod
+    def _add(cls, acc: dict, turn: dict) -> None:
+        # Calls without a recorded charge stay unpriced so "$" estimates only those.
+        acc["runs"] += 1
+        acc["cost"] += turn["cost"]
+        for field in cls._FIELDS:
+            acc[field] += turn[field]
+            if not turn["cost"]:
+                acc["unpriced_" + field] += turn[field]
 
     @staticmethod
     def _new_session() -> dict:
@@ -474,6 +530,7 @@ class CopilotStore:
             if source in ("chat", "inference") and "gen_ai.usage.input_tokens" in attrs
             else None,
             "output": out + reasoning,  # fold reasoning into output (priced once at output)
+            "cost": self._nano_aiu_usd(attrs),
             "cache_read": cache_read,
             "cache_write": cache_write,
             "effort": self._attr_str(attrs, "gen_ai.request.reasoning.level") or "",
@@ -487,38 +544,30 @@ class CopilotStore:
             s["ts_min"] = ts
         if ts is not None and (s["ts_max"] is None or ts > s["ts_max"]):
             s["ts_max"] = ts
+        # One Turns row per kept call. OTEL captures no prompt content by default, so
+        # the rows are headerless (empty prompt_*); a call without a recorded charge
+        # stays $0 and the tab's "$" view reprices it from its token columns.
+        turn = {
+            "ts": ts if ts is not None else 0,  # epoch ms; sorts numerically
+            "depth": 0,
+            "agent": "-",
+            "content_key": call_key(c["session_id"], c["response_id"]) if c["response_id"] else "",
+            "effort": c["effort"],
+            "model_name": c["model"],
+            "cost": c["cost"],
+            "input": c["input"],
+            "context_tokens": c["context_tokens"],
+            "output": c["output"],
+            "reasoning": 0,
+            "cache_read": c["cache_read"],
+            "cache_write": c["cache_write"],
+            "tokens_total": c["input"] + c["cache_read"] + c["cache_write"] + c["output"],
+        }
+        s["turns"].append(turn)
         acc = s["models"].get(c["model"])
         if acc is None:
             acc = s["models"][c["model"]] = self._new_acc()
-        acc["runs"] += 1
-        acc["input"] += c["input"]
-        acc["cache_read"] += c["cache_read"]
-        acc["cache_write"] += c["cache_write"]
-        acc["output"] += c["output"]
-        acc["tokens_total"] += c["input"] + c["cache_read"] + c["cache_write"] + c["output"]
-        # One Turns row per kept call. OTEL captures no prompt content by default, so
-        # the rows are headerless (empty prompt_*); cost stays $0 and the tab's "$"
-        # view reprices each row from its token columns.
-        s["turns"].append(
-            {
-                "ts": ts if ts is not None else 0,  # epoch ms; sorts numerically
-                "depth": 0,
-                "agent": "-",
-                "content_key": call_key(c["session_id"], c["response_id"])
-                if c["response_id"]
-                else "",
-                "effort": c["effort"],
-                "model_name": c["model"],
-                "cost": 0.0,
-                "input": c["input"],
-                "context_tokens": c["context_tokens"],
-                "output": c["output"],
-                "reasoning": 0,
-                "cache_read": c["cache_read"],
-                "cache_write": c["cache_write"],
-                "tokens_total": c["input"] + c["cache_read"] + c["cache_write"] + c["output"],
-            }
-        )
+        self._add(acc, turn)
 
     def _finalize(self, sid: str, s: dict) -> None:
         cwd, summary = self._load_meta().get(sid, ("", ""))
@@ -545,57 +594,49 @@ class CopilotStore:
                 turn["depth"] = agents[aid]["depth"]
                 turn["agent"] = agents[aid]["name"]
             else:
-                acc = root_models.setdefault(turn["model_name"], self._new_acc())
-                acc["runs"] += 1
-                for field in (
-                    "input",
-                    "output",
-                    "reasoning",
-                    "cache_read",
-                    "cache_write",
-                    "tokens_total",
-                ):
-                    acc[field] += turn[field]
+                self._add(root_models.setdefault(turn["model_name"], self._new_acc()), turn)
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
-            # Recorded cost is $0 (OTEL logs none); every token is "unpriced", so the
-            # unpriced_* carries full counts; root shares exclude identified children.
+            # Recorded cost is the AI-credit charge; uncharged calls stay unpriced.
+            # Root shares exclude identified children.
             root = root_models.get(model_name, self._new_acc())
             rows.append(
                 {
                     "root_id": sid,
                     "model_name": model_name,
                     "runs": acc["runs"],
-                    "cost": 0.0,
-                    "root_cost": 0.0,
+                    "cost": round(acc["cost"], 6),
+                    "root_cost": round(root["cost"], 6),
                     "tokens_total": acc["tokens_total"],
                     "input": acc["input"],
                     "reasoning": acc["reasoning"],
                     "cache_read": acc["cache_read"],
                     "cache_write": acc["cache_write"],
                     "output": acc["output"],
-                    "unpriced_input": acc["input"],
-                    "unpriced_reasoning": acc["reasoning"],
-                    "unpriced_cache_read": acc["cache_read"],
-                    "unpriced_cache_write": acc["cache_write"],
-                    "unpriced_output": acc["output"],
+                    "unpriced_input": acc["unpriced_input"],
+                    "unpriced_reasoning": acc["unpriced_reasoning"],
+                    "unpriced_cache_read": acc["unpriced_cache_read"],
+                    "unpriced_cache_write": acc["unpriced_cache_write"],
+                    "unpriced_output": acc["unpriced_output"],
                     "root_tokens_total": root["tokens_total"],
                     "root_input": root["input"],
                     "root_output": root["output"],
                     "root_reasoning": root["reasoning"],
                     "root_cache_read": root["cache_read"],
                     "root_cache_write": root["cache_write"],
-                    "root_unpriced_input": root["input"],
-                    "root_unpriced_reasoning": root["reasoning"],
-                    "root_unpriced_cache_read": root["cache_read"],
-                    "root_unpriced_cache_write": root["cache_write"],
-                    "root_unpriced_output": root["output"],
+                    "root_unpriced_input": root["unpriced_input"],
+                    "root_unpriced_reasoning": root["unpriced_reasoning"],
+                    "root_unpriced_cache_read": root["unpriced_cache_read"],
+                    "root_unpriced_cache_write": root["unpriced_cache_write"],
+                    "root_unpriced_output": root["unpriced_output"],
                 }
             )
         attach_pricing(rows, s["turns"])
         s["model_rows"] = rows
         s["total_tokens"] = sum(r["tokens_total"] for r in rows)
-        s["unpriced_tokens"] = s["total_tokens"]  # all of it
+        s["total_cost"] = round(sum(acc["cost"] for acc in s["models"].values()), 6)
+        s["root_cost"] = round(sum(acc["cost"] for acc in root_models.values()), 6)
+        s["unpriced_tokens"] = sum(acc["unpriced_tokens_total"] for acc in s["models"].values())
 
     @staticmethod
     def _node(
@@ -637,8 +678,8 @@ class CopilotStore:
                     title=s["title"],
                     directory=s["directory"],
                     created_at=s["created_at"],
-                    root_cost=0.0,  # recorded cost is $0; "$" reprices the tokens
-                    total_cost=0.0,
+                    root_cost=s["root_cost"],
+                    total_cost=s["total_cost"],
                     subagents=len(s["agents"]),
                     model_count=0,  # filled by App._load_model_cache
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
@@ -705,7 +746,9 @@ class CopilotStore:
         models = {row["model_name"]: row for row in s["model_rows"]}
         return [
             dict(
-                self._node(workflow_id, 0, "-", s["title"], s["created_at"], model, 0.0, acc),
+                self._node(
+                    workflow_id, 0, "-", s["title"], s["created_at"], model, acc["cost"], acc
+                ),
                 # The status path covers the whole tree once per model. Reuse its
                 # reconciled buckets rather than the execution's dominant label.
                 model_pricing=[models[model]],
@@ -782,19 +825,12 @@ class CopilotStore:
             for turn in s["turns"]:
                 if turn["execution_id"] != execution:
                     continue
-                acc["runs"] += 1
+                self._add(acc, turn)
                 models[turn["model_name"]] = models.get(turn["model_name"], 0) + 1
-                for field in (
-                    "input",
-                    "output",
-                    "reasoning",
-                    "cache_read",
-                    "cache_write",
-                    "tokens_total",
-                ):
-                    acc[field] += turn[field]
             best = max(models, key=models.get) if models else "unknown (not recorded)"
-            nodes.append(self._node(execution, depth, agent, title, created, best, 0.0, acc))
+            nodes.append(
+                self._node(execution, depth, agent, title, created, best, acc["cost"], acc)
+            )
             if not self.demo:
                 attach_node_pricing(
                     nodes[-1], (t for t in s["turns"] if t["execution_id"] == execution)

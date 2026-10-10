@@ -283,7 +283,7 @@ You can also hand it a file: `opentab requests.csv` or `opentab path/to/opencode
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | — |
 | Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
-| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
+| GitHub Copilot CLI | mixed — AI-credit charges real, rest estimated | — | ✓ | — | — | ✓ |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
 | omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |

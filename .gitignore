@@ -16,3 +16,4 @@ build/
 /README.html
 /README.single.html
 .worktrees
+.idea
