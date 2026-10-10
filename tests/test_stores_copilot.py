@@ -63,6 +63,61 @@ def test_copilot_prices_request_context_but_not_multi_call_agent_summary_as_one_
         assert abs(row_list_cost(row) - 0.1436) < 1e-9 and unknown_tier_context(row)
 
 
+def _charged(chat, nano_aiu):
+    chat["attributes"]["github.copilot.nano_aiu"] = nano_aiu
+    return chat
+
+
+def test_copilot_ai_credit_charges_are_recorded_spend_and_the_rest_stays_unpriced():
+    from opentab.accounting.tiers import row_api_cost, row_list_cost, unpriced_cost
+
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        model = "claude-sonnet-5.5"
+        _write_otel(
+            otel,
+            [
+                # 2e9 nano-AIU = 2 AI credits = $0.02.
+                _charged(_otel_chat("s", model, 1000, 20, resp="root"), 2e9),
+                _charged(_otel_chat("s", model, 500, 10, resp="child", trace="tc", span="c"), 1e9),
+                _otel_chat("s", model, 300, 5, resp="plain", trace="tp", span="p"),
+                # Malformed charges never become spend.
+                _charged(_otel_chat("s", model, 7, 1, resp="bad", trace="tb", span="b"), "9e9"),
+                _charged(
+                    _otel_chat("s", model, 7, 1, resp="nan", trace="tn", span="n"), float("nan")
+                ),
+            ],
+        )
+        _write_events(
+            otel,
+            "s",
+            [
+                _event("user.message", {"messageId": "u", "content": "Investigate"}, "u"),
+                _event("assistant.message", {"apiCallId": "root", "model": model}, "a"),
+                _event(
+                    "subagent.started", {"agentName": "explore", "toolCallId": "t"}, "sp", "kid"
+                ),
+                _event("assistant.message", {"apiCallId": "child", "model": model}, "ca", "kid"),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.records_cost and store._sessions is None  # probe, no parse
+        (w,) = store.workflows()
+        assert (w.total_cost, w.root_cost) == (0.03, 0.02)
+        assert w.unpriced_tokens == 305 + 8 + 8
+        (row,) = store.model_breakdown()
+        assert (row["cost"], row["root_cost"]) == (0.03, 0.02)
+        assert row["unpriced_input"] == 314 and row["root_unpriced_input"] == 314
+        assert abs(row_api_cost(row) - (0.03 + unpriced_cost(row))) < 1e-12
+        assert unpriced_cost(row) < row_list_cost(row)
+        assert [t["cost"] for t in store.message_timeline("s")] == [0.02, 0.01, 0, 0, 0]
+        assert [n["cost"] for n in store.workflow_nodes("s")] == [0.02, 0.01]
+        assert sum(n["cost"] for n in store.status_nodes("s")) == 0.03
+
+        _write_otel(otel, [_otel_chat("s", model, 300, 5)])
+        assert not ot.CopilotStore(otel, _copilot_args(otel)).records_cost
+
+
 def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")

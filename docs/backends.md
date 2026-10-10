@@ -280,7 +280,11 @@ Reader: [`stores/copilot.py`](../src/opentab/stores/copilot.py), with
 [`copilot_events.py`](../src/opentab/stores/copilot_events.py) for saved-event enrichment.
 
 The opt-in OpenTelemetry export is the usage ledger; the CLI's session database
-only enriches titles and projects. Export records carry tokens but no dollars.
+only enriches titles and projects. Chat spans carry GitHub's AI-credit charge as
+`github.copilot.nano_aiu` (10^9 per credit, $0.01 per credit), the same list-price
+figure GitHub bills against, so it is recorded spend. Non-numeric, non-finite or
+non-positive values record nothing; uncharged calls keep their tokens unpriced for `$`.
+A fallback agent-summary record's charge covers the calls it summarizes.
 Input includes both cache reads and cache writes: subtract both to obtain uncached
 input, keeping their sum within the recorded input budget. Copilot's shutdown
 `tokenDetails` uses this same disjoint split. Reasoning folds into output.
@@ -368,7 +372,7 @@ Output uses the larger of accumulated `completionTokens` and metadata output;
 input similarly takes the larger prompt count. Output can cover several tool
 rounds, but recorded input covers only the final round, so agentic input remains
 undercounted. No cache split is recorded. `resolvedModel` wins over the requested
-model, which matters for auto-routing; Copilot credits are quota units, not USD.
+model, which matters for auto-routing. The store records no AI-credit charge.
 
 Workspace URIs supply projects; empty-window sessions have no workspace. Tokenless
 files are ignored for both availability and accounting. The reader has no subagent

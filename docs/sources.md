@@ -50,7 +50,7 @@ trends. What each tool's records support on top:
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | — ³ |
 | Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | ✓ ⁵ | ✓ ⁵ ⁶ | ✓ ⁵ |
-| GitHub Copilot CLI | tokens only — `$` estimates | ✓ ¹ | ✓ | ✓ ¹ | ✓ ¹ | ✓ |
+| GitHub Copilot CLI | mixed — AI-credit charges real, rest estimated | ✓ ¹ | ✓ | ✓ ¹ | ✓ ¹ | ✓ |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
 | omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -100,7 +100,7 @@ messages, but do not add text-only roots to the usage-derived session catalog.
 ### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only
-tools (Claude Code, Codex, Gemini, Antigravity, and Copilot, CLI and VS Code alike):
+tools (Claude Code, Codex, Gemini, Antigravity, and Copilot Chat in VS Code):
 
 - Their sessions work like OpenCode subscription sessions: **$0 in normal mode** and an
   **estimate** (tokens × API list price) under the **`$`** view, which starts on by
@@ -200,8 +200,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl
   ```
 
-- **Cost**: the export carries tokens but no USD cost — `$0` recorded, estimated under `$`.
-  Copilot premium requests and AI credits are not treated as dollars.
+- **Cost**: each chat span carries GitHub's AI-credit charge (`github.copilot.nano_aiu`;
+  1 credit = $0.01), which OpenTab records as real spend, including usage your plan's
+  included credits cover. Calls without a charge stay `$0` and are estimated under `$`.
+  Legacy premium-request multipliers are not treated as dollars.
 - **Notes**: OTEL logs one call up to four ways across spans and logs; OpenTab
   deduplicates them and keeps the highest-fidelity record. Saved assistant events
   join by exact response ID to provide prompt-grouped Turns, ordered Tools/MCP
@@ -244,8 +246,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   ```sh
   command opentab sessions list --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"
   ```
-- **Cost**: no dollar cost is recorded (Copilot credits are a quota unit, not USD) —
-  `$0` recorded, estimated under `$`.
+- **Cost**: VS Code's store records no charge — `$0` recorded, estimated under `$`.
 - **Notes**: token figures are VS Code's own; the recorded input covers a turn's final
   tool round, so long agentic turns under-count input. Projects come from each
   workspace's folder and roll up to the git root; empty-window sessions group under

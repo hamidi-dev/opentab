@@ -20,7 +20,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 21  # Preserve Claude fast-mode identity independently of the price catalog
+CACHE_VERSION = 22  # Copilot OTEL AI-credit charges are recorded spend
 
 
 # Required because cache readers index these fields directly.
