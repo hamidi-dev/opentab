@@ -1,6 +1,31 @@
 {
   "releases": [
     {
+      "version": "1.30.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Pick a date range from presets such as Last 7 days or Last month, or enter From / To dates, with a preview before it applies.", "availability": "tui", "hint": {"text": "Open the range picker and press Tab for presets", "binding": {"context": "main", "action": "range"}}}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Open opentab launch instantly from cached sessions; new ones swap in when the background refresh finishes.", "hint": {"text": "Run opentab launch; --no-refresh skips the background update"}},
+            {"text": "Click pop-up controls as buttons; their labels follow your key remaps.", "availability": "tui"}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "Price date-pinned Claude fast-mode models at fast rates, and write detailed HTML reports readable only by you."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.30.0"
+    },
+    {
       "version": "1.29.0",
       "sections": [
         {
