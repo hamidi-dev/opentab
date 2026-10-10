@@ -59,12 +59,18 @@ class CopilotStore:
         self._meta: dict[str, tuple[str, str]] | None = None  # id -> (cwd, summary)
         self._meta_complete = False  # the session store was read successfully
         self._clients: dict[str, str] = {}  # id -> session_client() label
+        self._links_cache: dict[str, str] | None = None  # child session -> parent session
+        self._app_titles: dict[str, str] = {}  # desktop app's own session titles
+        self._parts: dict[str, dict] = {}  # every parsed session, before folding
+        self._root_index: dict[str, str] = {}  # folded child session -> its root
         # GitHub's documented single-file exporter target (can live outside root_dir).
         self._extra_file = os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH") or ""
         # session-store.db sits beside the otel/ directory -- the only place cwd lives.
         self._db_path = os.path.join(
             os.path.dirname(os.path.normpath(root_dir)), "session-store.db"
         )
+        # The desktop app's own database records which session created which.
+        self._app_db_path = os.path.join(os.path.dirname(os.path.normpath(root_dir)), "data.db")
         self._events = CopilotEvents(os.path.dirname(os.path.normpath(root_dir)))
 
     @staticmethod
@@ -399,7 +405,16 @@ class CopilotStore:
         # also keeps them out of their project in Projects mode.
         # New rows land in the WAL long before a checkpoint touches the main file.
         files = self._files()
-        files.extend(p for p in (self._db_path, self._db_path + "-wal") if os.path.isfile(p))
+        files.extend(
+            p
+            for p in (
+                self._db_path,
+                self._db_path + "-wal",
+                self._app_db_path,  # parent links fold children into their root
+                self._app_db_path + "-wal",
+            )
+            if os.path.isfile(p)
+        )
         files.extend(glob.glob(os.path.join(self._events.root, "*", "events.jsonl")))
         files.extend(glob.glob(os.path.join(self._events.root, "*", "workspace.yaml")))
         return files
@@ -484,8 +499,170 @@ class CopilotStore:
             self._finalize(sid, s)
         # Drop sessions with no recorded usage (non-LLM-only files): they would only add
         # $0 / 0-token rows to a spend browser.
-        self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
+        self._parts = {sid: s for sid, s in sessions.items() if s["model_rows"]}
+        self._sessions = self._fold_children(self._parts)
         return self._sessions
+
+    def _links(self) -> dict[str, str]:
+        """Child session -> the session that created it, from the desktop app's database.
+
+        ``create_session`` gives a child its own workspace; ``workspace_parent_links``
+        nests it under the creator's workspace. Chat sessions use ``chat_parent_links``.
+        Missing tables or an unreadable database mean no links, never an error.
+        """
+        if self._links_cache is not None:
+            return self._links_cache
+        links: dict[str, str] = {}
+        titles: dict[str, str] = {}
+        queries = (
+            "SELECT cw.session_id, COALESCE(pw.session_id, l.creator_session_id)"
+            " FROM workspace_parent_links l JOIN workspaces cw ON cw.id = l.child_workspace_id"
+            " LEFT JOIN workspaces pw ON pw.id = l.parent_workspace_id",
+            "SELECT session_id, parent_session_id FROM chat_parent_links",
+        )
+        if os.path.isfile(self._app_db_path):
+            try:
+                con = sqlite3.connect(f"file:{self._app_db_path}?mode=ro", uri=True)
+            except sqlite3.Error:
+                con = None
+            if con is not None:
+                try:
+                    for query in queries:
+                        try:
+                            rows = con.execute(query).fetchall()
+                        except sqlite3.Error:
+                            continue  # an older app without this table
+                        for child, parent in rows:
+                            if (
+                                isinstance(child, str)
+                                and isinstance(parent, str)
+                                and child
+                                and parent
+                                and child != parent
+                            ):
+                                links.setdefault(child, parent)
+                    try:
+                        rows = con.execute("SELECT id, title FROM sessions").fetchall()
+                    except sqlite3.Error:
+                        rows = []
+                    for sid, title in rows:
+                        if isinstance(sid, str) and isinstance(title, str) and title.strip():
+                            titles[sid] = " ".join(title.split())[:80]
+                finally:
+                    con.close()
+        self._links_cache, self._app_titles = links, titles
+        return links
+
+    def session_family(self, root_id: str) -> list[tuple[str, str | None]]:
+        """``root_id`` then every recorded descendant with its parent, pre-order.
+
+        Read from the links alone, so the conversation and change readers can use it
+        without the usage ledger; a descendant must still have its session file."""
+        children: dict[str, list[str]] = {}
+        for child, parent in self._links().items():
+            children.setdefault(parent, []).append(child)
+        family: list[tuple[str, str | None]] = [(root_id, None)]
+        seen = {root_id}
+
+        def walk(parent: str) -> None:
+            for child in sorted(children.get(parent, ())):
+                path = self._events.path(child)
+                if child in seen or path is None or not os.path.isfile(path):
+                    continue
+                seen.add(child)
+                family.append((child, parent))
+                walk(child)
+
+        walk(root_id)
+        return family
+
+    def _fold_children(self, parts: dict[str, dict]) -> dict[str, dict]:
+        """Fold each child session into its root, as subagent nodes beneath it.
+
+        A link to a session without usage is spliced to its nearest parsed ancestor;
+        a cycle leaves its members as roots."""
+        links = self._links()
+        parent_of: dict[str, str] = {}
+        for sid in parts:
+            seen, parent = {sid}, links.get(sid)
+            while parent is not None and parent not in parts and parent not in seen:
+                seen.add(parent)
+                parent = links.get(parent)
+            if parent is not None and parent in parts and parent not in seen:
+                parent_of[sid] = parent
+        for sid in list(parent_of):
+            path, node = [], sid
+            while node in parent_of and node not in path:
+                path.append(node)
+                node = parent_of[node]
+            if node in path:
+                for member in path[path.index(node) :]:
+                    parent_of.pop(member, None)
+        children: dict[str, list[str]] = {}
+        for child, parent in parent_of.items():
+            children.setdefault(parent, []).append(child)
+        for kids in children.values():
+            kids.sort(key=lambda c: (parts[c]["ts_min"] or 0, c))
+
+        def walk(parent: str, depth: int, family: list[tuple[str, int]]) -> None:
+            for child in children.get(parent, ()):
+                family.append((child, depth))
+                walk(child, depth + 1, family)
+
+        roots: dict[str, dict] = {}
+        self._root_index = {}
+        for sid, s in parts.items():
+            if sid in parent_of:
+                continue
+            family: list[tuple[str, int]] = []
+            walk(sid, 1, family)
+            roots[sid] = self._merge(sid, s, family, parts) if family else dict(s, family=[])
+            self._root_index.update((child, sid) for child, _depth in family)
+        return roots
+
+    def _merge(self, sid: str, root: dict, family: list[tuple[str, int]], parts: dict) -> dict:
+        s = dict(root, family=family)
+        turns = list(root["turns"])
+        models = {name: dict(acc) for name, acc in root["models"].items()}
+        for child, depth in family:
+            c = parts[child]
+            for t in c["turns"]:
+                turns.append(
+                    dict(
+                        t,
+                        depth=t["depth"] + depth,
+                        agent=t["agent"] if t["agent"] != "-" else "session",
+                    )
+                )
+            for name, acc in c["models"].items():
+                total = models.setdefault(name, self._new_acc())
+                for key, value in acc.items():
+                    total[key] += value
+            s["subagents"] += 1 + c["subagents"]
+            s["event_backed"] = s["event_backed"] or c["event_backed"]
+        members = [root] + [parts[child] for child, _depth in family]
+        starts = [m["ts_min"] for m in members if m["ts_min"] is not None]
+        ends = [m["ts_max"] for m in members if m["ts_max"] is not None]
+        s["ts_min"] = min(starts) if starts else None
+        s["ts_max"] = max(ends) if ends else None
+        s["created_at"] = self._ms_to_local(s["ts_min"]) if s["ts_min"] is not None else ""
+        s["ended_at"] = self._ms_to_local(s["ts_max"]) if s["ts_max"] is not None else ""
+        s["turns"], s["models"] = turns, models
+        self._totals(sid, s)  # the root's own share stays root_models, its own calls only
+        return s
+
+    def _owner(self, root_id: str, execution: str) -> str | None:
+        """The folded session that holds this node, or None."""
+        s = self._parse().get(root_id)
+        if not s:
+            return None
+        for sid in [root_id] + [child for child, _depth in s["family"]]:
+            part = self._parts.get(sid)
+            if part is not None and (
+                execution == sid or any(a["id"] == execution for a in part["agents"].values())
+            ):
+                return sid
+        return None
 
     _USAGE_FIELDS = ("input", "output", "cache_read", "cache_write")
 
@@ -749,6 +926,7 @@ class CopilotStore:
             "cache_read": c["cache_read"],
             "cache_write": c["cache_write"],
             "tokens_total": c["input"] + c["cache_read"] + c["cache_write"] + c["output"],
+            "session": c["session_id"],  # owner once child sessions fold into a root
         }
         s["turns"].append(turn)
         acc = s["models"].get(c["model"])
@@ -758,6 +936,10 @@ class CopilotStore:
 
     def _finalize(self, sid: str, s: dict) -> None:
         cwd, summary = self._load_meta().get(sid, ("", ""))
+        self._links()
+        # The desktop app's own title is what its user sees; the session store's
+        # summary of an app session is often just its first prompt.
+        summary = self._app_titles.get(sid) or summary
         if not (cwd and summary):
             # Desktop and IDE sessions reach the session store late, if at all.
             workspace = self._workspace(sid)
@@ -792,7 +974,13 @@ class CopilotStore:
                 turn["agent"] = agents[aid]["name"]
             else:
                 self._add(root_models.setdefault(turn["model_name"], self._new_acc()), turn)
+        s["root_models"] = root_models
+        s["subagents"] = len(agents)
+        self._totals(sid, s)
+
+    def _totals(self, sid: str, s: dict) -> None:
         rows: list[dict] = []
+        root_models = s["root_models"]
         for model_name, acc in s["models"].items():
             # Recorded cost is the AI-credit charge; uncharged calls stay unpriced.
             # Root shares exclude identified children.
@@ -866,6 +1054,7 @@ class CopilotStore:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         self._meta = None
         self._clients = {}
+        self._links_cache = None
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():
@@ -878,7 +1067,7 @@ class CopilotStore:
                     created_at=s["created_at"],
                     root_cost=s["root_cost"],
                     total_cost=s["total_cost"],
-                    subagents=len(s["agents"]),
+                    subagents=s["subagents"],
                     model_count=0,  # filled by App._load_model_cache
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
                     unpriced_tokens=s["unpriced_tokens"],
@@ -928,10 +1117,13 @@ class CopilotStore:
         sessions = self._parse()
         if session_id in sessions:
             return session_id
+        if session_id in self._root_index:
+            return self._root_index[session_id]
         roots = [
-            sid
-            for sid, s in sessions.items()
-            if any(session_id in (aid, agent["id"]) for aid, agent in s["agents"].items())
+            root
+            for root, s in sessions.items()
+            for sid in [root] + [child for child, _depth in s["family"]]
+            if any(session_id in (aid, a["id"]) for aid, a in self._parts[sid]["agents"].items())
         ]
         return roots[0] if len(roots) == 1 else None
 
@@ -1001,21 +1193,25 @@ class CopilotStore:
         executions = [(workflow_id, 0, "-", s["title"], s["created_at"])]
 
         # Pre-order rather than flattening concurrently running or nested children.
-        def children(parent):
-            for aid, agent in s["agents"].items():
+        def children(agents, parent, offset):
+            for aid, agent in agents.items():
                 if agent["parent"] == parent:
                     executions.append(
                         (
                             agent["id"],
-                            agent["depth"],
+                            agent["depth"] + offset,
                             agent["name"],
                             agent["name"],
                             local_time(agent["created"]),
                         )
                     )
-                    children(aid)
+                    children(agents, aid, offset)
 
-        children("")
+        children(s["agents"], "", 0)
+        for child, depth in s["family"]:
+            part = self._parts[child]
+            executions.append((child, depth, "session", part["title"], part["created_at"]))
+            children(part["agents"], "", depth)
         nodes = []
         for execution, depth, agent, title, created in executions:
             acc = self._new_acc()
@@ -1051,10 +1247,19 @@ class CopilotStore:
         if execution is not None:
             turns = [t for t in turns if t["execution_id"] == execution]
         if not self.demo:
-            turns, _trace = self._events.details(workflow_id, turns, execution=execution)
+            # Each folded session's events describe only its own calls.
+            groups: dict[str, list[dict]] = {}
+            for t in turns:
+                groups.setdefault(t["session"], []).append(t)
+            detailed: dict[int, dict] = {}
+            for sid, group in groups.items():
+                rows, _trace = self._events.details(sid, group, execution=execution)
+                detailed.update(zip(map(id, group), rows))
+            turns = [detailed[id(t)] for t in turns]
         out = []
         for t in turns:
             r = dict(t)
+            r.pop("session", None)
             r["time"] = self._ms_to_local(r.pop("ts"))
             for field in ("prompt_id", "prompt_title", "prompt_full"):
                 r.setdefault(field, "")
@@ -1075,10 +1280,19 @@ class CopilotStore:
         s = self._parse().get(workflow_id)
         if not s:
             return {}
-        _rows, trace = self._events.details(
-            workflow_id, s["turns"], content_key=content_key, trace=True
-        )
-        return trace
+        groups: dict[str, list[dict]] = {}
+        for t in s["turns"]:
+            groups.setdefault(t["session"], []).append(t)
+        merged = None
+        for sid, group in groups.items():
+            if content_key is not None and all(t["content_key"] != content_key for t in group):
+                continue
+            _rows, trace = self._events.details(sid, group, content_key=content_key, trace=True)
+            if merged is None:
+                merged = trace
+            else:
+                merged.update(trace)
+        return merged if merged is not None else {}
 
     def tool_breakdown(self, workflow_id: str) -> list[dict]:
         return tool_rows_from_turns(self.message_timeline(workflow_id))
@@ -1096,17 +1310,22 @@ class CopilotStore:
         return self.supports_turn_content(workflow_id)
 
     def node_prompt(self, root_id: str, execution: str) -> str | None:
-        if self.demo or root_id not in self._parse() or root_id == execution:
+        if self.demo or root_id == execution:
             return None
-        return self._events.prompt(root_id, execution)
+        owner = self._owner(root_id, execution)
+        if owner is None:
+            return None
+        if owner == execution:
+            # A child session's kickoff is its first prompt, sent by its creator.
+            for event in self._events.records(owner, {"user.message"}):
+                text = event["data"].get("content")
+                if isinstance(text, str) and text.strip():
+                    return text
+            return None
+        return self._events.prompt(owner, execution)
 
     def node_timeline(self, root_id: str, execution: str) -> list[dict] | None:
-        s = self._parse().get(root_id)
-        if (
-            self.demo
-            or not s
-            or execution not in {root_id} | {a["id"] for a in s["agents"].values()}
-        ):
+        if self.demo or self._owner(root_id, execution) is None:
             return None
         return self._timeline(root_id, execution)
 
