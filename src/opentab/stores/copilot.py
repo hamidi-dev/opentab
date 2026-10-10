@@ -557,23 +557,27 @@ class CopilotStore:
         """``root_id`` then every recorded descendant with its parent, pre-order.
 
         Read from the links alone, so the conversation and change readers can use it
-        without the usage ledger; a descendant must still have its session file."""
+        without the usage ledger. A descendant without a session file is skipped, and
+        its own descendants attach to the nearest ancestor that has one."""
         children: dict[str, list[str]] = {}
         for child, parent in self._links().items():
             children.setdefault(parent, []).append(child)
         family: list[tuple[str, str | None]] = [(root_id, None)]
         seen = {root_id}
 
-        def walk(parent: str) -> None:
-            for child in sorted(children.get(parent, ())):
-                path = self._events.path(child)
-                if child in seen or path is None or not os.path.isfile(path):
+        def walk(node: str, parent: str) -> None:
+            for child in sorted(children.get(node, ())):
+                if child in seen:
                     continue
                 seen.add(child)
+                path = self._events.path(child)
+                if path is None or not os.path.isfile(path):
+                    walk(child, parent)
+                    continue
                 family.append((child, parent))
-                walk(child)
+                walk(child, child)
 
-        walk(root_id)
+        walk(root_id, root_id)
         return family
 
     def _fold_children(self, parts: dict[str, dict]) -> dict[str, dict]:
