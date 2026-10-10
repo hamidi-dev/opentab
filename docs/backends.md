@@ -295,6 +295,18 @@ input, keeping their sum within the recorded input budget. Copilot's shutdown
 AI-credit charge reproduces from output alone, so adding reasoning counts it twice.
 Total-only records need back-filling rather than being discarded.
 
+The desktop app's `create_session` tool starts child sessions. Its own `data.db`
+records the parent: `workspace_parent_links` nests a child's workspace under the
+parent's (`workspaces.session_id` names each side), and `chat_parent_links` covers chat
+sessions. Children fold into their root like OpenCode's, as `session` nodes carrying
+their own subagents one level deeper. A linked session without usage is spliced to its
+nearest parsed ancestor, and a link cycle leaves its members as roots. The root's own
+share stays its own calls. Turns, trace content and node prompts read each call's owning
+session's events. Conversation and Changes walk the links alone, so they work without
+the usage ledger. `data.db` and its `-wal` join the cache fingerprint, and its
+`sessions.title` replaces the session store's summary, which for an app session is
+often just the first prompt.
+
 The JetBrains plugin cross-wires `gen_ai.request.model` and `gen_ai.response.model`
 while subagents run in parallel: the call that starts them carries the subagent's
 response model, later main-agent calls its request model. When the two disagree, the

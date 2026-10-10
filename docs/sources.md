@@ -209,6 +209,9 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   both the session store and `session-state` (the desktop app's session naming, for
   example), is titled "(background call)" and grouped under the project
   "(Copilot background calls)". Its charge is real; its parent session is not recorded.
+- **Child sessions**: sessions the desktop app's `create_session` tool starts fold into
+  the session that created them. Its total includes theirs, and each child shows as a
+  `session` node with its own subagents beneath it. Titles are the app's own.
 - **Enable it**: OpenTab's per-call usage ledger needs the OpenTelemetry export. Set
   the env var before launching/resuming a session — sessions after that show up:
 
