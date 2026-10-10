@@ -245,7 +245,7 @@ class CopilotEvents:
             for t in turns
             if t.get("content_key")
         }
-        prompts, current, inherited, effort = {}, {}, {}, {}
+        prompts, current, inherited, effort, interactions = {}, {}, {}, {}, {}
         calls = {}
         output = TraceContent(content_key)
         for event in self.records(
@@ -272,6 +272,7 @@ class CopilotEvents:
                 mid = _string(data.get("messageId")) or _string(event.get("id"))
                 text = _string(data.get("content"))
                 prompt = (mid, _clean_prompt(text), text)
+                interaction = (aid, _string(data.get("interactionId")))
                 if continuation(data):
                     # Autopilot's own "keep going" nudge is not a human prompt;
                     # its calls stay under the request that started the run.
@@ -279,6 +280,8 @@ class CopilotEvents:
                         prompts[(aid, mid)] = current[aid]
                 elif mid and text:
                     prompts[(aid, mid)] = current[aid] = prompt
+                    if interaction[1]:
+                        interactions[interaction] = prompt
             elif kind == "assistant.message":
                 key = call_key(session, _string(data.get("apiCallId")))
                 requests = _tools(data)
@@ -300,6 +303,10 @@ class CopilotEvents:
                     continue
                 originating = _string(data.get("originatingMessageId"))
                 prompt = prompts.get((aid, originating)) if originating else current.get(aid)
+                if prompt is None:
+                    # JetBrains resumes a run after each subagent finishes from an internal
+                    # notification, not a user.message; the run's interaction names its prompt.
+                    prompt = interactions.get((aid, _string(data.get("interactionId"))))
                 if aid and execution is None:
                     prompt = inherited.get(aid)
                 if prompt:

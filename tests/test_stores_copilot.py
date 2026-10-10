@@ -898,6 +898,46 @@ def test_copilot_autopilot_continuation_stays_under_the_human_prompt():
         assert "autopilot_continuations_excluded" in source["limitations"]
 
 
+def test_copilot_jetbrains_notification_resumes_stay_under_the_human_prompt():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(
+            otel,
+            [
+                _otel_chat("s", "gpt-5.6-terra", 1000, 20, resp="r1"),
+                _otel_chat("s", "gpt-5.6-terra", 1200, 30, resp="r2", trace="t2", span="s2"),
+                _otel_chat("s", "gpt-5.6-terra", 1300, 30, resp="r3", trace="t3", span="s3"),
+            ],
+        )
+        run = {"interactionId": "i1"}
+        _write_events(
+            otel,
+            "s",
+            [
+                _event("user.message", {"messageId": "u1", "content": "Trace it", **run}, "u1"),
+                _event(
+                    "assistant.message",
+                    {"apiCallId": "r1", "originatingMessageId": "u1", **run},
+                    "a1",
+                ),
+                # A subagent finished: the run resumes from an internal notification id.
+                _event(
+                    "assistant.message",
+                    {"apiCallId": "r2", "originatingMessageId": "note", **run},
+                    "a2",
+                ),
+                # An unknown origin in another interaction stays unattributed.
+                _event(
+                    "assistant.message",
+                    {"apiCallId": "r3", "originatingMessageId": "x", "interactionId": "i2"},
+                    "a3",
+                ),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert [r["prompt_id"] for r in store.message_timeline("s")] == ["u1", "u1", ""]
+
+
 def test_copilot_subagents_keep_exact_nested_ownership_and_root_model_shares():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")

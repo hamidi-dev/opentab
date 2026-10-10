@@ -308,7 +308,9 @@ and GitHub's quota move by half. A session is halved only when all its token cou
 are even and its last checkpoint is 45–75% of the exported charge; the upper slack
 covers calls the export drops outright, whose spend stays missing. It also exports
 each subagent as one chat span summing all of its calls, and saved events carry no
-per-call usage, so a subagent shows a single turn.
+per-call usage, so a subagent shows a single turn. When a subagent finishes, the main
+agent resumes from an internal notification rather than a `user.message`; its calls
+join their prompt through the shared `interactionId`.
 
 One call can appear across several files as a chat span, inference log, agent-turn
 log and agent-summary span, in that fidelity order. Deduplication spans the entire
