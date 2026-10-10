@@ -67,8 +67,8 @@ def event_agent(event: dict, agents: dict) -> str | None:
 def manifest(store, root_id: str):
     if store.demo:
         return None
-    path = store._events.path(root_id)
-    return source_manifest([path]) if path is not None else None
+    paths = [store._events.path(sid) for sid, _parent in store.session_family(root_id)]
+    return source_manifest(paths) if all(p is not None for p in paths) else None
 
 
 def read_source(store, root_id: str, execution_id: str | None = None) -> dict:
@@ -78,9 +78,29 @@ def read_source(store, root_id: str, execution_id: str | None = None) -> dict:
     if any(not isinstance(sid, str) or not sid for sid in (root_id, selected)):
         raise ConversationError("invalid_execution", "An exact session ID is required.")
     events = store._events
-    located, snapshot, limitations, agents, valid = load_events(events, root_id)
-    parents = {root_id: None}
-    parents.update({a["id"]: node_id(root_id, a["parent"]) for a in valid.values()})
+    # Child sessions the desktop app's create_session made belong to this root's
+    # tree; only the session that owns the selected execution is read for text.
+    family = store.session_family(root_id)
+    trees = {sid: events.metadata(sid)[0] for sid, _parent in family[1:]}
+    owner = next(
+        (
+            sid
+            for sid, valid in trees.items()
+            if selected == sid or any(a["id"] == selected for a in valid.values())
+        ),
+        root_id,
+    )
+    located, snapshot, limitations, agents, valid = load_events(events, owner)
+    trees[owner] = valid
+    parents: dict = {}
+    for sid, parent in family:
+        parents[sid] = parent
+        if sid in trees:
+            parents.update({a["id"]: node_id(sid, a["parent"]) for a in trees[sid].values()})
+        else:  # the root, when a child owns the selection: membership only
+            parents.update(
+                {a["id"]: node_id(sid, a["parent"]) for a in events.metadata(sid)[0].values()}
+            )
     executions = execution_tree(parents, root_id, selected)
     records = []
     for path, line, event in located:
@@ -91,7 +111,7 @@ def read_source(store, root_id: str, execution_id: str | None = None) -> dict:
         if aid is None or (aid and aid not in valid):
             limitations.append("unowned_execution_messages_excluded")
             continue
-        if node_id(root_id, aid) != selected:
+        if node_id(owner, aid) != selected:
             continue
         if event.get("ephemeral") is True:
             limitations.append("ephemeral_events_excluded")

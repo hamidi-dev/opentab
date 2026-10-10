@@ -285,7 +285,12 @@ def read_changes(store, root_id, key=None, *, cancelled=None):
         return None
     files = {}
     used = count = 0
-    for edit, patch, limitations in _occurrences(store, root_id, cancelled=cancelled):
+    occurrences = (
+        found
+        for sid, _parent in store.session_family(root_id)
+        for found in _occurrences(store, sid, cancelled=cancelled)
+    )
+    for edit, patch, limitations in occurrences:
         if key is not None:
             if edit["key"] != key:
                 continue

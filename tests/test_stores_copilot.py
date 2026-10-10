@@ -329,6 +329,106 @@ def test_copilot_halved_swapped_call_matches_its_model_on_the_true_counts():
         assert (t["input"], t["output"]) == (200000, 1000)
 
 
+def _app_links(otel, workspace_links, chat_links=()):
+    # The desktop app's data.db: a child workspace nests under its creator's.
+    con = sqlite3.connect(os.path.join(os.path.dirname(otel), "data.db"))
+    con.execute("CREATE TABLE workspaces (id TEXT PRIMARY KEY, session_id TEXT)")
+    con.execute(
+        "CREATE TABLE workspace_parent_links (child_workspace_id TEXT, parent_workspace_id TEXT,"
+        " creator_session_id TEXT)"
+    )
+    con.execute("CREATE TABLE chat_parent_links (session_id TEXT, parent_session_id TEXT)")
+    for child, parent in workspace_links:
+        con.execute("INSERT OR IGNORE INTO workspaces VALUES (?, ?)", ("w-" + child, child))
+        con.execute("INSERT OR IGNORE INTO workspaces VALUES (?, ?)", ("w-" + parent, parent))
+        con.execute(
+            "INSERT INTO workspace_parent_links VALUES (?, ?, ?)",
+            ("w-" + child, "w-" + parent, parent),
+        )
+    con.executemany("INSERT INTO chat_parent_links VALUES (?, ?)", chat_links)
+    con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT)")
+    con.execute("INSERT INTO sessions VALUES ('kid', 'Stores line counts')")
+    con.commit()
+    con.close()
+
+
+def test_copilot_folds_desktop_child_sessions_into_their_coordinator():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        model = "claude-sonnet-5.5"
+
+        def call(sid, resp, nano):
+            return _charged(
+                _otel_chat(sid, model, 1000, 10, resp=resp, trace=resp, span=resp), nano
+            )
+
+        _write_otel(
+            otel,
+            [
+                call("coord", "c1", 2e9),
+                call("kid", "k1", 3e9),
+                call("kid", "k2", 1e9),
+                call("grand", "g1", 4e9),  # its parent "gap" made no calls
+                call("loop1", "l1", 1e9),
+                call("loop2", "l2", 1e9),
+            ],
+        )
+        _write_events(
+            otel, "coord", [_event("assistant.message", {"apiCallId": "c1", "model": model}, "a")]
+        )
+        _write_events(
+            otel,
+            "kid",
+            [
+                _event("user.message", {"messageId": "u", "content": "Count the stores"}, "u"),
+                _event("assistant.message", {"apiCallId": "k1", "model": model}, "a"),
+                _event("subagent.started", {"agentName": "explore", "toolCallId": "t"}, "sp", "x"),
+                _event("assistant.message", {"apiCallId": "k2", "model": model}, "xa", "x"),
+            ],
+        )
+        _write_events(otel, "gap", [])
+        _write_events(otel, "grand", [])
+        _app_links(
+            otel,
+            [("kid", "coord"), ("gap", "coord"), ("loop1", "loop2"), ("loop2", "loop1")],
+            chat_links=[("grand", "gap")],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert os.path.join(os.path.dirname(otel), "data.db") in store.cache_inputs()
+        rows = {w.id: w for w in store.workflows()}
+        assert sorted(rows) == ["coord", "loop1", "loop2"]  # a cycle stays unfolded
+        coord = rows["coord"]
+        assert (coord.total_cost, coord.root_cost, coord.subagents) == (0.1, 0.02, 3)
+        nodes = store.workflow_nodes("coord")
+        assert [(n["depth"], n["agent"], n["cost"]) for n in nodes] == [
+            (0, "-", 0.02),
+            (1, "session", 0.04),  # "grand", spliced past the call-less "gap"
+            (1, "session", 0.03),  # "kid"; equal start times order children by id
+            (2, "explore", 0.01),
+        ]
+        assert sum(n["cost"] for n in nodes) == coord.total_cost
+        assert nodes[2]["title"] == "Stores line counts"  # the app's own title
+        assert store.root_of("kid") == "coord" and store.root_of(nodes[3]["id"]) == "coord"
+        timeline = store.message_timeline("coord")
+        assert [t["cost"] for t in timeline] == [0.02, 0.04, 0.03, 0.01]
+        assert timeline[2]["prompt_title"] == "Count the stores" and "session" not in timeline[2]
+        assert [t["cost"] for t in store.node_timeline("coord", "kid")] == [0.03]
+        assert store.node_prompt("coord", "kid") == "Count the stores"
+        assert store.node_timeline("loop1", "kid") is None
+
+        source = store.conversation_source("coord")
+        tree = {e["id"]: e["parent_id"] for e in source["executions"]}
+        assert tree == {
+            "coord": None,
+            "gap": "coord",  # no calls, but its own conversation still belongs here
+            "grand": "gap",
+            "kid": "coord",
+            nodes[3]["id"]: "kid",
+        }
+        kid = store.conversation_source("coord", execution_id="kid")
+        assert [r["parts"][0]["text"] for r in kid["records"]] == ["Count the stores"]
+
+
 def test_copilot_skips_the_vscode_extensions_own_export():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
