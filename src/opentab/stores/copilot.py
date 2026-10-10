@@ -559,9 +559,20 @@ class CopilotStore:
         Read from the links alone, so the conversation and change readers can use it
         without the usage ledger. A descendant without a session file is skipped, and
         its own descendants attach to the nearest ancestor that has one."""
+        links = self._links()
+
+        def cyclic(sid: str) -> bool:
+            # Accounting leaves a cycle's members as separate roots; so does this.
+            seen, parent = {sid}, links.get(sid)
+            while parent is not None and parent not in seen:
+                seen.add(parent)
+                parent = links.get(parent)
+            return parent == sid
+
         children: dict[str, list[str]] = {}
-        for child, parent in self._links().items():
-            children.setdefault(parent, []).append(child)
+        for child, parent in links.items():
+            if not cyclic(child):
+                children.setdefault(parent, []).append(child)
         family: list[tuple[str, str | None]] = [(root_id, None)]
         seen = {root_id}
 
