@@ -12,6 +12,7 @@ from tests._support import (
     _copilot_args,
     _event,
     _otel_chat,
+    _parse,
     _write_events,
     _write_jsonl,
     _write_otel,
@@ -116,6 +117,83 @@ def test_copilot_ai_credit_charges_are_recorded_spend_and_the_rest_stays_unprice
 
         _write_otel(otel, [_otel_chat("s", model, 300, 5)])
         assert not ot.CopilotStore(otel, _copilot_args(otel)).records_cost
+
+
+def _workspace_yaml(otel, session, text):
+    root = os.path.join(os.path.dirname(otel), "session-state", session)
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, "workspace.yaml")
+    Path(path).write_text(text, encoding="utf-8")
+    return path
+
+
+def test_copilot_clients_workspace_fallback_and_background_calls():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        model = "claude-haiku-5.5"
+        _write_otel(
+            otel,
+            [
+                _otel_chat("app", model, 100, 5, trace="a", span="a"),
+                _otel_chat("cli", model, 100, 5, trace="c", span="c"),
+                _charged(_otel_chat("namer", model, 1408, 12, trace="n", span="n"), 4516500),
+            ],
+        )
+        db = os.path.join(tmp, ".copilot", "session-store.db")
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, summary TEXT)")
+        con.execute("INSERT INTO sessions VALUES ('cli', ?, 'From the store')", (tmp,))
+        con.commit()
+        con.close()
+        workspace = _workspace_yaml(
+            otel,
+            "app",
+            f"id: app\ncwd: {tmp}\nclient_name: github/autopilot\nname: Feature parity\n",
+        )
+        _workspace_yaml(otel, "cli", "client_name: github/cli\nname: Ignored\n")
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert os.path.realpath(workspace) in store.cache_inputs()
+        rows = {w.id: w for w in store.workflows()}
+        assert (rows["app"].title, rows["app"].directory) == ("Feature parity", tmp)
+        assert rows["cli"].title == "From the store"  # the session store wins
+        # Created and deleted by its client: real spend, no parent, one shared project.
+        namer = rows["namer"]
+        assert namer.title == "(background call)"
+        assert namer.directory == ot.CopilotStore.BACKGROUND_PROJECT
+        assert namer.total_cost == round(4516500 * 1e-11, 6)
+        assert store.session_client("app") == "GitHub Copilot app"
+        assert store.session_client("cli") == "Copilot CLI"
+        assert store.session_client("namer") == "" and store.session_client("../x") == ""
+        app = ot.App(store, _parse(["--no-state", "--harness", "copilot", "--copilot-dir", otel]))
+        overview = "\n".join(ot.Renderer(app).detail_overview(rows["app"], 100))
+        assert "Client:   GitHub Copilot app" in overview
+        assert "Client:" not in "\n".join(ot.Renderer(app).detail_overview(namer, 100))
+
+        # A symlinked workspace file is never read.
+        os.remove(workspace)
+        target = os.path.join(tmp, "elsewhere.yaml")
+        Path(target).write_text("client_name: github/autopilot\nname: Foreign\n")
+        os.symlink(target, workspace)
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.session_client("app") == ""
+        assert {w.id: w.title for w in store.workflows()}["app"] == "(untitled)"
+
+        # Without a readable session store nothing is called a background call.
+        os.remove(db)
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert {w.id: w.title for w in store.workflows()}["namer"] == "(untitled)"
+
+
+def test_copilot_cache_fingerprint_covers_the_session_store_wal():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(otel, [_otel_chat(COPILOT_SID, "gpt-5.4-mini", 60, 10)])
+        db = os.path.join(tmp, ".copilot", "session-store.db")
+        Path(db).touch()
+        Path(db + "-wal").touch()
+        Path(db + "-shm").touch()
+        inputs = ot.CopilotStore(otel, _copilot_args(otel)).cache_inputs()
+        assert db + "-wal" in inputs and db + "-shm" not in inputs
 
 
 def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():

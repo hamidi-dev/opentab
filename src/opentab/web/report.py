@@ -495,6 +495,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         "toolCalls": tool_calls,
         "context": context,
         "expiries": expiries,
+        "client": app.session_client(workflow_id),
     }
 
 

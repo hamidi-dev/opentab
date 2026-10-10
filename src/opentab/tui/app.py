@@ -2132,6 +2132,14 @@ class App:
             return None
         return (id(self.store), *identity)
 
+    def session_client(self, workflow_id: str) -> str:
+        """The recorded front end (e.g. desktop app vs CLI) of one harness session."""
+        reader = getattr(self.trace_owner(workflow_id), "session_client", None)
+        try:
+            return str(reader(workflow_id) or "") if callable(reader) else ""
+        except Exception:  # noqa: BLE001 -- optional metadata must not crash the TUI
+            return ""
+
     def session_supports_changes(self, workflow_id: str) -> bool:
         # Demo is checked before owner resolution or any backend capability call.
         scope = self._change_scope()

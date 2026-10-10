@@ -280,7 +280,11 @@ Reader: [`stores/copilot.py`](../src/opentab/stores/copilot.py), with
 [`copilot_events.py`](../src/opentab/stores/copilot_events.py) for saved-event enrichment.
 
 The opt-in OpenTelemetry export is the usage ledger; the CLI's session database
-only enriches titles and projects. Chat spans carry GitHub's AI-credit charge as
+only enriches titles and projects, with `session-state/<id>/workspace.yaml` (`name`,
+`cwd`) as the fallback and the source of the `client_name` label. The database and its
+`-wal` both join the cache fingerprint: new rows reach the WAL long before a checkpoint.
+A session is a background call only when that database is readable and neither it nor
+`session-state` retained the session; an unreadable database labels nothing. Chat spans carry GitHub's AI-credit charge as
 `github.copilot.nano_aiu` (10^9 per credit, $0.01 per credit), the same list-price
 figure GitHub bills against, so it is recorded spend. Non-numeric, non-finite or
 non-positive values record nothing; uncharged calls keep their tokens unpriced for `$`.
