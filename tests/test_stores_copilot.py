@@ -273,7 +273,10 @@ def test_copilot_jetbrains_doubled_usage_is_halved_only_on_both_signals():
             )
             return _charged(chat, 13369700000)
 
-        _write_otel(otel, [call("ij"), call("cli"), call("bare"), call("odd", out=11)])
+        _write_otel(
+            otel,
+            [call("ij"), call("cli"), call("bare"), call("odd", out=11), call("early")],
+        )
 
         def checkpoint(session, nano_aiu):
             _write_events(
@@ -283,6 +286,11 @@ def test_copilot_jetbrains_doubled_usage_is_halved_only_on_both_signals():
         checkpoint("ij", 6684850000)  # the runtime (and GitHub's quota) moved by half
         checkpoint("cli", 13369700000)  # a faithful exporter matches its checkpoint
         checkpoint("odd", 6684850000)  # an odd count cannot be a doubled one
+        # A CLI session whose last checkpoint predates its latest call: half by chance.
+        checkpoint("early", 6684850000)
+        for sid in ("ij", "odd"):
+            _workspace_yaml(otel, sid, "client_name: copilot-intellij\n")
+        _workspace_yaml(otel, "early", "client_name: github/cli\n")
         store = ot.CopilotStore(otel, _copilot_args(otel))
         rows = {w.id: w for w in store.workflows()}
         assert abs(rows["ij"].total_cost - 0.0668485) < 1e-6
@@ -294,8 +302,31 @@ def test_copilot_jetbrains_doubled_usage_is_halved_only_on_both_signals():
             5,
             26716,
         )
-        for sid in ("cli", "bare", "odd"):  # no checkpoint evidence or not all even
+        for sid in ("cli", "bare", "odd", "early"):  # no evidence, odd, or not JetBrains
             assert abs(rows[sid].total_cost - 0.133697) < 1e-6, sid
+
+
+def test_copilot_halved_swapped_call_matches_its_model_on_the_true_counts():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        terra, mini = "gpt-5.6-terra", "gpt-5.4-mini"
+        # The real call stays under terra's long-context tier; doubled, it crosses it.
+        true = ot.api_equivalent_cost(
+            "github-copilot/" + terra, 200000, 1000, 0, 0, 0, context_tokens=200000
+        )
+        chat = _otel_chat("ij", mini, 400000, 2000, trace="t", span="s")
+        chat["attributes"]["gen_ai.request.model"] = terra
+        _write_otel(otel, [_charged(chat, round(2 * true * 1e11))])
+        _write_events(
+            otel,
+            "ij",
+            [_event("session.usage_checkpoint", {"totalNanoAiu": round(true * 1e11)}, "c")],
+        )
+        _workspace_yaml(otel, "ij", "client_name: copilot-intellij\n")
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        (t,) = store.message_timeline("ij")
+        assert t["model_name"] == "openai/" + terra
+        assert (t["input"], t["output"]) == (200000, 1000)
 
 
 def test_copilot_skips_the_vscode_extensions_own_export():

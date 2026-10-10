@@ -20,7 +20,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 25  # Copilot: VS Code extension records are skipped
+CACHE_VERSION = 26  # Copilot: halving gated on JetBrains, model re-matched after it
 
 
 # Required because cache readers index these fields directly.
