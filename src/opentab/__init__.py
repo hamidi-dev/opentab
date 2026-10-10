@@ -34,6 +34,7 @@ from opentab.accounting.models import (
 )
 from opentab.accounting.pricing import (
     CACHE_TTL_LONG,
+    CACHE_TTL_OPENAI_MIN,
     CACHE_TTL_SHORT,
     DEFAULT_CONTEXT_WINDOW,
     FALLBACK_PRICE,
@@ -44,6 +45,7 @@ from opentab.accounting.pricing import (
     CacheMiss,
     api_equivalent_cost,
     cache_misses,
+    cache_ttl_is_minimum,
     cache_ttl_seconds,
     cache_write_1h_price,
     canonical_model,

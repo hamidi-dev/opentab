@@ -3929,6 +3929,32 @@ def test_detail_turns_marks_the_prompt_that_arrived_after_the_cache_expired():
     assert boxed[2:].lstrip().startswith("❄ ")
 
 
+def test_detail_turns_marks_an_openai_expiry_with_its_guaranteed_floor():
+    # GPT-5.6+ keeps a cache at least 30 minutes; the marker must not claim it died then.
+    app = _cache_miss_app()
+    for row in app._turns_by_session["s1"]:
+        row.update(model_name="openai/gpt-6-astra", cache_write_1h=0)
+    lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
+    mark = next(c for c in box_cells(lines) if c.startswith("❄ "))
+    assert "2h idle" in mark and "guaranteed 30m" in mark and "it lived" not in mark
+
+
+def test_detail_turns_marks_cache_misses_for_a_store_without_a_context_curve():
+    # Codex has no context curve, but its single-request rows still show cache misses.
+    app = _cache_miss_app()
+
+    class Store(type(app.store)):
+        def supports_context_curve(self, wid):
+            return False
+
+        def supports_cache_misses(self, wid):
+            return True
+
+    app.store.__class__ = Store
+    lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
+    assert "❄ 1 cache expiry, $" in box_title(lines)
+
+
 def test_detail_turns_prices_an_effort_switch_that_took_the_cache_with_it():
     # Changing the reasoning level changes the request's thinking config, which changes
     # the prefix -- so the next turn re-buys the whole cached context. That used to land

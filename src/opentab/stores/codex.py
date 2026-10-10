@@ -1216,6 +1216,13 @@ class CodexStore:
         # which could feed a genuine curve one day.)
         return False
 
+    def supports_cache_misses(self, workflow_id: str) -> bool:
+        # A row whose delta matches last_token_usage is exactly one request, so the main
+        # thread can be compared turn by turn even without a context curve.
+        s = self._parse().get(workflow_id)
+        turns = s["turns"] if s else []
+        return bool(turns) and all(t.get("context_tokens") is not None for t in turns)
+
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title_prompt"] or "(untitled)"
         s["directory"] = self._git_root(s["cwd"]) if s["cwd"] else "(unknown)"

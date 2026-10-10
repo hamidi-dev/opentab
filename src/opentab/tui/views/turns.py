@@ -697,7 +697,7 @@ def build_turns(
                 body.append(
                     f"❄ cache expired — {human_duration(miss.idle)} idle, "
                     f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
-                    f"(it lived {human_duration(miss.ttl)})"
+                    f"({'guaranteed' if miss.ttl_minimum else 'it lived'} {human_duration(miss.ttl)})"
                 )
             effort = switched.get(index)
             if effort:

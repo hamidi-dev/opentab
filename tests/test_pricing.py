@@ -923,11 +923,14 @@ def test_cache_ttl_is_read_off_the_turn_not_off_a_provider_table():
     # Claude sold through a gateway keeps Anthropic's contract -- the FAMILY decides,
     # never the route (github-copilot also resells OpenAI, on different terms).
     assert ot.cache_ttl_seconds("github-copilot/claude-opus-4.5", 0, 1000) == ot.CACHE_TTL_SHORT
-    # OpenAI gives GPT-5.6+ a 30-minute MINIMUM lifetime, not an exact expiry. None keeps
-    # the analysis from claiming "it lived 30m" when OpenAI may retain the entry longer.
+    # GPT-5.6+ guarantees a 30-minute MINIMUM, flagged so no renderer claims the entry
+    # died exactly then. Older OpenAI caching is opportunistic: no lifetime at all.
     assert ot.cache_ttl_seconds("openai/gpt-5.5", 0, 1000) is None
-    assert ot.cache_ttl_seconds("openai/gpt-5.6-sol", 0, 1000) is None
-    assert ot.cache_ttl_seconds("openai/gpt-6-astra", 0, 1000) is None
+    assert not ot.cache_ttl_is_minimum("openai/gpt-5.5")
+    for name in ("openai/gpt-5.6-sol", "openai/gpt-6-astra", "github-copilot/gpt-5.6"):
+        assert ot.cache_ttl_seconds(name, 0, 1000) == ot.CACHE_TTL_OPENAI_MIN
+        assert ot.cache_ttl_is_minimum(name)
+    assert not ot.cache_ttl_is_minimum("anthropic/claude-opus-4-8")
 
 
 def test_cache_miss_blames_the_wait_only_when_the_gap_was_the_users():
@@ -979,10 +982,19 @@ def test_cache_miss_separates_causes_it_must_not_blame_on_waiting():
     small = ot.cache_misses([prefix, _turn("2026-06-10 12:00:00", write=20000, prompt="b")])
     assert small[0].cause == "compacted"
 
-    # OpenAI publishes a minimum lifetime, not the exact point when this entry disappeared.
+    # GPT-5.6+ guarantees 30 minutes: past it the wait is to blame, inside it the prefix
+    # changed. The lifetime is a floor, so the miss says so.
     oa = _turn("2026-06-10 10:00:00", model="openai/gpt-5.6-sol", read=200000, write=100000)
     late = _turn("2026-06-10 20:00:00", model="openai/gpt-5.6-sol", inp=300000, prompt="b")
-    assert ot.cache_misses([oa, late])[0].cause == "invalidated"
+    (miss,) = ot.cache_misses([oa, late])
+    assert miss.cause == "waited" and miss.ttl == ot.CACHE_TTL_OPENAI_MIN and miss.ttl_minimum
+    soon = dict(late, time="2026-06-10 10:20:00")
+    assert ot.cache_misses([oa, soon])[0].cause == "invalidated"
+
+    # Older OpenAI caching is best-effort with no lifetime, so even ten hours is no expiry.
+    old = [dict(oa, model_name="openai/gpt-5.5"), dict(late, model_name="openai/gpt-5.5")]
+    (miss,) = ot.cache_misses(old)
+    assert miss.cause == "invalidated" and miss.ttl == 0 and not miss.ttl_minimum
 
     # A prefix too small to have been cacheable at all is never reported as lost.
     tiny = _turn("2026-06-10 10:00:00", read=1000, write=500)

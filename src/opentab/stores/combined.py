@@ -170,6 +170,10 @@ class CombinedStore:
         check = getattr(self._owner.get(workflow_id), "supports_context", None)
         return bool(check(workflow_id)) if check else False
 
+    def supports_cache_misses(self, workflow_id: str) -> bool:
+        check = getattr(self._owner.get(workflow_id), "supports_cache_misses", None)
+        return bool(check(workflow_id)) if check else False
+
     def supports_context_curve(self, workflow_id: str) -> bool:
         # Absent an explicit curve gate, Turns support is the default.
         owner = self._owner.get(workflow_id)

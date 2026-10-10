@@ -189,6 +189,15 @@ def _export_supports(store, name: str, sid: str) -> bool:
         return False
 
 
+def _export_cache_ok(store, sid: str) -> bool:
+    # Cache-miss markers may apply without a curve; absent means the curve decides.
+    fn = getattr(store, "supports_cache_misses", None)
+    try:
+        return bool(fn(sid)) if fn else False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _export_curve_ok(store, sid: str) -> bool:
     # Turns imply a measured curve unless the source explicitly opts out.
     fn = getattr(store, "supports_context_curve", None)
@@ -280,6 +289,7 @@ def build_export(
     tools: dict[str, list[dict]] = {}
     context: dict[str, list[dict]] = {}
     curve_ok: list[str] = []
+    cache_ok: list[str] = []
     for w in wf_objs:
         sid = w.id
         if w.subagents:
@@ -288,6 +298,8 @@ def build_export(
                 nodes[sid] = rows
         if sid in turns and _export_curve_ok(store, sid):
             curve_ok.append(sid)
+        elif sid in turns and _export_cache_ok(store, sid):
+            cache_ok.append(sid)
         if _export_supports(store, "supports_tools", sid):
             rows = _export_rows(store, "tool_breakdown", sid)
             if rows:
@@ -309,6 +321,7 @@ def build_export(
         "tools": tools,
         "context": context,
         "curve_ok": curve_ok,
+        "cache_ok": cache_ok,
     }
 
 
@@ -357,6 +370,7 @@ class RemoteStore:
         self._tools: dict[str, list[dict]] = {}
         self._context: dict[str, list[dict]] = {}
         self._curve_ok: set[str] = set()
+        self._cache_ok: set[str] = set()
         self._file_sizes: dict[str, int] = {}  # label -> summary file bytes (for --timings)
         self.machines: list[str] = []  # labels loaded, in file order
         # Paths that were NOT loaded: unreadable, not JSON, or not an opentab summary.
@@ -402,6 +416,7 @@ class RemoteStore:
         tools: dict[str, list[dict]] = {}
         context: dict[str, list[dict]] = {}
         curve_ok: set[str] = set()
+        cache_ok: set[str] = set()
         machines: list[str] = []
         info: dict[str, dict] = {}
         sizes: dict[str, int] = {}  # label -> summary file size on disk, for --timings
@@ -544,10 +559,11 @@ class RemoteStore:
                         clean = [cleaner(r) for r in rows if isinstance(r, dict)]
                         if clean:
                             target[sid] = clean
-            cok = data.get("curve_ok")
-            for sid in cok if isinstance(cok, list) else ():
-                if isinstance(sid, str) and sid in kept:
-                    curve_ok.add(sid)
+            for key, ids in (("curve_ok", curve_ok), ("cache_ok", cache_ok)):
+                listed = data.get(key)
+                for sid in listed if isinstance(listed, list) else ():
+                    if isinstance(sid, str) and sid in kept:
+                        ids.add(sid)
         self.records_cost = all(records) if records else True
         wfs.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
         self._wf = wfs  # RAW, unscaled -- demo is applied lazily in workflows()
@@ -557,6 +573,7 @@ class RemoteStore:
         self._tools = tools
         self._context = context
         self._curve_ok = curve_ok
+        self._cache_ok = cache_ok
         self._file_sizes = sizes
         self.machines = machines
         self._machine_info = info
@@ -748,6 +765,9 @@ class RemoteStore:
 
     def supports_context_curve(self, workflow_id: str) -> bool:
         return workflow_id in self._curve_ok
+
+    def supports_cache_misses(self, workflow_id: str) -> bool:
+        return workflow_id in self._cache_ok
 
 
 class MachineTaggedStore:

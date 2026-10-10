@@ -1935,7 +1935,7 @@ function turnsTable(turns, expiries) {
       const x = exp.get(i);
       if (x) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: span },
         '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
-        + ' bought again for ' + money(x.cost) + ' (it lived ' + hDur(x.ttl) + ')')));
+        + ' bought again for ' + money(x.cost) + (x.ttlMin ? ' (guaranteed ' : ' (it lived ') + hDur(x.ttl) + ')')));
       const e = effSw.get(i);
       if (e) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: span },
         '⚙ reasoning effort ' + e.detail + ' — the cache went with it, ' + hTok(e.repaid)

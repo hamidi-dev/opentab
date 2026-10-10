@@ -762,6 +762,8 @@ def api_equivalent_cost(
 # Cache lifetime is measured between consecutive requests because hits refresh the entry.
 CACHE_TTL_SHORT = 300
 CACHE_TTL_LONG = 3600
+# GPT-5.6+ guarantees at least this lifetime after the latest write or reuse.
+CACHE_TTL_OPENAI_MIN = 1800
 # Ignore prefixes below documented cacheability thresholds.
 CACHE_MISS_MIN_PREFIX = 5000
 CACHE_MISS_COLD_RATIO = 0.5
@@ -771,12 +773,21 @@ CACHE_MISS_KEPT_RATIO = 0.6
 def cache_ttl_seconds(name: str, cache_write_1h: float = 0.0, cache_write: float = 0.0):
     """Return a documented cache lifetime, or None for opportunistic providers.
 
-    Gate by model family rather than access route so gateway-sold models keep their TTL.
+    Anthropic's lifetime is exact; GPT-5.6+ only guarantees a minimum (see
+    ``cache_ttl_is_minimum``). Gate by model family rather than access route so
+    gateway-sold models keep their TTL.
     """
     if model_family(name) == "anthropic":
         # Use the majority recorded tier; normalized-away splits imply the default short tier.
         return CACHE_TTL_LONG if cache_write_1h > cache_write * 0.5 else CACHE_TTL_SHORT
+    if _openai_paid_cache_writes(name):
+        return CACHE_TTL_OPENAI_MIN
     return None
+
+
+def cache_ttl_is_minimum(name: str) -> bool:
+    """Whether the documented lifetime is a floor, so an entry may outlive it."""
+    return _openai_paid_cache_writes(name)
 
 
 @dataclass
@@ -790,6 +801,8 @@ class CacheMiss:
     repaid: int
     cost: float
     detail: str = ""
+    # The provider guarantees at least ``ttl`` but may keep the entry longer.
+    ttl_minimum: bool = False
 
 
 # Order causes by user actionability; do not blame long-running agents for human delay.
@@ -817,10 +830,9 @@ def cache_misses(rows) -> list[CacheMiss]:
             continue
         model = cur.get("model_name") or ""
         # The previous turn owns the expired entry's TTL; the current turn may buy another tier.
+        owner = prev.get("model_name") or model
         ttl = cache_ttl_seconds(
-            prev.get("model_name") or model,
-            _int(prev.get("cache_write_1h")),
-            _int(prev.get("cache_write")),
+            owner, _int(prev.get("cache_write_1h")), _int(prev.get("cache_write"))
         )
         a, b = _row_epoch(prev), _row_epoch(cur)
         idle = (b - a) if (a is not None and b is not None) else 0.0
@@ -836,6 +848,7 @@ def cache_misses(rows) -> list[CacheMiss]:
                     model, repaid, write, _int(cur.get("cache_write_1h")), cur.get("context_tokens")
                 ),
                 detail=(f"{_effort(prev)} → {_effort(cur)}" if cause == "reasoning" else ""),
+                ttl_minimum=cache_ttl_is_minimum(owner),
             )
         )
     return out

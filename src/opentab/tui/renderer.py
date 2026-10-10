@@ -5077,7 +5077,11 @@ class Renderer:
             costs=costs,
             width=width,
             compactions=util_ops.context_compactions(rows) if curve else {},
-            cache_events=pricing_ops.cache_misses(rows) if curve else (),
+            cache_events=(
+                pricing_ops.cache_misses(rows)
+                if self.session_supports_cache_misses(workflow.id)
+                else ()
+            ),
             scoped=scoped,
             glyphs=self.box_glyphs(),
         )
