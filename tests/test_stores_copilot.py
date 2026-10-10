@@ -371,6 +371,8 @@ def test_copilot_folds_desktop_child_sessions_into_their_coordinator():
                 call("grand", "g1", 4e9),  # its parent "gap" made no calls
                 call("loop1", "l1", 1e9),
                 call("loop2", "l2", 1e9),
+                call("orphan", "o1", 1e9),
+                call("cyc1", "y1", 1e9),
             ],
         )
         _write_events(
@@ -386,18 +388,30 @@ def test_copilot_folds_desktop_child_sessions_into_their_coordinator():
                 _event("assistant.message", {"apiCallId": "k2", "model": model}, "xa", "x"),
             ],
         )
-        for sid in ("gap", "grand", "loop1", "loop2"):
+        for sid in ("gap", "grand", "loop1", "loop2", "cyc1", "cyc2", "orphan"):
             _write_events(otel, sid, [])
         _app_links(
             otel,
-            [("kid", "coord"), ("gap", "coord"), ("loop1", "loop2"), ("loop2", "loop1")],
+            [
+                ("kid", "coord"),
+                ("gap", "coord"),
+                ("loop1", "loop2"),
+                ("loop2", "loop1"),
+                ("cyc1", "cyc2"),  # a cycle through a call-less member, "cyc2"
+                ("cyc2", "cyc1"),
+                ("orphan", "cyc2"),
+            ],
             chat_links=[("grand", "gap")],
         )
         store = ot.CopilotStore(otel, _copilot_args(otel))
         assert os.path.join(os.path.dirname(otel), "data.db") in store.cache_inputs()
         rows = {w.id: w for w in store.workflows()}
-        assert sorted(rows) == ["coord", "loop1", "loop2"]  # a cycle stays unfolded
+        assert sorted(rows) == ["coord", "cyc1", "loop1", "loop2", "orphan"]  # cycles unfolded
         assert store.session_family("loop1") == [("loop1", None)]  # in every view
+        # Pointing into a cycle at its call-less member: a root in both views, never
+        # spliced into "cyc1" by accounting while the conversation tree leaves it out.
+        assert store.session_family("cyc1") == [("cyc1", None)]
+        assert store.session_family("orphan") == [("orphan", None)]
         coord = rows["coord"]
         assert (coord.total_cost, coord.root_cost, coord.subagents) == (0.1, 0.02, 3)
         nodes = store.workflow_nodes("coord")
