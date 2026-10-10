@@ -184,6 +184,76 @@ def test_copilot_clients_workspace_fallback_and_background_calls():
         assert {w.id: w.title for w in store.workflows()}["namer"] == "(untitled)"
 
 
+def _swapped(session, req, resp, inp, out, cache_read, cache_write, nano_aiu, rid, trace):
+    chat = _otel_chat(
+        session, req, inp, out, cache_read=cache_read, resp=rid, trace=trace, span=trace
+    )
+    chat["attributes"]["gen_ai.response.model"] = resp
+    if cache_write:
+        chat["attributes"]["gen_ai.usage.cache_write.input_tokens"] = cache_write
+    return _charged(chat, nano_aiu) if nano_aiu else chat
+
+
+def test_copilot_jetbrains_swapped_models_resolve_by_charge_and_block_titles():
+    from opentab.accounting import pricing
+
+    def card(i, o, r, w):
+        return {"cost": {"input": i, "output": o, "cache_read": r, "cache_write": w}}
+
+    raw = {
+        "github-copilot": {
+            "models": {
+                "claude-sonnet-5.5": card(2.0, 10.0, 0.1, 2.5),
+                "gpt-5.4-mini": card(0.75, 4.5, 0.075, 0.0),
+                "gpt-5.6-terra": card(2.0, 12.0, 0.2, 2.5),
+            }
+        }
+    }
+    layer = pricing._parse_catalog(
+        {"providers": pricing.prune_models_dev(raw), "fetched_at": "2099"}
+    )
+    sonnet, mini, terra = "claude-sonnet-5.5", "gpt-5.4-mini", "gpt-5.6-terra"
+    with tempfile.TemporaryDirectory() as tmp, patch.object(
+        pricing, "_layers", return_value=[layer]
+    ):
+        otel = os.path.join(tmp, ".copilot", "otel")
+        # Real JetBrains spans: the call that starts the subagents carries their response
+        # model, later main-agent calls their request model. Only the charge tells.
+        _write_otel(
+            otel,
+            [
+                _swapped("ij", sonnet, mini, 95504, 634, 0, 95496, 24509600000, "msg_a", "a"),
+                _swapped("ij", mini, sonnet, 98296, 846, 95496, 2796, 2500760000, "msg_b", "b"),
+                _swapped("ij", terra, mini, 60420, 1064, 59724, 690, 2644980000, "Lf", "c"),
+                _swapped("ij", mini, terra, 77052, 406, 60414, 16632, 5854680000, "2V", "d"),
+                # Uncharged: an Anthropic message id still names the vendor ...
+                _swapped("ij", mini, sonnet, 900, 10, 0, 0, 0, "msg_e", "e"),
+                # ... otherwise the response model stands, as before.
+                _swapped("ij", sonnet, mini, 900, 10, 0, 0, 0, "f1", "f"),
+            ],
+        )
+        _workspace_yaml(
+            otel,
+            "ij",
+            "id: ij\nclient_name: copilot-intellij\nname: |-\n  Use three explore\n  subagents\n\n"
+            "  in parallel\nuser_named: false\n",
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        models = [t["model_name"] for t in store.message_timeline("ij")]
+        assert models == [
+            "anthropic/" + sonnet,
+            "anthropic/" + sonnet,
+            "openai/" + terra,
+            "openai/" + terra,
+            "anthropic/" + sonnet,
+            "openai/" + mini,
+        ]
+        (w,) = store.workflows()
+        assert w.title == "Use three explore subagents in parallel"
+        assert store._workspace("ij")["user_named"] == "false"
+        assert store.session_client("ij") == "JetBrains IDE"
+
+
 def test_copilot_cache_fingerprint_covers_the_session_store_wal():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")

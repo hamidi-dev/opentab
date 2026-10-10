@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from opentab.accounting.models import Workflow
-from opentab.accounting.pricing import canonical_model
+from opentab.accounting.pricing import api_equivalent_cost, canonical_model, model_family
 from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.stores.copilot_events import CopilotEvents, call_key, local_time, node_id
@@ -341,20 +341,28 @@ class CopilotStore:
         if os.path.realpath(workspace) != os.path.abspath(workspace):
             return {}
         out = {}
+        block = None  # key collecting an indented block scalar (`name: |-` + lines)
         try:
             fh = open(workspace, encoding="utf-8", errors="replace")
         except OSError:
             return {}
         with fh:
             for line in fh:
-                key, sep, value = line.rstrip("\n").partition(": ")
-                if not sep or not key.isidentifier():
+                line = line.rstrip("\n")
+                if block is not None and (not line.strip() or line[:1] in " \t"):
+                    out[block] = f"{out[block]}\n{line.strip()}" if out[block] else line.strip()
+                    continue
+                block = None
+                key, sep, value = line.partition(":")
+                if not sep or not key.isidentifier() or (value and value[0] != " "):
                     continue
                 value = value.strip()
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
                     value = value[1:-1]
+                elif value[:1] in ("|", ">") and value.lstrip("|>").strip("+-0123456789") == "":
+                    block, value = key, ""
                 out[key] = value
-        return out
+        return {k: v.strip() for k, v in out.items()}
 
     # client_name -> label. The CLI runtime also serves the desktop app and IDE plugins.
     _CLIENTS = {
@@ -522,6 +530,47 @@ class CopilotStore:
             return not covered("chat") and not covered("inference")
         return not covered("chat") and not covered("inference") and not covered("agent_turn")
 
+    @classmethod
+    def _call_model(
+        cls, attrs: dict, inp: int, out: int, cache_read: int, cache_write: int
+    ) -> str | None:
+        resp = cls._attr_str(attrs, "gen_ai.response.model")
+        req = cls._attr_str(attrs, "gen_ai.request.model")
+        if not (resp and req) or resp == req:
+            return resp or req
+        # The JetBrains plugin cross-wires these between a main agent and the subagents it
+        # runs in parallel: the call that starts them gets the subagent's response model,
+        # every later main-agent call its request model. Neither attribute is reliable, but
+        # GitHub bills at its list rates, so exactly one candidate reproduces the charge
+        # (verified on every swapped call, Claude/GPT and GPT/GPT pairs alike).
+        charged = cls._nano_aiu_usd(attrs)
+        if charged > 0:
+            fits = [
+                m
+                for m in (resp, req)
+                if abs(
+                    api_equivalent_cost(
+                        f"github-copilot/{m.rsplit('/', 1)[-1]}",
+                        inp - cache_read - cache_write,
+                        out,
+                        0,
+                        cache_read,
+                        cache_write,
+                        context_tokens=inp,
+                    )
+                    - charged
+                )
+                <= charged * 0.01
+            ]
+            if len(fits) == 1:
+                return fits[0]
+        # Uncharged or unpriced: an Anthropic message id still names the vendor.
+        if (cls._attr_str(attrs, "gen_ai.response.id") or "").startswith("msg_"):
+            claude = [m for m in (resp, req) if model_family(m) == "anthropic"]
+            if len(claude) == 1:
+                return claude[0]
+        return resp
+
     def _to_candidate(self, rec: dict, idx: int, trace_ctx: dict, path: str) -> dict | None:
         attrs = rec["attributes"]
         source = self._classify(rec, attrs)
@@ -554,7 +603,9 @@ class CopilotStore:
             return None  # a non-usage record (metric, tool span, ...)
         tid = self._trace_id(rec)
         ctx = trace_ctx.get(tid) if tid else None
-        model = self._attr_str(attrs, *self._MODEL_ATTRS) or (ctx["model"] if ctx else None)
+        model = self._call_model(attrs, inp, out, cache_read, cache_write) or (
+            ctx["model"] if ctx else None
+        )
         # Take the trace's best session id when it outranks this record's own. Keeping
         # only the local one meant a record whose sole session attribute is the per-call
         # gen_ai.response.id (priority 1) held onto it even when a sibling on the same
