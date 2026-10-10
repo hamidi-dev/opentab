@@ -254,6 +254,48 @@ def test_copilot_jetbrains_swapped_models_resolve_by_charge_and_block_titles():
         assert store.session_client("ij") == "JetBrains IDE"
 
 
+def test_copilot_jetbrains_doubled_usage_is_halved_only_on_both_signals():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+
+        def call(session, out=10):
+            # A real JetBrains call: every count even, charge exact at list rates for them.
+            chat = _otel_chat(
+                session,
+                "gpt-5.6-terra",
+                53432,
+                out,
+                cache_create=53426,
+                trace=session,
+                span=session,
+            )
+            return _charged(chat, 13369700000)
+
+        _write_otel(otel, [call("ij"), call("cli"), call("bare"), call("odd", out=11)])
+
+        def checkpoint(session, nano_aiu):
+            _write_events(
+                otel, session, [_event("session.usage_checkpoint", {"totalNanoAiu": nano_aiu}, "c")]
+            )
+
+        checkpoint("ij", 6684850000)  # the runtime (and GitHub's quota) moved by half
+        checkpoint("cli", 13369700000)  # a faithful exporter matches its checkpoint
+        checkpoint("odd", 6684850000)  # an odd count cannot be a doubled one
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        rows = {w.id: w for w in store.workflows()}
+        assert abs(rows["ij"].total_cost - 0.0668485) < 1e-6
+        assert rows["ij"].total_tokens == 26713 + 5 + 3
+        (t,) = store.message_timeline("ij")
+        assert (t["cache_write"], t["input"], t["output"], t["context_tokens"]) == (
+            26713,
+            3,
+            5,
+            26716,
+        )
+        for sid in ("cli", "bare", "odd"):  # no checkpoint evidence or not all even
+            assert abs(rows[sid].total_cost - 0.133697) < 1e-6, sid
+
+
 def test_copilot_cache_fingerprint_covers_the_session_store_wal():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")

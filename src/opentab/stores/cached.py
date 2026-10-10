@@ -20,7 +20,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 23  # Copilot: output includes reasoning; JetBrains models resolved by charge
+CACHE_VERSION = 24  # Copilot: JetBrains doubled usage is halved
 
 
 # Required because cache readers index these fields directly.

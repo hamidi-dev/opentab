@@ -467,17 +467,54 @@ class CopilotStore:
                 if c["response_id"]:
                     resps[c["source"]].add(c["response_id"])
         seen: set[str] = set()
+        emitted: dict[str, list[dict]] = {}
         for c in candidates:
             if not self._emit(c, traces, resps, bare_traces) or c["dedup_key"] in seen:
                 continue
             seen.add(c["dedup_key"])
-            self._fold(sessions, c)
+            emitted.setdefault(c["session_id"], []).append(c)
+        for sid, calls in emitted.items():
+            if self._doubled(sid, calls):
+                for c in calls:
+                    self._halve(c)
+            for c in calls:
+                self._fold(sessions, c)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         # Drop sessions with no recorded usage (non-LLM-only files): they would only add
         # $0 / 0-token rows to a spend browser.
         self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
         return self._sessions
+
+    _USAGE_FIELDS = ("input", "output", "cache_read", "cache_write")
+
+    def _doubled(self, sid: str, calls: list[dict]) -> bool:
+        """Whether the exporter reported every usage value twice over.
+
+        The JetBrains plugin (1.19) does: all of its token counts are even, its charges
+        reproduce from those counts at list rates, yet the runtime's own running total
+        (``session.usage_checkpoint`` in session-state) and GitHub's quota both move by
+        half. The CLI and desktop app match their checkpoints exactly. Both signals are
+        required, so a fixed exporter or an unrelated session is never halved.
+        """
+        charged = sum(c["cost"] for c in calls)
+        if charged <= 0 or any(c[k] % 2 for c in calls for k in self._USAGE_FIELDS):
+            return False
+        checkpoint = None
+        for event in self._events.records(sid, {"session.usage_checkpoint"}):
+            value = event["data"].get("totalNanoAiu")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                checkpoint = value * self._USD_PER_NANO_AIU
+        # Exactly half, or a little over when the export also dropped a call outright.
+        return checkpoint is not None and 0.45 <= checkpoint / charged <= 0.75
+
+    @classmethod
+    def _halve(cls, c: dict) -> None:
+        for k in cls._USAGE_FIELDS:
+            c[k] //= 2
+        if c["context_tokens"] is not None:
+            c["context_tokens"] //= 2
+        c["cost"] /= 2
 
     @classmethod
     def _file_records(cls, lines: list[str]) -> list[dict]:

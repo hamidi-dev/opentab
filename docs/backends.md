@@ -302,6 +302,14 @@ one whose `github-copilot` list rates reproduce the recorded charge wins; unchar
 calls fall back to the vendor named by an Anthropic `msg_` response id, then to the
 response model.
 
+The same plugin also reports every usage value twice over: tokens and charge alike,
+so the charge still matches list rates, while the runtime's `session.usage_checkpoint`
+and GitHub's quota move by half. A session is halved only when all its token counts
+are even and its last checkpoint is 45–75% of the exported charge; the upper slack
+covers calls the export drops outright, whose spend stays missing. It also exports
+each subagent as one chat span summing all of its calls, and saved events carry no
+per-call usage, so a subagent shows a single turn.
+
 One call can appear across several files as a chat span, inference log, agent-turn
 log and agent-summary span, in that fidelity order. Deduplication spans the entire
 export, and response ids take precedence over trace ids: several distinct calls
