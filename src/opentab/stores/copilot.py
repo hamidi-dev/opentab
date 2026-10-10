@@ -524,8 +524,34 @@ class CopilotStore:
             for line in lines
             if '"attributes"' in line
             for o in (cls._loads(line),)
-            if isinstance(o, dict) and isinstance(o.get("attributes"), dict)
+            if isinstance(o, dict)
+            and isinstance(o.get("attributes"), dict)
+            and not cls._vscode_extension(o)
         ]
+
+    _VSCODE_EXTENSION = "copilot-chat"
+
+    @classmethod
+    def _vscode_extension(cls, rec: dict) -> bool:
+        """VS Code's Copilot Chat extension exports into the same file when the shell sets
+        the path. Its chats belong to the VS Code harness, which reads them from VS Code's
+        own store; counting them here too would double them, and its helper calls would
+        surface as background calls."""
+        scope = rec.get("instrumentationScope")
+        if isinstance(scope, dict) and scope.get("name") == cls._VSCODE_EXTENSION:
+            return True
+        res = rec.get("resource")
+        if not isinstance(res, dict):
+            return False
+        attrs = res.get("attributes")
+        if not isinstance(attrs, dict):
+            raw = res.get("_rawAttributes")
+            attrs = (
+                dict(p for p in raw if isinstance(p, list) and len(p) == 2)
+                if isinstance(raw, list)
+                else {}
+            )
+        return attrs.get("service.name") == cls._VSCODE_EXTENSION
 
     @staticmethod
     def _loads(line: str):
