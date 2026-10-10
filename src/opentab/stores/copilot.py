@@ -135,8 +135,8 @@ class CopilotStore:
             "runs": 0,
             "cost": 0.0,  # recorded AI-credit spend in USD
             "input": 0,  # uncached input (OTEL input_tokens minus cache reads/writes)
-            "output": 0,  # reasoning folded in so it is priced once, never twice
-            "reasoning": 0,  # kept 0 (folded into output)
+            "output": 0,  # includes reasoning, so it is priced once, never twice
+            "reasoning": 0,  # kept 0 (inside output)
             "cache_read": 0,
             "cache_write": 0,
             "tokens_total": 0,
@@ -545,14 +545,12 @@ class CopilotStore:
         cache_read = min(inp, cache_read)
         cache_write = min(inp - cache_read, cache_write)
         uncached = inp - cache_read - cache_write
-        # Some exporters log only a grand total; back-fill the gap (as output, else reasoning).
-        missing = max(0, total - (uncached + out + cache_write + cache_read + reasoning))
-        if missing:
-            if out == 0:
-                out = missing
-            else:
-                reasoning += missing
-        if uncached + out + cache_write + cache_read + reasoning == 0:
+        # output_tokens already includes reasoning: GitHub's AI-credit charge reproduces
+        # from output alone, never output + reasoning. A bare reasoning count still counts.
+        out = max(out, reasoning)
+        # Some exporters log only a grand total; back-fill the gap as output.
+        out += max(0, total - (uncached + out + cache_write + cache_read))
+        if uncached + out + cache_write + cache_read == 0:
             return None  # a non-usage record (metric, tool span, ...)
         tid = self._trace_id(rec)
         ctx = trace_ctx.get(tid) if tid else None
@@ -584,7 +582,7 @@ class CopilotStore:
             "context_tokens": inp
             if source in ("chat", "inference") and "gen_ai.usage.input_tokens" in attrs
             else None,
-            "output": out + reasoning,  # fold reasoning into output (priced once at output)
+            "output": out,
             "cost": self._nano_aiu_usd(attrs),
             "cache_read": cache_read,
             "cache_write": cache_write,

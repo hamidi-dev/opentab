@@ -66,9 +66,9 @@ total = input + output + reasoning + cache_read + cache_write
   zaly use separate cache counts. Hermes' database uses this convention too, even
   though its log does not. Subtracting the cache again loses real input tokens.
 - **Reasoning is additive here, not universally upstream.** Claude, Codex, Hermes,
-  pi/omp and zaly already include it in output, so their normalized `reasoning` is
-  zero. Gemini and Antigravity record extra thinking tokens, which belong in that
-  column and are priced at the output rate. Copilot folds its reasoning into output.
+  Copilot, pi/omp and zaly already include it in output, so their normalized
+  `reasoning` is zero. Gemini and Antigravity record extra thinking tokens, which
+  belong in that column and are priced at the output rate.
 - **The one-hour cache-write count is a subset**, not a sixth category. Claude's
   `cache_write_1h` retains the long-TTL portion of `cache_write` for pricing without
   increasing the token total. Most harnesses do not preserve that TTL distinction.
@@ -291,7 +291,8 @@ non-positive values record nothing; uncharged calls keep their tokens unpriced f
 A fallback agent-summary record's charge covers the calls it summarizes.
 Input includes both cache reads and cache writes: subtract both to obtain uncached
 input, keeping their sum within the recorded input budget. Copilot's shutdown
-`tokenDetails` uses this same disjoint split. Reasoning folds into output.
+`tokenDetails` uses this same disjoint split. Output already includes reasoning: the
+AI-credit charge reproduces from output alone, so adding reasoning counts it twice.
 Total-only records need back-filling rather than being discarded.
 
 One call can appear across several files as a chat span, inference log, agent-turn

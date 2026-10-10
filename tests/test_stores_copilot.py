@@ -200,7 +200,7 @@ def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
         # input_tokens (19452) includes 123 reads and 25 writes -> uncached 19304;
-        # reasoning (128) folds into output for pricing; cache_creation -> cache_write.
+        # output (281) already includes reasoning (128); cache_creation -> cache_write.
         _write_otel(
             otel,
             [
@@ -225,19 +225,19 @@ def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():
         assert w.source == "Copilot"
         assert w.subagents == 0  # no subagent tree
         assert w.total_cost == 0.0 and w.root_cost == 0.0
-        # tokens_total = uncached(19304) + cache_read(123) + cache_write(25) + output(281+128)
-        assert w.total_tokens == w.unpriced_tokens == 19304 + 123 + 25 + 409
+        # tokens_total = uncached(19304) + cache_read(123) + cache_write(25) + output(281)
+        assert w.total_tokens == w.unpriced_tokens == 19304 + 123 + 25 + 281
 
         row = next(r for r in store.model_breakdown() if r["root_id"] == COPILOT_SID)
         assert row["model_name"] == "anthropic/claude-sonnet-4"  # mixed-provider prefix
         assert row["unpriced_input"] == 19304
         assert row["unpriced_cache_read"] == 123
         assert row["unpriced_cache_write"] == 25
-        assert row["unpriced_output"] == 409  # reasoning folded in, priced once
-        assert row["reasoning"] == 0  # folded, never double-counted
+        assert row["unpriced_output"] == 281  # reasoning inside, priced once
+        assert row["reasoning"] == 0  # never double-counted
 
         # the (all-unpriced) usage reprices to a positive list-price estimate under "$"
-        est = ot.api_equivalent_cost("anthropic/claude-sonnet-4", 19304, 409, 0, 123, 25)
+        est = ot.api_equivalent_cost("anthropic/claude-sonnet-4", 19304, 281, 0, 123, 25)
         assert est > 0
 
         nodes = store.workflow_nodes(COPILOT_SID)
