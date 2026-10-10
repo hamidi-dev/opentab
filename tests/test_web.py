@@ -3015,6 +3015,28 @@ def test_web_expiries_stay_empty_when_the_backend_cannot_support_the_reading():
     assert ot.session_extras(app, "w1")["expiries"] == []
 
 
+def test_web_expiries_follow_a_store_that_supports_misses_without_a_curve():
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+
+    class SingleRequests(ExpiryFakeStore):
+        def supports_context_curve(self, wid):
+            return False
+
+        def supports_cache_misses(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            rows = super().message_timeline(wid)
+            for row in rows:
+                row.update(model_name="openai/gpt-6-astra", cache_write_1h=0)
+            return rows
+
+    app = ot.App(SingleRequests([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
+    (exp,) = ot.session_extras(app, "w1")["expiries"]
+    assert exp["ttl"] == ot.CACHE_TTL_OPENAI_MIN and exp["ttlMin"] is True
+    assert "x.ttlMin ? ' (guaranteed ' : ' (it lived '" in _js_source()
+
+
 def test_web_turn_costs_bill_long_ttl_writes_so_an_expiry_fits_inside_its_turn():
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)

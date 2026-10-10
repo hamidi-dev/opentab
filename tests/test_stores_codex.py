@@ -53,6 +53,32 @@ def test_codex_tiers_only_use_a_final_request_that_reconciles_with_the_accepted_
         assert [t["context_tokens"] for t in turns] == [300000, None]
 
 
+def test_codex_offers_cache_misses_only_when_every_main_row_is_one_request():
+    def tokens(total, read, last=True):
+        row = _codex_tokens(total, 100, read, total + 100)
+        if last:
+            info = row["payload"]["info"]
+            info["last_token_usage"] = dict(info["total_token_usage"])
+        return row
+
+    with tempfile.TemporaryDirectory() as tmp:
+        meta, turn = _codex_meta(CODEX_SID, tmp), _codex_turn("gpt-6-astra", tmp)
+        _codex_rollout(tmp, CODEX_SID, [meta, turn, tokens(300000, 299000)])
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        # Still no curve: the chart and the miss markers have different requirements.
+        assert not store.supports_context_curve(CODEX_SID)
+        assert store.supports_cache_misses(CODEX_SID)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        meta, turn = _codex_meta(CODEX_SID, tmp), _codex_turn("gpt-6-astra", tmp)
+        # A row spanning several requests sums their reads into a prefix no request had.
+        rows = [meta, turn, tokens(300000, 299000), tokens(900000, 897000, last=False)]
+        _codex_rollout(tmp, CODEX_SID, rows)
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        assert not store.supports_cache_misses(CODEX_SID)
+        assert not store.supports_cache_misses("missing")
+
+
 def _codex_user(text, ts="2025-10-03T14:51:05.000Z"):
     return {
         "timestamp": ts,

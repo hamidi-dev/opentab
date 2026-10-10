@@ -3280,6 +3280,14 @@ class App:
         check = getattr(self.store, "supports_context_curve", None)
         return bool(check(workflow_id)) if check else True
 
+    def session_supports_cache_misses(self, workflow_id: str) -> bool:
+        # Cache-miss markers need consecutive single requests, which some stores can
+        # guarantee without offering a context curve.
+        if self.session_supports_context_curve(workflow_id):
+            return True
+        check = getattr(self.store, "supports_cache_misses", None)
+        return bool(check(workflow_id)) if check else False
+
     def session_context_rows(self, workflow_id: str) -> list[dict]:
         cached = self._context_by_session.get(workflow_id)
         if cached is not None:

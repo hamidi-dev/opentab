@@ -366,7 +366,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
     # Cache-expiry pricing stays server-side with the canonical TTL rules. Expose only
     # the causes the TUI renders; the client merely labels them.
     expiries = []
-    if turns and curve:
+    if turns and app.session_supports_cache_misses(workflow_id):
         for m in cache_misses(turn_rows):
             if m.cause in ("waited", "reasoning"):
                 expiries.append(
@@ -376,6 +376,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
                         "detail": m.detail,
                         "idle": int(m.idle),
                         "ttl": int(m.ttl),
+                        "ttlMin": m.ttl_minimum,
                         "repaid": int(m.repaid),
                         "cost": _money6(m.cost),
                     }

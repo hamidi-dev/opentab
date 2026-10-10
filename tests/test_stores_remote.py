@@ -300,6 +300,29 @@ def test_machine_stats_scrambles_labels_under_demo():
         assert {w.machine for w in rs.workflows()} == labels  # joins cleanly in the table
 
 
+def test_export_carries_cache_miss_support_for_a_session_without_a_curve():
+    # Codex: single-request rows with no context curve keep their miss markers remotely.
+    class CacheOnly(_FakeExtrasStore):
+        def supports_cache_misses(self, wid):
+            return wid == "s1"
+
+    wfs = [workflow(sid, "2026-07-15 10:00:00", cost=1.0) for sid in ("s1", "s2")]
+    store = CacheOnly(wfs, [], turns={"s1": [_turn()], "s2": [_turn()]})
+    payload = ot.build_export(store, "laptop", "2026-07-18T00:00:00", "9.9")
+    assert payload["curve_ok"] == [] and payload["cache_ok"] == ["s1"]
+
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "laptop.json", payload)
+        rs = ot.RemoteStore(d, _parse([]))
+        assert not rs.supports_context_curve("s1")
+        assert rs.supports_cache_misses("s1") and not rs.supports_cache_misses("s2")
+    # An older summary without the key leaves the markers off rather than guessing.
+    del payload["cache_ok"]
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "laptop.json", payload)
+        assert not ot.RemoteStore(d, _parse([])).supports_cache_misses("s1")
+
+
 def test_malformed_extras_rows_normalize_instead_of_crashing():
     wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
     payload = _summary("box", wfs)
