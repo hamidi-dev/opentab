@@ -188,19 +188,23 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 
 ## [GitHub Copilot CLI](https://github.com/github/copilot-cli)
 
-*OpenTelemetry export · opt-in · tokens only, `$` estimates*
+*OpenTelemetry export · opt-in · AI-credit charges recorded, the rest estimated*
 
 - **Reads** `~/.copilot/otel/**/*.jsonl` (`--copilot-dir`), plus the file named by
   `$COPILOT_OTEL_FILE_EXPORTER_PATH`. The sibling `session-store.db` supplies titles
   and projects; `session-state/<id>/events.jsonl` supplies retained session details.
-- **Clients**: the same runtime serves the CLI, the GitHub Copilot desktop app and
-  the JetBrains plugin. Each session's `workspace.yaml` names its client, shown as
+- **Clients**: the same runtime serves the CLI, the GitHub Copilot desktop app, the
+  JetBrains plugin and VS Code's *Copilot CLI* sessions. Each session's `workspace.yaml` names its client, shown as
   **Client** in the session overview (TUI and web), and supplies the title and folder
   when the session store has no row yet. A client only shows up once it writes the
   OpenTelemetry export. The JetBrains plugin strips the env var unless its own setting
   is on: enable *Settings → Tools → GitHub Copilot → Chat → Open Telemetry*, set
   **Output file** (the default OTLP endpoint is plain http, which Copilot refuses to
   export to), and restart the IDE. A path your shell exports still takes precedence.
+  VS Code's Copilot CLI sessions have their own settings, separate from the Copilot extension's
+  `github.copilot.chat.otel.*`: set `"chat.agentHost.otel.enabled": true` and
+  `"chat.agentHost.otel.exporterType": "file"` (the default sends to a local OTLP
+  collector), then quit and reopen VS Code.
 - **Background calls**: a session the client created and deleted again, absent from
   both the session store and `session-state` (the desktop app's session naming, for
   example), is titled "(background call)" and grouped under the project
@@ -240,6 +244,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 ## [Copilot Chat in VS Code](https://code.visualstudio.com/docs/copilot/chat/copilot-chat)
 
 *VS Code's chat-session store · nothing to enable · tokens only*
+
+Chats VS Code runs as *Copilot CLI* sessions (chosen in the chat's session type
+picker) use the Copilot runtime instead and appear under
+[GitHub Copilot CLI](#github-copilot-cli) once its export is on.
 
 - **Reads** VS Code's own store, `<User>/workspaceStorage/*/chatSessions` plus
   empty-window sessions, across Code, Code&nbsp;-&nbsp;Insiders, and VSCodium. Point
