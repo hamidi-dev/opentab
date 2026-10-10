@@ -553,26 +553,31 @@ class CopilotStore:
         self._links_cache, self._app_titles = links, titles
         return links
 
-    def session_family(self, root_id: str) -> list[tuple[str, str | None]]:
-        """``root_id`` then every recorded descendant with its parent, pre-order.
+    def _tree_links(self) -> dict[str, str]:
+        """The links minus every cycle member's own: cycle members become roots.
 
-        Read from the links alone, so the conversation and change readers can use it
-        without the usage ledger. A descendant without a session file is skipped, and
-        its own descendants attach to the nearest ancestor that has one."""
+        Accounting and the conversation/change readers both start from these, so
+        they agree on membership whatever usage the sessions recorded."""
         links = self._links()
 
         def cyclic(sid: str) -> bool:
-            # Accounting leaves a cycle's members as separate roots; so does this.
             seen, parent = {sid}, links.get(sid)
             while parent is not None and parent not in seen:
                 seen.add(parent)
                 parent = links.get(parent)
             return parent == sid
 
+        return {child: parent for child, parent in links.items() if not cyclic(child)}
+
+    def session_family(self, root_id: str) -> list[tuple[str, str | None]]:
+        """``root_id`` then every recorded descendant with its parent, pre-order.
+
+        Read from the links alone, so the conversation and change readers can use it
+        without the usage ledger. A descendant without a session file is skipped, and
+        its own descendants attach to the nearest ancestor that has one."""
         children: dict[str, list[str]] = {}
-        for child, parent in links.items():
-            if not cyclic(child):
-                children.setdefault(parent, []).append(child)
+        for child, parent in self._tree_links().items():
+            children.setdefault(parent, []).append(child)
         family: list[tuple[str, str | None]] = [(root_id, None)]
         seen = {root_id}
 
@@ -595,24 +600,15 @@ class CopilotStore:
         """Fold each child session into its root, as subagent nodes beneath it.
 
         A link to a session without usage is spliced to its nearest parsed ancestor;
-        a cycle leaves its members as roots."""
-        links = self._links()
+        a cycle leaves its members as roots (``_tree_links``), so none remain."""
+        links = self._tree_links()
         parent_of: dict[str, str] = {}
         for sid in parts:
-            seen, parent = {sid}, links.get(sid)
-            while parent is not None and parent not in parts and parent not in seen:
-                seen.add(parent)
+            parent = links.get(sid)
+            while parent is not None and parent not in parts:
                 parent = links.get(parent)
-            if parent is not None and parent in parts and parent not in seen:
+            if parent is not None:
                 parent_of[sid] = parent
-        for sid in list(parent_of):
-            path, node = [], sid
-            while node in parent_of and node not in path:
-                path.append(node)
-                node = parent_of[node]
-            if node in path:
-                for member in path[path.index(node) :]:
-                    parent_of.pop(member, None)
         children: dict[str, list[str]] = {}
         for child, parent in parent_of.items():
             children.setdefault(parent, []).append(child)
