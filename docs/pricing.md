@@ -171,7 +171,9 @@ charges those writes at 1.25 times the ordinary input rate and guarantees the en
 for at least 30 minutes after its latest write or reuse; cache reads cost one tenth of
 ordinary input. OpenTab uses the documented write multiplier if an otherwise valid
 catalog row omits that fourth rate. Because 30 minutes is a minimum rather than an exact
-expiry, cache-miss analysis does not claim that an OpenAI entry died at that boundary.
+expiry, cache-miss analysis treats a drop after a longer gap as an expiry but labels the
+lifetime "guaranteed", never claiming that the entry died at that boundary. Older OpenAI
+models cache opportunistically, with no write charge and no lifetime to measure against.
 
 ### Cache misses are estimates
 
@@ -182,8 +184,10 @@ context windows are excluded from that comparison.
 
 The reported cause is an inference: a model switch, compaction, a recorded reasoning
 effort change, other prefix invalidation, or a cache lifetime exceeded while the
-agent worked or the user waited. Only Anthropic gets an explicit five-minute or
-one-hour TTL; OpenTab does not invent a fixed expiry for opportunistic providers.
+agent worked or the user waited. Anthropic gets an explicit five-minute or one-hour
+TTL and GPT-5.6+ its 30-minute minimum; OpenTab does not invent an expiry for
+opportunistic providers. Codex has no context curve, but its turn rows are single
+requests, so it still gets cache-miss markers.
 The previous turn owns the expired entry's lifetime; the new turn may buy another
 tier. The estimated penalty is what the replacement cost above a cache hit, not
 the entire turn's bill. It is useful diagnostic evidence, not a provider receipt.
