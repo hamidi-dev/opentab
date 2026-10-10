@@ -20,7 +20,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 27  # Copilot: desktop child sessions fold into their creator
+CACHE_VERSION = 22  # Copilot: AI-credit spend, JetBrains fixes, desktop child sessions
 
 
 # Required because cache readers index these fields directly.
