@@ -369,6 +369,7 @@ class CopilotStore:
         "github/cli": "Copilot CLI",
         "github/autopilot": "GitHub Copilot app",
         "copilot-intellij": "JetBrains IDE",
+        "vscode-agent-host": "VS Code (Copilot CLI)",
     }
 
     def session_client(self, workflow_id: str) -> str:

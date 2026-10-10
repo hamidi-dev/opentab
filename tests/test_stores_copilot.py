@@ -151,6 +151,7 @@ def test_copilot_clients_workspace_fallback_and_background_calls():
             f"id: app\ncwd: {tmp}\nclient_name: github/autopilot\nname: Feature parity\n",
         )
         _workspace_yaml(otel, "cli", "client_name: github/cli\nname: Ignored\n")
+        _workspace_yaml(otel, "vsc", "client_name: vscode-agent-host\n")
         store = ot.CopilotStore(otel, _copilot_args(otel))
         assert os.path.realpath(workspace) in store.cache_inputs()
         rows = {w.id: w for w in store.workflows()}
@@ -163,6 +164,7 @@ def test_copilot_clients_workspace_fallback_and_background_calls():
         assert namer.total_cost == round(4516500 * 1e-11, 6)
         assert store.session_client("app") == "GitHub Copilot app"
         assert store.session_client("cli") == "Copilot CLI"
+        assert store.session_client("vsc") == "VS Code (Copilot CLI)"
         assert store.session_client("namer") == "" and store.session_client("../x") == ""
         app = ot.App(store, _parse(["--no-state", "--harness", "copilot", "--copilot-dir", otel]))
         overview = "\n".join(ot.Renderer(app).detail_overview(rows["app"], 100))
