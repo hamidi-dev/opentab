@@ -298,6 +298,19 @@ def test_copilot_jetbrains_doubled_usage_is_halved_only_on_both_signals():
             assert abs(rows[sid].total_cost - 0.133697) < 1e-6, sid
 
 
+def test_copilot_skips_the_vscode_extensions_own_export():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        model = "claude-haiku-5.5"
+        span = _otel_chat("vs-span", model, 1664, 13, trace="v", span="v")
+        span["instrumentationScope"] = {"name": "copilot-chat", "version": "0.69.0"}
+        log = _otel_chat("vs-log", model, 1664, 13, trace="w", span="w")
+        log["resource"] = {"_rawAttributes": [["service.name", "copilot-chat"]]}
+        _write_otel(otel, [span, log, _otel_chat("cli", model, 100, 5, trace="c", span="c")])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert [w.id for w in store.workflows()] == ["cli"]
+
+
 def test_copilot_cache_fingerprint_covers_the_session_store_wal():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
