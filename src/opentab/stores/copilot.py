@@ -31,6 +31,7 @@ class CopilotStore:
     records_reasoning = True  # readable reasoningText/blocks when the model records them
     combined = False
     source_name = "Copilot"
+    BACKGROUND_PROJECT = "(Copilot background calls)"
 
     # GitHub AI credits: 1e9 nano-AIU per credit, $0.01 per credit.
     _NANO_AIU_ATTR = "github.copilot.nano_aiu"
@@ -56,6 +57,8 @@ class CopilotStore:
         self._records_cost: bool | None = None  # resolved lazily (records_cost property)
         self._git_root_cache: dict[str, str] = {}
         self._meta: dict[str, tuple[str, str]] | None = None  # id -> (cwd, summary)
+        self._meta_complete = False  # the session store was read successfully
+        self._clients: dict[str, str] = {}  # id -> session_client() label
         # GitHub's documented single-file exporter target (can live outside root_dir).
         self._extra_file = os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH") or ""
         # session-store.db sits beside the otel/ directory -- the only place cwd lives.
@@ -314,18 +317,69 @@ class CopilotStore:
         if self._meta is not None:
             return self._meta
         meta: dict[str, tuple[str, str]] = {}
+        self._meta_complete = False
         if os.path.exists(self._db_path):
             try:
                 con = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
                 try:
                     for sid, cwd, summary in con.execute("SELECT id, cwd, summary FROM sessions"):
                         meta[sid] = (cwd or "", " ".join((summary or "").split())[:80])
+                    self._meta_complete = True
                 finally:
                     con.close()
             except sqlite3.Error:
                 meta = {}  # foreign/locked/old schema -> just skip enrichment
         self._meta = meta
         return meta
+
+    def _workspace(self, sid: str) -> dict[str, str]:
+        """Top-level scalars from ``session-state/<id>/workspace.yaml``, read-only."""
+        path = self._events.path(sid)
+        if path is None:
+            return {}
+        workspace = os.path.join(os.path.dirname(path), "workspace.yaml")
+        if os.path.realpath(workspace) != os.path.abspath(workspace):
+            return {}
+        out = {}
+        try:
+            fh = open(workspace, encoding="utf-8", errors="replace")
+        except OSError:
+            return {}
+        with fh:
+            for line in fh:
+                key, sep, value = line.rstrip("\n").partition(": ")
+                if not sep or not key.isidentifier():
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                    value = value[1:-1]
+                out[key] = value
+        return out
+
+    # client_name -> label. The CLI runtime also serves the desktop app and IDE plugins.
+    _CLIENTS = {
+        "github/cli": "Copilot CLI",
+        "github/autopilot": "GitHub Copilot app",
+        "copilot-intellij": "JetBrains IDE",
+    }
+
+    def session_client(self, workflow_id: str) -> str:
+        """Which Copilot front end ran the session, or "" when not recorded."""
+        # Painted with the overview, so memoized; never forces the ledger parse.
+        if self.demo:
+            return ""
+        if workflow_id not in self._clients:
+            raw = self._workspace(workflow_id).get("client_name", "")
+            self._clients[workflow_id] = self._CLIENTS.get(raw, raw)
+        return self._clients[workflow_id]
+
+    def _retained(self, sid: str) -> bool:
+        """False only when the session store is readable and neither it nor
+        session-state kept this session: the client deleted it after use."""
+        if not self._meta_complete or sid in self._load_meta():
+            return True
+        path = self._events.path(sid)
+        return path is None or os.path.isdir(os.path.dirname(path))
 
     def cache_inputs(self) -> list[str]:
         # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
@@ -334,10 +388,11 @@ class CopilotStore:
         # it was served from cache forever -- reload re-fingerprints, still matches,
         # still hits -- freezing those sessions at "(untitled)" / "(unknown)", which
         # also keeps them out of their project in Projects mode.
+        # New rows land in the WAL long before a checkpoint touches the main file.
         files = self._files()
-        if os.path.isfile(self._db_path):
-            files.append(self._db_path)
+        files.extend(p for p in (self._db_path, self._db_path + "-wal") if os.path.isfile(p))
         files.extend(glob.glob(os.path.join(self._events.root, "*", "events.jsonl")))
+        files.extend(glob.glob(os.path.join(self._events.root, "*", "workspace.yaml")))
         return files
 
     def _files(self) -> list[str]:
@@ -571,8 +626,18 @@ class CopilotStore:
 
     def _finalize(self, sid: str, s: dict) -> None:
         cwd, summary = self._load_meta().get(sid, ("", ""))
+        if not (cwd and summary):
+            # Desktop and IDE sessions reach the session store late, if at all.
+            workspace = self._workspace(sid)
+            cwd = cwd or workspace.get("cwd", "")
+            summary = summary or " ".join(workspace.get("name", "").split())[:80]
         s["title"] = summary or "(untitled)"
         s["directory"] = self._git_root(cwd) if cwd else "(unknown)"
+        if not cwd and not summary and not self._retained(sid):
+            # E.g. the desktop app's session-naming call: a throwaway session it
+            # deletes after use. Its charge is real, its parent is not recorded.
+            s["title"] = "(background call)"
+            s["directory"] = self.BACKGROUND_PROJECT
         s["created_at"] = self._ms_to_local(s["ts_min"]) if s["ts_min"] is not None else ""
         s["ended_at"] = self._ms_to_local(s["ts_max"]) if s["ts_max"] is not None else ""
         # Only response/execution identities are retained here. Bodies and tools
@@ -668,6 +733,7 @@ class CopilotStore:
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         self._meta = None
+        self._clients = {}
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():

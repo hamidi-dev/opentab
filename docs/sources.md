@@ -193,6 +193,15 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Reads** `~/.copilot/otel/**/*.jsonl` (`--copilot-dir`), plus the file named by
   `$COPILOT_OTEL_FILE_EXPORTER_PATH`. The sibling `session-store.db` supplies titles
   and projects; `session-state/<id>/events.jsonl` supplies retained session details.
+- **Clients**: the same runtime serves the CLI, the GitHub Copilot desktop app and
+  the JetBrains plugin. Each session's `workspace.yaml` names its client, shown as
+  **Client** in the session overview (TUI and web), and supplies the title and folder
+  when the session store has no row yet. A client only shows up once it writes the
+  OpenTelemetry export: an IDE launched outside your shell may not inherit the env var.
+- **Background calls**: a session the client created and deleted again, absent from
+  both the session store and `session-state` (the desktop app's session naming, for
+  example), is titled "(background call)" and grouped under the project
+  "(Copilot background calls)". Its charge is real; its parent session is not recorded.
 - **Enable it**: OpenTab's per-call usage ledger needs the OpenTelemetry export. Set
   the env var before launching/resuming a session — sessions after that show up:
 

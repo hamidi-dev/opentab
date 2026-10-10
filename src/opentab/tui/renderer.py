@@ -4410,6 +4410,9 @@ class Renderer:
         ]
         if workflow.source:
             rows.append(f"Harness:  {workflow.source}")
+        client = self.session_client(workflow.id)
+        if client:
+            rows.append(f"Client:   {client}")
         if workflow.machine:
             rows.append(f"Machine:  {workflow.machine}")
         rows += self.note_lines(workflow, card - self.BOX_CHROME)

@@ -350,7 +350,7 @@ def test_web_tools_explorer_payload_is_allowlisted_fractional_and_reprices_whole
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     extras = ot.session_extras(ot.App(ToolsExplorerFakeStore([w]), args), "w1")
 
-    assert set(extras) == {"turns", "tools", "toolCalls", "context", "expiries"}
+    assert set(extras) == {"turns", "tools", "toolCalls", "context", "expiries", "client"}
     assert all(
         set(row) == {"tool", "ns", "calls", "model", "real", "api", "tokens", "tok"}
         for row in extras["tools"]
@@ -1836,6 +1836,7 @@ def test_web_report_server_serves_page_extras_and_404():
             "toolCalls": [],
             "context": None,
             "expiries": [],
+            "client": "",
         }
         try:
             urllib.request.urlopen(base + "/nope")

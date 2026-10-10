@@ -2805,6 +2805,7 @@ function renderSessionOverview(root, sc) {
     w.dur != null ? [h('dt', null, 'worked'), h('dd', null, hDur(w.dur))] : null,
     w.usageSeconds != null ? [h('dt', null, 'voice/API duration'), h('dd', null, w.usageSeconds + 's · ' + (w.usageStatus || 'reported'))] : null,
     META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
+    EXTRAS.id === sc.id && EXTRAS.client ? [h('dt', null, 'client'), h('dd', null, EXTRAS.client)] : null,
     META.machines && w.machine ? [h('dt', null, 'machine'), h('dd', null, w.machine)] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));
   root.appendChild(moneyCard(w, whatifTotals(sc.id)));
@@ -2956,14 +2957,14 @@ function ensureExtras(sc) {
   if (!META.serve) {
     const x = Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id)
       ? DATA.sessionExtras[sc.id] : {};
-    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [] };
+    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
     return;
   }
   EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
   fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
     const current = curScope();
     if (request !== EXTRAS_REQUEST || current.kind !== 's' || current.id !== session || EXTRAS.id !== session) return;
-    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [] };
+    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
     render(false);
   }).catch(err => {
     const current = curScope();
