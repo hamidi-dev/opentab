@@ -11,7 +11,7 @@ from opentab.conversations.reader import (
     source_key,
     source_manifest,
 )
-from opentab.stores.copilot_events import CopilotEvents, node_id
+from opentab.stores.copilot_events import CopilotEvents, continuation, node_id
 
 
 def load_events(events: CopilotEvents, root_id: str, *, cancelled=None):
@@ -95,6 +95,9 @@ def read_source(store, root_id: str, execution_id: str | None = None) -> dict:
             continue
         if event.get("ephemeral") is True:
             limitations.append("ephemeral_events_excluded")
+            continue
+        if kind == "user.message" and continuation(data):
+            limitations.append("autopilot_continuations_excluded")
             continue
         text = data.get("content")
         if not isinstance(text, str):
