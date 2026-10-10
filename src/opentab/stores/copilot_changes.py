@@ -271,7 +271,7 @@ def _occurrences(store, root_id, *, cancelled=None):
                 }
                 if row.get("from_path"):
                     edit["from_file"] = _display(row["from_path"], root_directory)
-                yield edit, patch, limitations
+                yield edit, patch, limitations, row["path"]
 
 
 def read_changes(store, root_id, key=None, *, cancelled=None):
@@ -290,7 +290,9 @@ def read_changes(store, root_id, key=None, *, cancelled=None):
         for sid, _parent in store.session_family(root_id)
         for found in _occurrences(store, sid, cancelled=cancelled)
     )
-    for edit, patch, limitations in occurrences:
+    # Labels are relative to each session's own checkout; folded child sessions can
+    # work in other checkouts, so files group by their resolved path instead.
+    for edit, patch, limitations, identity in occurrences:
         if key is not None:
             if edit["key"] != key:
                 continue
@@ -317,7 +319,7 @@ def read_changes(store, root_id, key=None, *, cancelled=None):
         used += size
         result["limitations"].extend(x for x in limitations if x not in result["limitations"])
         item = files.setdefault(
-            edit["file"],
+            identity,
             {
                 "file": edit["file"],
                 "status": edit["status"],
