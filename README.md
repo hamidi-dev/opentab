@@ -13,8 +13,8 @@ Runs locally, in your **terminal or web browser**. No account, no telemetry, and
 agents' history stays read-only.
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/49531f8f-606d-4dea-9918-6588e3c3e69e"><img src="https://github.com/user-attachments/assets/2580e2ae-05ee-414a-98a6-a7005131dbc5" alt="OpenTab — exploring spend trends, picking a day on the calendar, and drilling into sessions" width="900"></a>
-  <br><sub><b>Find the session behind the spike.</b> Explore the calendar and drill from a month into the work behind it. Anonymized demo data; click for the full-quality video.</sub>
+  <a href="https://github.com/user-attachments/assets/bd22fb0f-0a74-486b-a71e-2478ccf3b45d"><img src="https://github.com/user-attachments/assets/dbe3f6dc-83d0-467a-991e-274593a4059f" alt="OpenTab — every coding agent in one place, then one session tab by tab: overview, subagents, turns, tool calls, file changes and context" width="900"></a>
+  <br><sub><b>Follow one session. Then zoom out.</b> Walk one session from cost to subagents, tool calls, file changes and context, then every machine and the browser. Synthetic showcase data; click for the full 73-second video.</sub>
 </p>
 
 ## Try it on your own history
