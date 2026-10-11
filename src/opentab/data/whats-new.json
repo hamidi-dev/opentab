@@ -1,6 +1,32 @@
 {
   "releases": [
     {
+      "version": "1.31.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "See which Copilot client ran a session: CLI, desktop app, JetBrains or VS Code's Copilot CLI. Usage requires OpenTelemetry export."},
+            {"text": "See Copilot's recorded AI-credit charges as spend, including charges covered by your plan; calls without charges remain estimated."},
+            {"text": "Browse desktop child sessions under the session that created them, with their usage included and their own subagents preserved."}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "See estimated cache-expiry markers for GPT-5.6 and later, including Codex sessions."}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "Avoid counting VS Code extension exports again as Copilot CLI usage, and resolve dotted Claude model names to their published rates."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.31.0"
+    },
+    {
       "version": "1.30.0",
       "sections": [
         {
