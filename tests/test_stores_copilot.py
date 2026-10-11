@@ -421,7 +421,7 @@ def test_copilot_folds_desktop_child_sessions_into_their_coordinator():
             (1, "session", 0.03),  # "kid"; equal start times order children by id
             (2, "explore", 0.01),
         ]
-        assert sum(n["cost"] for n in nodes) == coord.total_cost
+        assert abs(sum(n["cost"] for n in nodes) - coord.total_cost) < 1e-12
         assert nodes[2]["title"] == "Stores line counts"  # the app's own title
         assert store.root_of("kid") == "coord" and store.root_of(nodes[3]["id"]) == "coord"
         timeline = store.message_timeline("coord")
