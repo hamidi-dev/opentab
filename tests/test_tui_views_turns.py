@@ -93,6 +93,33 @@ def test_turn_overview_returns_lines_headers_and_prompt_geometry_without_state()
     assert "extract it" in layout.lines[layout.cursor_lines[1]]
 
 
+def test_turn_markers_sit_on_the_side_of_the_prompt_where_they_happened():
+    # Turn 2 belongs to prompt 1's run, so its compaction happened during that prompt
+    # and is listed under it. Turn 3 opens prompt 2: that compaction came as the prompt
+    # was sent, so it stays above prompt 2's row.
+    layout = build_turns(
+        rows=_rows(),
+        costs=[1.0, 0.5, 2.0],
+        width=110,
+        compactions={1: (300_000, 60_000), 2: (310_000, 70_000)},
+        cache_events=(),
+        scoped=False,
+        glyphs=TABLE_GLYPHS,
+    )
+
+    def line_of(text):
+        return next(i for i, line in enumerate(layout.lines) if text in line)
+
+    first, second = layout.cursor_lines[0], layout.cursor_lines[1]
+    during, opening = line_of("before turn 2 "), line_of("before turn 3 ")
+    assert first < during < opening < second
+    assert "inspect the reader" in layout.lines[first]
+    assert "extract it" in layout.lines[second]
+    # The marker inside a prompt's run is indented under that prompt's row.
+    column = layout.lines[during].index("▼")
+    assert column > layout.lines[opening].index("▼")
+
+
 def test_prompt_drill_returns_token_spans_and_turn_row_geometry():
     rows = _rows()
     costs = [1.0, 0.5, 2.0]

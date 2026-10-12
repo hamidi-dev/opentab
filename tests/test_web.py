@@ -555,7 +555,9 @@ def test_web_turns_carry_the_context_size_and_mark_compactions():
     # NOT pushed into `body` (the per-group fold list): this table is folded to prompts by
     # default, so a marker inside a collapsed group would be a marker nobody sees.
     marker = next(ln for ln in table.splitlines() if "compact-row" in ln)
-    assert "rows.push(" in marker and "body.push" not in marker
+    assert "out.push(" in marker and "body.push" not in marker
+    assert "rows.push(...markers(opening, false))" in table
+    assert "during.forEach(i => rows.push(...markers(i, true)))" in table
 
     strip = js.split("function turnCostContextStrip(", 1)[1].split("\nfunction ", 1)[0]
     assert "const costs = turns.map(t => prompts ? t.cost : mCost(t));" in strip
@@ -1256,6 +1258,11 @@ assert.deepEqual(points().map(p => bars(p)[0].attrs.height), [26.25, 35, 8.75]);
 assert.ok(view.textContent.includes('context compacted before turn 2'));
 assert.ok(view.textContent.includes('cache expired'));
 assert.ok(view.textContent.includes('reasoning effort low to high'));
+// Turn 3 runs inside prompt 2, so its effort switch nests under that prompt's row;
+// the compaction on turn 2 opened prompt 2 and stays above it.
+const order = all(view, 'tr').map(r => r.className === 'prompt-row rowlink' ? 'P' : r.textContent.includes('compacted before turn 2') ? 'C' : r.textContent.includes('reasoning effort') ? 'E' : '').filter(Boolean).join('');
+assert.equal(order, 'PCPEP');
+assert.ok(all(view, 'tr').find(r => r.textContent.includes('reasoning effort')).className.includes('nested'));
 // Both SVG titles/descriptions and the actual pointer tooltip retain the values.
 points()[1].events.mouseenter();
 assert.equal(document.getElementById('tip').textContent, 'prompt 2\n$8.00');
@@ -2995,7 +3002,7 @@ def test_web_ships_cache_expiries_precomputed_rather_than_mirroring_the_rule():
     js = _js_source()
     # Drawn above its ▸ prompt header and OUTSIDE the collapsible group, like the ▼
     # compaction row: this table folds to prompts by default.
-    assert "class: 'expiry-row'" in js and "'❄ cache expired — '" in js
+    assert "cls('expiry-row')" in js and "'❄ cache expired — '" in js
     # The seam between the two halves above, which nothing else covers: EXTRAS is rebuilt
     # field by field on every drill-in, so a field the fetch handler forgets is served by
     # the API and silently never drawn. Caught exactly once, in a browser, with the API
