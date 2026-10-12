@@ -297,6 +297,7 @@ tr.compact-row td{color:var(--accent);font-size:11.5px;padding-top:5px;
   border-top:1px dashed color-mix(in srgb, var(--accent) 45%, transparent)}
 tr.expiry-row td{color:var(--bad);font-size:11.5px;padding-top:5px;
   border-top:1px dashed color-mix(in srgb, var(--bad) 45%, transparent)}
+tr.nested td{padding-left:46px}
 .turn-strip{margin:2px 0 14px;padding:8px 10px 5px;border:1px solid var(--line2);
   border-radius:5px;background:color-mix(in srgb,var(--panel2) 55%,transparent);overflow:hidden}
 .turn-strip svg{display:block;width:100%;height:auto;min-height:82px}
@@ -1925,22 +1926,28 @@ function turnsTable(turns, expiries) {
   const span = 8 + (hasCalls ? 1 : 0) + (hasAgents ? 1 : 0);
   const rows = [];
   let cum = 0;
+  // An event on a prompt's first turn happened as the prompt was sent and stays above
+  // its row; later ones happened during the prompt's run and nest under it.
+  const markers = (i, nested) => {
+    const out = [], cls = (base) => base + (nested ? ' nested' : '');
+    const c = comps.get(i);
+    if (c) out.push(h('tr', { class: cls('compact-row') }, h('td', { colspan: span },
+      '▼ context compacted before turn ' + (i + 1) + ' · ' + turns[i].time.slice(5, 16).replace('T', ' ')
+      + ' — ' + hTok(c[0]) + ' → ' + hTok(c[1]) + ' (~' + hTok(c[0] - c[1]) + ' freed)')));
+    const x = exp.get(i);
+    if (x) out.push(h('tr', { class: cls('expiry-row') }, h('td', { colspan: span },
+      '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
+      + ' bought again for ' + money(x.cost) + (x.ttlMin ? ' (guaranteed ' : ' (it lived ') + hDur(x.ttl) + ')')));
+    const e = effSw.get(i);
+    if (e) out.push(h('tr', { class: cls('expiry-row') }, h('td', { colspan: span },
+      '⚙ reasoning effort ' + e.detail + ' — the cache went with it, ' + hTok(e.repaid)
+      + ' bought again for ' + money(e.cost))));
+    return out;
+  };
   groups.forEach((g, n) => {
     cum += g.cost;
-    g.indices.forEach(i => {
-      const c = comps.get(i);
-      if (c) rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: span },
-        '▼ context compacted before turn ' + (i + 1) + ' · ' + turns[i].time.slice(5, 16).replace('T', ' ')
-        + ' — ' + hTok(c[0]) + ' → ' + hTok(c[1]) + ' (~' + hTok(c[0] - c[1]) + ' freed)')));
-      const x = exp.get(i);
-      if (x) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: span },
-        '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
-        + ' bought again for ' + money(x.cost) + (x.ttlMin ? ' (guaranteed ' : ' (it lived ') + hDur(x.ttl) + ')')));
-      const e = effSw.get(i);
-      if (e) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: span },
-        '⚙ reasoning effort ' + e.detail + ' — the cache went with it, ' + hTok(e.repaid)
-        + ' bought again for ' + money(e.cost))));
-    });
+    const [opening, ...during] = g.indices;
+    if (opening != null) rows.push(...markers(opening, false));
     rows.push(h('tr', { class: 'prompt-row rowlink', title: g.full || null,
         onclick: () => { TURN_DRILL = n; render(false); } },
       h('td', { class: 'r dim' }, String(n + 1)),
@@ -1955,6 +1962,7 @@ function turnsTable(turns, expiries) {
       h('td', { class: 'r' }, hTok(g.tokens)),
       h('td', { class: 'r' }, moneyCell(g.cost)),
       h('td', { class: 'r dim' }, money(cum))));
+    during.forEach(i => rows.push(...markers(i, true)));
   });
   return h('div', null,
     turnCostContextStrip(groups, { prompts: true }),

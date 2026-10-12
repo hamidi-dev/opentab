@@ -677,34 +677,45 @@ def build_turns(
         + (f" {'':<{bar_width}}" if bar_width else "")
         + (f" {'Cumulative':>{cumulative_width}}" if cumulative_width else "")
     )
+
+    def markers(index: int) -> list[str]:
+        lines = []
+        compaction = comps.get(index)
+        if compaction:
+            before, after = compaction
+            when = (rows[index].get("time") or "")[5:16]
+            lines.append(
+                f"▼ context compacted before turn {index + 1} · {when} — "
+                f"{human_tokens(before)} → {human_tokens(after)} "
+                f"(~{human_tokens(before - after)} freed)"
+            )
+        miss = late.get(index)
+        if miss:
+            lines.append(
+                f"❄ cache expired — {human_duration(miss.idle)} idle, "
+                f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
+                f"({'guaranteed' if miss.ttl_minimum else 'it lived'} {human_duration(miss.ttl)})"
+            )
+        effort = switched.get(index)
+        if effort:
+            lines.append(
+                f"⚙ reasoning effort {effort.detail} — the cache went with it, "
+                f"{human_tokens(effort.repaid)} bought again for {money(effort.cost)}"
+            )
+        return lines
+
+    # An event on a prompt's first turn happened as that prompt was sent, so it stays
+    # above the row. Later ones happened during the prompt's run and sit under it,
+    # indented to the Time column, instead of reading as if they preceded the prompt.
+    nested = " " * (index_width + 3)
     cumulative = 0.0
     body: list[str] = []
     cursor_rows = []
     for number, group in enumerate(groups, start=1):
         cumulative += group["cost"]
-        for index in group["indices"]:
-            compaction = comps.get(index)
-            if compaction:
-                before, after = compaction
-                when = (rows[index].get("time") or "")[5:16]
-                body.append(
-                    f"▼ context compacted before turn {index + 1} · {when} — "
-                    f"{human_tokens(before)} → {human_tokens(after)} "
-                    f"(~{human_tokens(before - after)} freed)"
-                )
-            miss = late.get(index)
-            if miss:
-                body.append(
-                    f"❄ cache expired — {human_duration(miss.idle)} idle, "
-                    f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
-                    f"({'guaranteed' if miss.ttl_minimum else 'it lived'} {human_duration(miss.ttl)})"
-                )
-            effort = switched.get(index)
-            if effort:
-                body.append(
-                    f"⚙ reasoning effort {effort.detail} — the cache went with it, "
-                    f"{human_tokens(effort.repaid)} bought again for {money(effort.cost)}"
-                )
+        opening, *during = group["indices"] or [None]
+        if opening is not None:
+            body += markers(opening)
         share = group["cached"]
         cached = "-" if share is None else f"{share * 100:.0f}%"
         title = " ".join((group["title"] or "").split()) or "(no preceding prompt)"
@@ -728,6 +739,8 @@ def build_turns(
             + (f" {cost_bar(group['cost'], peak, bar_width)}" if bar_width else "")
             + (f" {cumulative_label:>{cumulative_width}}" if cumulative_width else "")
         )
+        for index in during:
+            body += [nested + line for line in markers(index)]
     total_row = None
     if len(groups) > 1:
         total_row = (
