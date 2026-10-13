@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Try OpenTab</title>
+<meta name="description" content="The real OpenTab terminal app, running in your browser on a synthetic year of coding-agent history.">
+<link rel="canonical" href="https://opentab.hamidi.dev/try/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="OpenTab">
+<meta property="og:title" content="Try OpenTab in your browser">
+<meta property="og:description" content="The real OpenTab terminal app, running in your browser on a synthetic year of coding-agent history.">
+<meta property="og:url" content="https://opentab.hamidi.dev/try/">
+<meta property="og:image" content="https://opentab.hamidi.dev/media/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="OpenTab: find the session behind the spike, next to the OpenTab terminal app">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="vendor/xterm/xterm.css">
+<style>
+:root { --bg: #1a1b26; --panel: #1f2335; --line: #414868; --ink: #c0caf5; --dim: #737aa2; --accent: #7aa2f7; --good: #9ece6a; --bad: #f7768e; color-scheme: dark; }
+* { box-sizing: border-box; }
+/* Never scroll: on Windows a scrollbar takes layout space, so a pixel of overflow makes the
+   terminal refit, the scrollbar vanish and the refit run again, endlessly. */
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); font: 14px/1.5 ui-monospace, Menlo, "DejaVu Sans Mono", Consolas, monospace; }
+body { display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-bottom: 1px solid #2a2e42; font-size: 13px; flex-wrap: wrap; }
+header b { color: var(--ink); }
+header .chip { background: var(--accent); color: var(--bg); padding: 0 6px; border-radius: 3px; font-weight: 700; }
+header .hint { color: var(--dim); }
+header .hint kbd { color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font: inherit; }
+header nav { margin-left: auto; display: flex; gap: 16px; }
+header nav a { color: var(--dim); text-decoration: none; }
+header nav a:hover { color: var(--ink); }
+#term { flex: 1; min-height: 0; padding: 6px 0 0 8px; overflow: hidden; }
+#term .xterm { height: 100%; }
+.loader { position: fixed; inset: 0; top: 41px; display: flex; align-items: center; justify-content: center; background: var(--bg); z-index: 2; }
+.loader .box { width: min(520px, 100% - 32px); }
+.loader h1 { font-size: 18px; margin: 0 0 6px; font-weight: 700; }
+.loader p { color: var(--dim); margin: 0 0 18px; }
+.loader .bar { height: 6px; background: #292e42; border-radius: 3px; overflow: hidden; }
+.loader .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #d4910f, #e2582b, #d9579b, #3f8ef0, #1fa774); transition: width .3s; }
+.loader .step { margin-top: 10px; color: var(--ink); font-size: 13px; min-height: 1.5em; }
+.loader .err a { color: var(--accent); }
+.loader .err code { color: var(--ink); }
+.loader .err { color: var(--bad); white-space: pre-wrap; font-size: 12px; margin-top: 14px; max-height: 40vh; overflow: auto; }
+.loader.done { display: none; }
+/* ?embed: framed by a landing page, which supplies its own chrome */
+.embed header { display: none; }
+.embed .loader { top: 0; }
+.embed #term { padding: 4px 0 0 6px; }
+@media (max-width: 640px) { header .hint { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <b>OpenTab</b><span class="chip">live</span>
+  <span class="hint">The real app, running in your browser. <kbd>?</kbd> help · <kbd>Enter</kbd> in · <kbd>Esc</kbd> out · mouse works · synthetic data</span>
+  <nav><a href="../">Home</a><a href="../docs/">Docs</a><a href="https://github.com/hamidi-dev/opentab">GitHub</a></nav>
+</header>
+<div id="term" aria-label="OpenTab terminal"></div>
+<div class="loader" data-loader>
+  <div class="box">
+    <h1>Starting OpenTab in your browser</h1>
+    <p>Python runs locally in this tab via WebAssembly. Nothing is sent anywhere, and the history is invented.</p>
+    <div class="bar"><i data-bar></i></div>
+    <div class="step" data-step>Loading…</div>
+    <div class="err" data-err></div>
+  </div>
+</div>
+<script type="module" src="main.mjs"></script>
+</body>
+</html>
