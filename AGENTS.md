@@ -20,6 +20,7 @@ relevant topic, not the entire documentation tree:
 | HTML payload, browser state, live server | [Web browser](docs/web.md) |
 | Fleet summaries, pulls, remote sessions | [Multiple machines](docs/machines.md) |
 | Environment diagnosis, portability | [Troubleshooting](docs/troubleshooting.md); [Windows/WSL](docs/windows.md) |
+| The website, the in-browser app (`site/`) | [Website](site/README.md) |
 
 ## Non-negotiable constraints
 
