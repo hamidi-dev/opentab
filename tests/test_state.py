@@ -746,10 +746,10 @@ def test_diff_layout_restore_ignores_missing_and_invalid_preferences():
     for value in (None, "false", "side-by-side", 1, [], {}):
         app = app_with([])
         ot.apply_state(app, app.args, {"change_side_by_side": value})
-        assert not app.change_side_by_side
+        assert app.change_side_by_side
     app = app_with([])
     ot.apply_state(app, app.args, {})
-    assert not app.change_side_by_side
+    assert app.change_side_by_side
 
 
 def test_ignored_projects_are_persisted_in_state():
