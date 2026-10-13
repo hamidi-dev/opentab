@@ -19,7 +19,7 @@ from opentab.stores.antigravity import AntigravityStore, default_antigravity_dir
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore, codex_archive_dirs
-from opentab.stores.combined import CombinedStore
+from opentab.stores.combined import CombinedStore, load_workflows
 from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
 from opentab.stores.gemini import GeminiStore, default_gemini_dir
@@ -508,7 +508,15 @@ def _wrap_cache(store, key: str, args: argparse.Namespace):
         debug.event("cache.bypass", source=key, reason="unsupported")
         return store
     root = getattr(args, _PATH_SLOT.get(key, ""), "") or ""
-    return CachedStore(store, f"{key}|{root}", args)
+    cached = CachedStore(store, f"{key}|{root}", args)
+    # How a loader process rebuilds this exact leaf; picklable by reference.
+    cached.rebuild = (build_leaf, args, key)
+    return cached
+
+
+def build_leaf(args: argparse.Namespace, key: str):
+    """Build one cache-wrapped backend, as a loader process does."""
+    return make_store(args, key)[0]
 
 
 def _fleet_warning(remote, remotes, hostname: str, pulled: bool = False, live: bool = True) -> str:
@@ -592,7 +600,7 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         hostname = util.local_machine_name()
         local_subs = [make_store(args, k)[0] for k in available_sources(args)]
         # Live rows win duplicate ids so totals and drill-in do not use stale summaries.
-        local_ids = {w.id for sub in local_subs for w in sub.workflows()}
+        local_ids = {w.id for rows in load_workflows(local_subs) for w in rows}
         remote = RemoteStore(remotes, args, exclude_ids=local_ids)
         subs = [MachineTaggedStore(sub, hostname) for sub in local_subs]
         if remote.machines:

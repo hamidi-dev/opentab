@@ -1114,3 +1114,68 @@ def test_cached_store_incremental_flag_is_per_call_not_sticky():
                 os.environ.pop("XDG_CACHE_HOME", None)
             else:
                 os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_full_parse_bytes_counts_only_work_that_would_reparse_everything():
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            files = _splice_env(tmp, {"a.jsonl": {"s1": 100}, "b.jsonl": {"s2": 200}})
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            a = next(p for p in files if p.endswith("a.jsonl"))
+            b = next(p for p in files if p.endswith("b.jsonl"))
+
+            cold = ot.CachedStore(_SpliceBackend(files), "fake|probe", args)
+            assert cold.full_parse_bytes() == os.path.getsize(a) + os.path.getsize(b)
+            cold.workflows()
+            cold.model_breakdown()
+            assert cold.full_parse_bytes() == 0  # its own fresh rows
+
+            assert ot.CachedStore(_SpliceBackend(files), "fake|probe", args).full_parse_bytes() == 0
+
+            files[a] = {"s1": 150}
+            _touch(a, "more")
+            back = _SpliceBackend(files)
+            spliced = ot.CachedStore(back, "fake|probe", args)
+            assert spliced.full_parse_bytes() == 0  # a splice stays in-process
+            assert [(w.id, w.total_tokens) for w in spliced.workflows()] == [
+                ("s2", 200),
+                ("s1", 150),
+            ]
+            assert back.subset_calls == [[a]] and back.full_parses == 0
+            spliced.model_breakdown()
+
+            os.unlink(b)
+            del files[b]
+            gone = ot.CachedStore(_SpliceBackend(files), "fake|probe", args)
+            assert gone.full_parse_bytes() == os.path.getsize(a)  # removal refuses a splice
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_load_from_disk_adopts_a_cache_another_writer_finished():
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            files = _splice_env(tmp, {"a.jsonl": {"s1": 100}, "b.jsonl": {"s2": 200}})
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            back = _SpliceBackend(files)
+            waiting = ot.CachedStore(back, "fake|adopt", args)  # opened before any cache
+            writer = ot.CachedStore(_SpliceBackend(files), "fake|adopt", args)
+            writer.workflows()
+            writer.model_breakdown()
+
+            waiting.load_from_disk()
+            assert [(w.id, w.total_tokens) for w in waiting.workflows()] == [
+                ("s2", 200),
+                ("s1", 100),
+            ]
+            assert waiting.served_from_cache is True and back.full_parses == 0
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
