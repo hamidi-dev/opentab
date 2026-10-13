@@ -29,6 +29,10 @@ mkdir -p "$dist"
 rsync -aL --exclude=.DS_Store --exclude=/tools/ --exclude=/dist/ --exclude=/README.md \
   "$site/" "$dist/"
 
+# Everything published is public: files saved owner-only (screenshots, detail exports)
+# would otherwise be unreadable to the web server.
+chmod -R u+rwX,go+rX "$dist"
+
 # A macOS home path, not a placeholder such as /mnt/c/Users/<you> in the release notes.
 home_path='(^|[^A-Za-z])/Users/'
 if grep -rlqE "$home_path" "$dist" --include='*.html' --include='*.json'; then

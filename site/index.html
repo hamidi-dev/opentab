@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenTab</title>
 <meta name="description" content="See where your coding agents spent their tokens, time, and money. Local, read-only, in your terminal or browser.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="canonical" href="https://opentab.hamidi.dev/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="OpenTab">
@@ -44,6 +47,13 @@
   --r: 14px;
   color-scheme: dark;
 }
+/* Light theme, shared with the docs (◐ in the nav; remembered as "ot-theme"). The app
+   window stays dark in both: it shows a terminal. */
+:root[data-theme="light"] {
+  --ink: #f6f6fb; --ink-2: #ecedf6; --ink-3: #e1e3f1; --line: #d3d6ea; --frame: #6b74b8;
+  --text: #1b1e33; --dim: #5d6286; --lav: #4a55c8; --cost: #3c7d12; --tok: #c0304f;
+  color-scheme: light;
+}
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
@@ -74,29 +84,115 @@ nav.top {
 }
 nav.top .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
 .mark { display: flex; align-items: center; gap: 10px; font: 700 15px var(--mono); color: var(--text); text-decoration: none; }
-.mark .chip { background: var(--lav); color: var(--ink); padding: 1px 7px; border-radius: 3px; }
 nav.top .links { display: flex; gap: 22px; margin-left: auto; font-size: 15px; }
 nav.top .links a { color: var(--dim); text-decoration: none; }
 nav.top .links a:hover { color: var(--text); }
+.theme-btn { all: unset; cursor: pointer; color: var(--dim); font: 15px var(--mono); padding: 2px 8px; border-radius: 6px; }
+.theme-btn:hover { color: var(--text); background: var(--ink-3); }
+.theme-btn:focus-visible { outline: 2px solid var(--lav); }
 @media (max-width: 640px) { nav.top .links a.opt { display: none; } }
 
 /* ── hero ────────────────────────────────────────── */
-.hero { position: relative; padding: 56px 0 40px; text-align: center; }
-.hero .eyebrow { margin: 0 0 18px; font: 500 15px var(--mono); color: var(--lav); }
-.hero .try { margin: 14px 0 0; font: 14px var(--mono); color: var(--dim); }
+.hero { position: relative; padding: 60px 0 40px; text-align: center; }
+.hero-intro { display: grid; grid-template-columns: .85fr 1.15fr; align-items: center; gap: 48px; text-align: left; }
+.hero-intro > * { min-width: 0; }
+.hero .eyebrow { margin: 0 0 24px; font: 500 12px var(--mono); color: var(--lav); letter-spacing: .07em; text-transform: uppercase; }
 .hero h1 {
-  margin: 0 auto; max-width: 20ch; text-wrap: balance;
-  font-size: clamp(44px, 6.6vw, 88px); line-height: 1; letter-spacing: -.02em;
-  font-weight: 760; font-variation-settings: "opsz" 96, "wdth" 92;
+  margin: 0; max-width: 13ch; text-wrap: balance;
+  font-size: clamp(44px, 4.5vw, 64px); line-height: 1.08; letter-spacing: -.02em;
+  font-weight: 650; font-variation-settings: "opsz" 48, "wdth" 100;
 }
-.hero h1 .bar {
-  display: block; height: .12em; margin: .22em auto 0; width: 0; border-radius: 99px;
-  background: var(--spectrum);
-  animation: fill 1.4s cubic-bezier(.2,.8,.2,1) .25s forwards;
-}
-@keyframes fill { to { width: 62%; } }
-.hero .lede { max-width: 54ch; margin: 22px auto 0; color: var(--dim); font-size: 19px; }
+.hero h1 em { font-style: normal; color: var(--lav); }
+.hero .lede { max-width: 39ch; margin: 24px 0 0; color: var(--dim); font-size: 18px; }
 .hero .lede b { color: var(--text); font-weight: 600; }
+.hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 22px; margin-top: 28px; }
+.hero-primary { display: inline-flex; align-items: center; gap: 24px; padding: 13px 19px; background: var(--lav); color: var(--ink); text-decoration: none; border-radius: 9px; font-weight: 700; }
+.hero-primary:hover { filter: brightness(1.1); }
+.hero-secondary { font-size: 15px; text-underline-offset: 4px; }
+.hero-trust { margin: 22px 0 0; color: var(--dim); font: 11px/1.8 var(--mono); }
+
+/* A small, inspectable story. All numbers come from one synthetic report. */
+.investigation { position: relative; border: 1px solid var(--line); border-radius: 16px; background: var(--ink-2); box-shadow: 0 28px 70px -40px #0009; overflow: hidden; }
+.investigation::before { content: ""; display: block; height: 3px; background: var(--spectrum); }
+.investigation [hidden] { display: none; }
+.story-topline { display: flex; justify-content: space-between; gap: 12px; padding: 17px 22px 14px; font: 10px var(--mono); color: var(--dim); letter-spacing: .07em; text-transform: uppercase; }
+.story-topline span:first-child { color: var(--lav); }
+.story-tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 0 14px; border-bottom: 1px solid var(--line); gap: 6px; }
+.story-tabs button { appearance: none; border: 0; border-bottom: 2px solid transparent; background: none; padding: 13px 5px; color: var(--dim); cursor: pointer; font: 12px var(--mono); }
+.story-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--lav); }
+.story-tabs button span { color: var(--frame); margin-right: 5px; }
+.story-panel { padding: 25px 26px 20px; min-height: 415px; animation: story-in .25s ease-out; }
+.story-panel[hidden] { display: none; }
+@keyframes story-in { from { opacity: .3; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.story-label { margin: 0 0 8px; font: 11px var(--mono); color: var(--dim); }
+.story-headline { display: flex; gap: 14px; align-items: baseline; margin-bottom: 14px; }
+.story-number { font: 600 42px/1.15 var(--mono); letter-spacing: -.065em; color: var(--text); }
+.story-headline small { color: var(--dim); font-size: 13px; }
+.story-panel h3 { margin: 0 0 16px; font-size: 22px; line-height: 1.25; letter-spacing: -.02em; }
+.story-heatmap { display: grid; grid-template-rows: repeat(7, 1fr); grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; height: 77px; margin-top: 18px; }
+.story-heatmap i { display: block; border-radius: 1px; background: color-mix(in srgb, var(--lav) var(--heat), var(--ink-3)); }
+.story-heatmap i.selected { background: var(--t-cache-write); outline: 2px solid var(--t-cache-write); outline-offset: 2px; z-index: 1; }
+.story-axis { display: flex; justify-content: space-between; margin-top: 9px; font: 10px var(--mono); color: var(--dim); }
+.story-axis .selected-day { color: var(--t-cache-write); }
+.story-session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 11px 0; color: var(--dim); font: 12px/1.4 var(--display); }
+button.story-session { cursor: pointer; }
+.story-session strong { font: 12px var(--mono); color: var(--text); }
+.story-session.featured { margin-top: 16px; border-radius: 7px; padding: 12px; background: var(--ink-3); color: var(--text); border: 1px solid var(--line); }
+.story-session.featured:hover { border-color: var(--lav); }
+.story-session.featured span::before { content: "↳ "; color: var(--lav); }
+.story-caption { margin: 12px 0 0; font-size: 13px; color: var(--dim); }
+.story-stats { display: flex; flex-wrap: wrap; gap: 6px 17px; font: 11px var(--mono); color: var(--dim); margin: -4px 0 22px; }
+.story-stats b { color: var(--text); font-weight: 500; }
+.story-node { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 10px 0 14px; margin-left: calc(var(--depth) * 16px); font-size: 13px; line-height: 1.35; }
+.story-node .node-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.story-node .node-title::before { content: "↳ "; color: var(--dim); }
+.story-node.root-node .node-title::before { content: "● "; color: var(--lav); }
+.story-node .node-cost { color: var(--text); font: 11px var(--mono); }
+.story-node::after { content: ""; position: absolute; bottom: 4px; left: 0; width: var(--share); height: 3px; border-radius: 2px; background: var(--node-color); }
+.story-prompt { margin: 0 0 16px; padding: 12px 15px; border-left: 2px solid var(--lav); background: var(--ink-3); font-size: 14px; line-height: 1.5; }
+.story-turns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin: 12px 0 20px; }
+.story-turn { min-width: 0; }
+.story-turn small { display: block; color: var(--dim); font: 10px var(--mono); margin-bottom: 6px; }
+.story-turn code { display: block; color: var(--lav); font-size: 11px; white-space: nowrap; }
+.story-context { display: block; width: 100%; height: 70px; overflow: visible; }
+.story-context .context-fill { fill: color-mix(in srgb, var(--t-input) 12%, transparent); }
+.story-context polyline { fill: none; stroke: var(--t-input); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.story-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 22px; border-top: 1px solid var(--line); }
+.story-bottom p { margin: 0; color: var(--dim); font: 10px var(--mono); }
+.story-next { appearance: none; cursor: pointer; background: none; border: 0; color: var(--lav); font: 600 12px var(--mono); padding: 4px 0; text-decoration: none; }
+.story-loading { padding: 60px 26px; color: var(--dim); }
+.hero-install { display: flex; align-items: center; justify-content: space-between; gap: 40px; margin-top: 52px; padding-top: 28px; border-top: 1px solid var(--line); text-align: left; scroll-margin-top: 85px; }
+.hero-install > p { flex: 1; color: var(--dim); font-size: 15px; text-wrap: pretty; }
+.hero-install > p span { display: block; }
+.hero-install > p strong { display: block; color: var(--text); font-size: 20px; margin-bottom: 5px; }
+.hero-install .install { margin: 0; }
+.stage { scroll-margin-top: 85px; }
+@media (max-width: 1000px) {
+  .hero-intro { gap: 28px; grid-template-columns: .8fr 1.2fr; }
+  .hero h1 { font-size: 52px; }
+  .story-panel { padding-inline: 20px; }
+}
+@media (max-width: 760px) {
+  .hero { padding-top: 34px; }
+  .hero-intro { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .hero h1 { font-size: clamp(42px, 8vw, 60px); max-width: 18ch; }
+  .hero .eyebrow { margin-bottom: 16px; font-size: 10px; }
+  .hero .lede { max-width: 48ch; margin-top: 18px; font-size: 16px; }
+  .hero-trust { margin-top: 15px; }
+  .story-panel { min-height: 480px; padding-inline: 18px; }
+  .story-node .node-title { white-space: normal; }
+  .story-topline, .story-bottom { padding-inline: 18px; }
+  .story-heatmap { gap: 2px; height: 56px; }
+  .story-number { font-size: 36px; }
+  .story-headline { gap: 10px; }
+  .story-headline small { font-size: 11px; }
+  .story-tabs button { font-size: 10px; }
+  .story-bottom p { font-size: 9px; }
+  .story-bottom { min-height: 78px; }
+  .story-next { font-size: 10px; white-space: nowrap; flex-shrink: 0; }
+  .hero-install { display: block; margin-top: 32px; padding-top: 10px; }
+  .hero-install .install { margin-top: 22px; }
+}
 
 .install { margin: 34px auto 0; width: min(560px, 100%); text-align: left; }
 .install .tabs { display: flex; gap: 2px; font: 13px var(--mono); }
@@ -169,7 +265,7 @@ nav.top .links a:hover { color: var(--text); }
 }
 .launch button:hover { transform: translateY(-2px); }
 .launch button:focus-visible { outline: 2px solid var(--text); outline-offset: 4px; }
-.launch p { margin: 0; font: 13px var(--mono); color: var(--text); text-shadow: 0 1px 8px #000; max-width: 46ch; }
+.launch p { margin: 0; font: 13px var(--mono); color: #e6e8f7; text-shadow: 0 1px 8px #000; max-width: 46ch; }
 .launch p a { color: var(--lav); }
 .window .bar .full { color: var(--dim); text-decoration: none; }
 .window .bar .full:hover { color: var(--text); }
@@ -177,15 +273,8 @@ nav.top .links a:hover { color: var(--text); }
   position: relative; z-index: 1; margin-top: 16px; text-align: center; font: 13px var(--mono); color: var(--dim);
 }
 
-/* ── marquee of harnesses ────────────────────────── */
-.marquee { margin-top: 92px; border-block: 1px solid var(--line); overflow: hidden; padding: 18px 0; }
-.marquee .track { display: flex; gap: 56px; width: max-content; animation: slide 42s linear infinite; }
-.marquee span { font: 600 26px var(--display); font-variation-settings: "wdth" 80; color: var(--dim); white-space: nowrap; }
-.marquee span::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 56px; border-radius: 2px; background: var(--line); vertical-align: middle; }
-@keyframes slide { to { transform: translateX(-50%); } }
-
 /* ── sections ────────────────────────────────────── */
-section.block { padding: 120px 0 0; }
+section.block { padding: 80px 0 0; }
 .kicker { font: 500 14px var(--mono); color: var(--lav); margin: 0 0 14px; }
 h2 {
   margin: 0; font-size: clamp(32px, 4.4vw, 54px); line-height: 1.04; letter-spacing: -.015em;
@@ -193,41 +282,30 @@ h2 {
 }
 .sub { color: var(--dim); max-width: 60ch; margin: 18px 0 0; font-size: 18px; }
 
-/* drill-down scrollytelling */
-.drill { display: grid; grid-template-columns: 1fr 1.35fr; gap: 56px; margin-top: 56px; }
-.steps { list-style: none; margin: 0; padding: 0; counter-reset: s; }
-.steps li {
-  counter-increment: s; padding: 26vh 0 26vh 0; opacity: .35; transition: opacity .3s;
-}
-.steps li:first-child { padding-top: 6vh; }
-.steps li.on { opacity: 1; }
-.steps li h3 { margin: 0 0 8px; font-size: 26px; letter-spacing: -.01em; font-weight: 700; }
-.steps li h3::before { content: counter(s) " "; font: 500 14px var(--mono); color: var(--lav); margin-right: 8px; vertical-align: 4px; }
-.steps li p { margin: 0; color: var(--dim); max-width: 42ch; }
-.shots { position: sticky; top: 90px; align-self: start; aspect-ratio: 4 / 3; }
-.shots img {
-  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--ink-2);
-  border-radius: var(--r); border: 1px solid var(--line);
-  opacity: 0; transform: scale(.98); transition: opacity .45s, transform .45s;
-}
-.shots img.on { opacity: 1; transform: none; }
-@media (max-width: 860px) {
-  .drill { grid-template-columns: 1fr; gap: 24px; }
-  .shots { position: relative; top: 0; order: -1; }
-  .steps li { padding: 18px 0; opacity: 1; }
-}
+/* Select a question, then inspect the full screen. */
+.demo-intro { position: relative; z-index: 1; text-align: left; margin-bottom: 28px; }
+.demo-intro h2 { max-width: 24ch; }
+.feature-views { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 28px; margin-top: 32px; align-items: start; }
+.feature-tabs { display: grid; gap: 8px; }
+.feature-tabs button { text-align: left; border: 1px solid var(--line); border-radius: 9px; background: none; color: var(--dim); padding: 16px; font: 600 16px var(--display); cursor: pointer; }
+.feature-tabs button[aria-selected="true"] { color: var(--text); background: var(--ink-3); border-color: var(--frame); }
+.feature-panel { min-width: 0; }
+.feature-panel[hidden] { display: none; }
+.feature-panel figure { margin: 0; }
+/* One 4:3 frame for every view: wider screenshots letterbox in the screenshots' own background instead of resizing the panel. */
+.feature-panel img { display: block; width: 100%; aspect-ratio: 4 / 3; height: auto; object-fit: contain; border: 1px solid var(--line); border-radius: var(--r); background: #15161f; }
+.feature-panel figcaption { margin-top: 16px; color: var(--dim); max-width: 68ch; }
+.feature-panel figcaption strong { color: var(--text); }
+.feature-panel figcaption a { display: inline-block; margin-top: 8px; }
 
 /* token economics, interactive */
-.econ { margin-top: 48px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r); padding: 32px; }
+.econ { margin-top: 28px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r); padding: 32px; }
 .econ .row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: 18px; margin: 14px 0; }
 .econ .row > span { font: 13px var(--mono); color: var(--dim); }
-.stack { display: flex; height: 44px; border-radius: 8px; overflow: hidden; gap: 2px; }
-.stack div {
-  position: relative; min-width: 4px; transition: flex-basis .9s cubic-bezier(.2,.8,.2,1), opacity .2s, filter .2s;
-  display: flex; align-items: center; padding-left: 10px; font: 700 13px var(--mono); color: #0d0f1ecc; overflow: hidden; white-space: nowrap;
-  cursor: pointer;
-}
-.econ.focus .stack div:not(.hot) { opacity: .22; filter: saturate(.3); }
+.stack { display: flex; height: 44px; border-radius: 8px; overflow: hidden; }
+.stack button { appearance: none; border: 0; padding: 0; min-width: 0; flex-shrink: 0; font: 700 12px var(--mono); color: #0d0f1e; overflow: hidden; white-space: nowrap; cursor: pointer; transition: opacity .2s; }
+.stack button:focus-visible { outline-offset: -3px; outline-color: #fff; }
+.stack button.hot { box-shadow: inset 0 -3px 0 #ffffffb0; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 10px; margin-top: 22px; }
 .legend button {
   all: unset; cursor: pointer; font: 13px var(--mono); color: var(--text);
@@ -236,52 +314,37 @@ h2 {
 }
 .legend button i { width: 10px; height: 10px; border-radius: 3px; }
 .legend button.hot { border-color: var(--frame); background: var(--ink-3); }
+.legend button:focus-visible { outline: 2px solid var(--lav); outline-offset: 3px; }
 .econ .readout { margin-top: 22px; min-height: 3.4em; color: var(--dim); max-width: 70ch; }
 .econ .readout b { color: var(--text); }
+.econ .totals { margin: 0 0 24px; font: 14px/1.8 var(--mono); color: var(--text); }
+.econ .basis { margin: 18px 0 0; font-size: 14px; color: var(--dim); }
 @media (max-width: 640px) {
   .econ { padding: 20px; }
   .econ .row { grid-template-columns: 1fr; gap: 6px; }
 }
 
-/* pain → fix pairs */
-.pairs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 48px; }
-.pair { border-top: 2px solid var(--line); padding-top: 22px; }
-.pair q { display: block; font-size: 22px; line-height: 1.25; font-weight: 650; quotes: "“" "”"; }
-.pair p { color: var(--dim); margin: 12px 0 0; }
-.pair:nth-child(1) { border-color: var(--t-cache-read); }
-.pair:nth-child(2) { border-color: var(--t-cache-write); }
-.pair:nth-child(3) { border-color: var(--t-input); }
-@media (max-width: 860px) { .pairs { grid-template-columns: 1fr; } }
-
-/* harness matrix */
-.matrix { margin-top: 44px; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); }
-.matrix table { width: 100%; border-collapse: collapse; font-size: 15px; min-width: 720px; }
-.matrix th, .matrix td { padding: 11px 16px; text-align: left; border-bottom: 1px solid var(--line); }
-.matrix thead th { font: 500 12px var(--mono); color: var(--dim); background: var(--ink-2); position: sticky; top: 0; }
-.matrix td:not(:first-child):not(:nth-child(2)), .matrix th:not(:first-child):not(:nth-child(2)) { text-align: center; }
-.matrix tbody tr:hover { background: var(--ink-2); }
-.matrix td.y { color: var(--cost); }
-.matrix td.n { color: var(--line); }
-.matrix td:nth-child(2) { color: var(--dim); font-size: 14px; }
-.matrix tr:last-child td { border-bottom: 0; }
-
-/* three frontends */
-.fronts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; margin-top: 48px; border-radius: var(--r); overflow: hidden; }
-.front { background: var(--ink-2); padding: 28px; }
-.front h3 { margin: 0; font-size: 24px; }
-.front p { color: var(--dim); margin: 10px 0 18px; }
-.front pre { margin: 0; font-size: 13px; color: var(--lav); white-space: pre-wrap; }
-.front pre span { color: var(--dim); }
-@media (max-width: 860px) { .fronts { grid-template-columns: 1fr; } }
-
-/* promise strip */
-.promise { margin-top: 120px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
-.promise div { font-size: 28px; font-weight: 700; line-height: 1.15; letter-spacing: -.01em; }
-.promise small { display: block; font-size: 16px; font-weight: 400; color: var(--dim); margin-top: 10px; letter-spacing: 0; line-height: 1.5; }
-@media (max-width: 860px) { .promise { grid-template-columns: 1fr; } }
+.tool-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; padding: 0; margin: 28px 0 0; list-style: none; }
+.tool-list li { padding: 16px 18px; background: var(--ink-2); font-size: 16px; }
+.workflow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 28px; }
+.workflow article { min-width: 0; padding: 26px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r); }
+.workflow h3 { margin: 0; font-size: 23px; }
+.workflow p { color: var(--dim); margin: 12px 0 18px; }
+.workflow .command { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+.workflow .command code { min-width: 0; flex: 1; overflow-wrap: anywhere; color: var(--lav); font-size: 12px; }
+.workflow .copy { flex-shrink: 0; }
+@media (max-width: 760px) {
+  section.block { padding-top: 56px; }
+  .feature-views { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .feature-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .feature-tabs button { padding: 12px 7px; text-align: center; font-size: 14px; }
+  .tool-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workflow { grid-template-columns: minmax(0, 1fr); }
+  .workflow article { padding: 22px; }
+}
 
 /* closing */
-.closing { margin-top: 140px; padding: 90px 0 100px; text-align: center; position: relative; overflow: hidden; border-top: 1px solid var(--line); }
+.closing { margin-top: 80px; padding: 64px 0 72px; text-align: center; position: relative; overflow: hidden; border-top: 1px solid var(--line); }
 .closing::before {
   content: ""; position: absolute; left: 50%; top: 0; width: 70%; height: 3px; transform: translateX(-50%);
   background: var(--spectrum); filter: blur(.5px);
@@ -294,31 +357,56 @@ footer a { color: var(--dim); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
-  .hero h1 .bar { width: 62%; }
+  html { scroll-behavior: auto; }
 }
 </style>
+<script>
+try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-docs-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+</script>
 </head>
 <body>
 
 <nav class="top">
   <div class="wrap">
-    <a class="mark" href="#">OpenTab <span class="chip">all</span></a>
+    <a class="mark" href="#"><img src="favicon.svg" alt="" width="22" height="22">OpenTab</a>
     <div class="links">
       <a href="docs/">Docs</a>
       <a class="opt" href="#tools">Tools</a>
       <a class="opt" href="docs/#/changelog">Changelog</a>
       <a href="https://github.com/hamidi-dev/opentab">GitHub</a>
+      <button class="theme-btn" type="button" data-theme-toggle aria-label="Switch light and dark">◐</button>
     </div>
   </div>
 </nav>
 
 <header class="hero">
-  <div class="wrap">
-    <p class="eyebrow">Your agents keep a tab. Open it.</p>
-    <h1>Find the session behind the spike.<span class="bar" aria-hidden="true"></span></h1>
-    <p class="lede">Explore the local history Claude Code, Codex, Copilot and other coding tools already keep. Follow <b>tokens, time and money</b> into projects, sessions and recorded tool calls. Runs locally. No account or telemetry. Never changes your agents' records.</p>
-    <p class="try">Try it before you install: <a href="#stage">start the real app or open the browser report below</a>.</p>
-
+  <div class="wrap hero-intro">
+    <div class="hero-copy">
+      <p class="eyebrow">Your agents keep a tab. Open it.</p>
+      <h1>Your agent ran for an hour.<br><em>What actually happened?</em></h1>
+      <p class="lede">Follow <b>tokens, cost and context</b> down to the prompts, subagents and tool calls behind them. Across Claude Code, Codex, Copilot and more.</p>
+      <div class="hero-actions">
+        <a class="hero-primary" href="report.html#/s/ses_0a9f3c2e71b4d58e6f20c1a7b9" data-story-open>Explore this session <span aria-hidden="true">↗</span></a>
+        <a class="hero-secondary" href="#install">Install OpenTab</a>
+      </div>
+      <p class="hero-trust">Local &amp; read-only · No account · No telemetry</p>
+    </div>
+    <div class="investigation" aria-label="Follow a session from cost to recorded work" data-story>
+      <div class="story-topline"><span>A number → the work behind it</span><span>Synthetic demo</span></div>
+      <div class="story-tabs" role="tablist" aria-label="Explore the example" hidden>
+        <button id="story-tab-0" type="button" role="tab" aria-controls="story-panel-0" aria-selected="true" tabindex="0" data-story-step="0"><span>01</span> The spike</button>
+        <button id="story-tab-1" type="button" role="tab" aria-controls="story-panel-1" aria-selected="false" tabindex="-1" data-story-step="1"><span>02</span> The session</button>
+        <button id="story-tab-2" type="button" role="tab" aria-controls="story-panel-2" aria-selected="false" tabindex="-1" data-story-step="2"><span>03</span> The work</button>
+      </div>
+      <div class="story-loading">A year of history. One session. Every step of the work.<br><a href="report.html#/s/ses_0a9f3c2e71b4d58e6f20c1a7b9">Open the example in OpenTab →</a></div>
+      <div id="story-panel-0" class="story-panel" role="tabpanel" aria-labelledby="story-tab-0" tabindex="0" hidden></div>
+      <div id="story-panel-1" class="story-panel" role="tabpanel" aria-labelledby="story-tab-1" tabindex="0" hidden></div>
+      <div id="story-panel-2" class="story-panel" role="tabpanel" aria-labelledby="story-tab-2" tabindex="0" hidden></div>
+      <div class="story-bottom" hidden><p data-story-caption>01 / 03 · Follow the highlighted session</p><button class="story-next" type="button" data-story-next>Where did it go? →</button><a class="story-next" href="report.html#/s/ses_0a9f3c2e71b4d58e6f20c1a7b9" data-story-open hidden>Open in OpenTab ↗</a></div>
+    </div>
+  </div>
+  <div class="wrap hero-install" id="install">
+    <p><strong>Your history is already there.</strong><span>OpenTab reads the records your coding tools keep.</span><span>Try the real terminal or browser app below.</span></p>
     <div class="install" data-install>
       <div class="tabs" role="tablist">
         <button role="tab" aria-selected="true" data-cmd="pipx install opentab-ai">pipx</button>
@@ -332,6 +420,10 @@ footer a { color: var(--dim); }
   </div>
 
   <div class="wrap stage" id="stage">
+    <div class="demo-intro">
+      <h2>Now investigate it yourself.</h2>
+      <p class="sub">The real OpenTab, with a year of synthetic history. Pick a session and follow the work behind the numbers.</p>
+    </div>
     <div class="glow" aria-hidden="true"></div>
     <div class="window">
       <div class="bar">
@@ -348,7 +440,7 @@ footer a { color: var(--dim); }
           <video src="media/tui.mp4" poster="media/tui-poster.png" muted loop playsinline preload="none"></video>
           <div class="launch" data-launch>
             <button type="button" data-start>Start the real app</button>
-            <p data-launch-note>The actual OpenTab, running on Python in this tab. A one-time 35 MB download; nothing leaves your browser.</p>
+            <p data-launch-note>Runs locally in this tab. Uses synthetic history. Python runtime and demo download once; conversations load on demand.</p>
           </div>
         </div>
         <iframe data-pane="web" src="report.html" title="Interactive OpenTab report with synthetic data" loading="lazy" hidden></iframe>
@@ -358,92 +450,68 @@ footer a { color: var(--dim); }
   </div>
 </header>
 
-<div class="marquee" aria-label="Supported tools">
-  <div class="track">
-    <span>Claude Code</span><span>Codex CLI</span><span>OpenCode</span><span>GitHub Copilot</span><span>Gemini CLI</span><span>Antigravity</span><span>Hermes</span><span>pi-agent</span><span>omp</span><span>OpenClaw</span><span>zaly</span><span>CSV &amp; JSONL logs</span>
-    <span aria-hidden="true">Claude Code</span><span aria-hidden="true">Codex CLI</span><span aria-hidden="true">OpenCode</span><span aria-hidden="true">GitHub Copilot</span><span aria-hidden="true">Gemini CLI</span><span aria-hidden="true">Antigravity</span><span aria-hidden="true">Hermes</span><span aria-hidden="true">pi-agent</span><span aria-hidden="true">omp</span><span aria-hidden="true">OpenClaw</span><span aria-hidden="true">zaly</span><span aria-hidden="true">CSV &amp; JSONL logs</span>
-  </div>
-</div>
-
-<section class="block wrap">
-  <h2>Sound familiar?</h2>
-  <div class="pairs">
-    <div class="pair"><q>My subscription says $0.00. What did I actually use?</q><p>OpenTab adds clearly labeled API list-price estimates for usage with no recorded cost. Press <kbd>$</kbd> to see recorded spend only.</p></div>
-    <div class="pair"><q>One session ate the whole week. Which one, and why?</q><p>Sort a day by cost, open the biggest session, and follow it into subagents, turns and the tool calls the tool recorded.</p></div>
-    <div class="pair"><q>Would a cheaper model have done this for less?</q><p>Press <kbd>w</kbd>, pick a model, and see one session's tokens at that model's list rates, subagents included. Token usage is held fixed; quality is not predicted.</p></div>
+<main>
+<section class="block wrap" id="economics">
+  <p class="kicker">Token economics</p>
+  <h2>Tokens tell one story. Dollars tell another.</h2>
+  <p class="sub" data-econ-intro>A token isn't a unit of cost. Pick a type to see how its share of tokens compares with its share of estimated cost.</p>
+  <div class="econ" data-econ>
+    <p class="totals" data-econ-totals>Loading the synthetic showcase breakdown…</p>
+    <noscript><p>The interactive breakdown needs JavaScript. The pricing guide below explains the accounting without it.</p></noscript>
+    <div data-econ-charts hidden>
+      <div class="row"><span>share of tokens</span><div class="stack" data-stack="tok" role="group" aria-label="Share of tokens by type"></div></div>
+      <div class="row"><span>share of dollars</span><div class="stack" data-stack="usd" role="group" aria-label="Share of API list-price estimate by type"></div></div>
+      <div class="legend" data-legend role="group" aria-label="Select a token type"></div>
+      <p class="readout" data-readout aria-live="polite" aria-atomic="true"></p>
+    </div>
+    <p class="basis">Synthetic history · All tokens priced at API list rates, rather than mixing recorded spend and estimates. <a href="docs/#/pricing">How pricing works →</a></p>
   </div>
 </section>
 
 <section class="block wrap" id="drill">
-  <p class="kicker">Enter to go in. Esc to come back.</p>
-  <h2>Follow an expensive session down to the turn.</h2>
-  <div class="drill">
-    <ol class="steps">
-      <li data-shot="0" class="on"><h3>Pick the culprit</h3><p>Every harness on one board: cost, tokens and sessions side by side, with a token-economics breakdown under it.</p></li>
-      <li data-shot="1"><h3>Split the work</h3><p>The Subagents view shows how a session's cost divides between the main agent and its delegates, nested ones included.</p></li>
-      <li data-shot="2"><h3>Read the turn</h3><p>Prompts, and on supported tools the narration and exact tool calls and results, with each turn's tokens and cost. <kbd>[</kbd> and <kbd>]</kbd> step between turns.</p></li>
-      <li data-shot="3"><h3>Watch the context fill</h3><p>The window's growth curve, compactions marked, and an estimate of what filled it: tool results, arguments, prompts.</p></li>
-      <li data-shot="4"><h3>See what was edited</h3><p>The file edits the tool recorded, as side-by-side diffs, without leaving the session. Recorded for OpenCode and GitHub Copilot sessions.</p></li>
-    </ol>
-    <div class="shots" aria-hidden="true">
-      <img class="on" src="media/harness-browse.png" alt="">
-      <img src="media/subagent-execution.png" alt="">
-      <img src="media/tool-call-explorer.png" alt="">
-      <img src="media/context-tab.png" alt="">
-      <img src="media/changes-side-by-side.png" alt="">
+  <p class="kicker">Keep following the evidence</p>
+  <h2>What filled the window? What changed?</h2>
+  <div class="feature-views" data-feature-views>
+    <div class="feature-tabs" role="tablist" aria-label="Session views" aria-orientation="vertical">
+      <button id="view-context" type="button" role="tab" aria-selected="true" aria-controls="panel-context" tabindex="0">Context</button>
+      <button id="view-tools" type="button" role="tab" aria-selected="false" aria-controls="panel-tools" tabindex="-1">Tool calls</button>
+      <button id="view-changes" type="button" role="tab" aria-selected="false" aria-controls="panel-changes" tabindex="-1">Changes</button>
+    </div>
+    <div>
+      <div class="feature-panel" id="panel-context" role="tabpanel" aria-labelledby="view-context" tabindex="0">
+        <figure><img src="media/context-tab.png" loading="lazy" alt="OpenTab Context view showing context growth and an estimated composition breakdown."><figcaption><strong>See the context grow, and where compaction happened.</strong> Follow the recorded usage curve, with an estimate of how prompts and tool calls filled the window.<br><a href="docs/#/sessions">Explore session views →</a></figcaption></figure>
+      </div>
+      <div class="feature-panel" id="panel-tools" role="tabpanel" aria-labelledby="view-tools" tabindex="0" hidden>
+        <figure><img src="media/tool-call-explorer.png" loading="lazy" alt="OpenTab tool-call explorer showing recorded calls and their results within a session."><figcaption><strong>Read what the agent actually called.</strong> Follow a turn into recorded tool arguments and results instead of guessing from the total. Detail depends on what the harness saved.<br><a href="docs/#/sessions">Explore session views →</a></figcaption></figure>
+      </div>
+      <div class="feature-panel" id="panel-changes" role="tabpanel" aria-labelledby="view-changes" tabindex="0" hidden>
+        <figure><img src="media/changes-side-by-side.png" loading="lazy" alt="OpenTab Changes view showing a recorded file edit as a side-by-side diff."><figcaption><strong>Connect the session to its recorded edits.</strong> Inspect side-by-side file diffs in the terminal for OpenCode and GitHub Copilot sessions.<br><a href="docs/#/changes">What Changes captures →</a></figcaption></figure>
+      </div>
     </div>
   </div>
 </section>
 
-<section class="block wrap">
-  <p class="kicker">Token economics</p>
-  <h2>Tokens tell one story. Dollars tell another.</h2>
-  <p class="sub">In one demo history, cache reads were 96% of the tokens but only 60% of the bill. Pick a token type to see both sides.</p>
-  <div class="econ" data-econ>
-    <div class="row"><span>share of tokens</span><div class="stack" data-stack="tok"></div></div>
-    <div class="row"><span>share of dollars</span><div class="stack" data-stack="usd"></div></div>
-    <div class="legend" data-legend></div>
-    <p class="readout" data-readout>10.1B tokens, $8,418.18 at API list rates.</p>
-  </div>
-</section>
-
 <section class="block wrap" id="tools">
-  <p class="kicker">Press H to switch tools live</p>
+  <p class="kicker">Across your coding tools</p>
   <h2>Reads the tools you already use.</h2>
   <p class="sub">OpenTab finds their local records on its own and opens them read-only. What you can drill into depends on what each tool writes down.</p>
-  <div class="matrix">
-    <table>
-      <thead><tr><th>Tool</th><th>Cost</th><th>Subagents</th><th>Turns</th><th>Trace</th><th>Tools</th><th>Context</th></tr></thead>
-      <tbody data-matrix></tbody>
-    </table>
-  </div>
-  <p class="sub" style="font-size:15px">Some cells are conditional: Copilot CLI needs matching saved session events, Hermes detail only covers sessions still in its rotating log, and Codex logs no per-request prompt size, so it has no context curve. <a href="docs/#/sources">Details per tool</a>.</p>
+  <ul class="tool-list">
+    <li>OpenCode</li><li>Claude Code</li><li>Codex CLI</li><li>Hermes Agent</li>
+    <li>GitHub Copilot CLI</li><li>Copilot Chat in VS Code</li><li>pi-agent</li><li>omp</li>
+    <li>OpenClaw</li><li>zaly</li><li>Gemini CLI</li><li>Antigravity</li><li>CSV / JSONL logs</li>
+  </ul>
+  <p class="sub"><a href="docs/#/sources">See which details each harness provides →</a></p>
 </section>
 
 <section class="block wrap">
-  <h2>In your terminal. In your browser. In one file.</h2>
-  <div class="fronts">
-    <div class="front"><h3>Terminal</h3><p>The full browser in curses, with mouse support, 30 themes and remappable keys.</p><pre>opentab
-opentab --harness codex</pre></div>
-    <div class="front"><h3>Browser</h3><p>The same navigation, keys and themes, served on localhost.</p><pre>opentab web</pre></div>
-    <div class="front"><h3>One file</h3><p>A self-contained report you can open offline or send to someone. Anonymize it first if you like.</p><pre>opentab --html report.html
-opentab --demo --html demo.html</pre></div>
+  <h2>Fits your workflow.</h2>
+  <div class="workflow">
+    <article><h3>Terminal &amp; browser</h3><p>Investigate where you work: keyboard-driven in the terminal, or in a browser served on localhost.</p><div class="command"><code>opentab</code><button class="copy" type="button" aria-label="Copy terminal command">copy</button></div><div class="command"><code>opentab web</code><button class="copy" type="button" aria-label="Copy browser command">copy</button></div></article>
+    <article><h3>Share a report</h3><p>Export a self-contained HTML report to open offline or share. Optional <code>--demo</code> scrambling lets you disguise selected fields; dates and the shape of the data stay real.</p><div class="command"><code>opentab --html report.html</code><button class="copy" type="button" aria-label="Copy report export command">copy</button></div><a href="docs/#/privacy">What an export contains →</a></article>
+    <article><h3>Across machines</h3><p>Bring your laptop and workstation into one view over SSH. Pull usage summaries; fetch individual remote turns when you open them. No background agent needed.</p><div class="command"><code>opentab pull laptop workstation</code><button class="copy" type="button" aria-label="Copy machine pull command">copy</button></div><a href="docs/#/machines">Connect your machines →</a></article>
+    <article><h3>Local &amp; read-only</h3><p>No account. No telemetry. Your tools’ databases and transcripts stay unchanged. OpenTab stores its own notes, preferences and caches separately.</p><a href="docs/#/privacy">Read the privacy boundaries →</a></article>
   </div>
 </section>
-
-<section class="block wrap">
-  <h2>Every machine, one tab.</h2>
-  <p class="sub">Your laptop, workstation and that GPU box under the desk. <code>opentab pull</code> gathers their usage summaries over SSH. No background agent, no listening service, and the summaries carry no raw traces.</p>
-  <div class="install" style="margin:28px 0 0">
-    <div class="cmd" style="border-radius:10px"><code>opentab pull laptop workstation gpu-box</code><button class="copy" type="button">copy</button></div>
-  </div>
-</section>
-
-<div class="wrap promise">
-  <div>No account.<small>Nothing to sign up for, nothing phoning home. Prices ship bundled and refresh only when you ask.</small></div>
-  <div>Read-only.<small>Your agents' databases and transcripts are never written. OpenTab keeps its own notes and caches.</small></div>
-  <div>Screen-share friendly.<small><code>--demo</code> scrambles the categories you choose (titles, paths, prompt text, spend) in memory. It is selective, not fully private: dates and the shape of your data stay real.</small></div>
-</div>
 
 <section class="closing">
   <div class="wrap">
@@ -460,6 +528,8 @@ opentab --demo --html demo.html</pre></div>
   </div>
 </section>
 
+</main>
+
 <footer>
   <div class="wrap">
     <span>OpenTab v1.31.0 · MIT</span>
@@ -467,6 +537,8 @@ opentab --demo --html demo.html</pre></div>
   </div>
 </footer>
 
+<script type="module" src="hero-story.mjs"></script>
+<script type="module" src="landing.mjs"></script>
 <script>
 // install tabs + copy
 document.querySelectorAll("[data-install]").forEach(box => {
@@ -482,6 +554,13 @@ document.querySelectorAll(".copy").forEach(btn => btn.addEventListener("click", 
   catch { btn.textContent = "select it"; }
   setTimeout(() => (btn.textContent = "copy"), 1400);
 }));
+
+// light / dark, shared with the docs
+document.querySelector("[data-theme-toggle]").addEventListener("click", () => {
+  const root = document.documentElement;
+  root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+  try { localStorage.setItem("ot-theme", root.dataset.theme); } catch {}
+});
 
 // terminal / browser switch. The terminal pane teases with the clip until the visitor
 // starts the real app (/try/, Python on WebAssembly); the browser pane is the real report.
@@ -509,6 +588,22 @@ function show(mode) {
   if (mode === "tui" && app) app.focus();
 }
 document.querySelectorAll("[data-mode]").forEach(btn => btn.addEventListener("click", () => show(btn.dataset.mode)));
+// The lightweight story links into the same session in the actual report.
+// A normal link still works without JavaScript, and modifier-click opens a new tab.
+document.querySelectorAll("[data-story-open]").forEach(link => link.addEventListener("click", event => {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  const report = document.querySelector('[data-pane="web"]');
+  const target = new URL(link.href);
+  if (report.contentWindow && report.contentWindow.location.href.startsWith(target.origin + target.pathname)) {
+    report.contentWindow.location.hash = target.hash;
+  } else {
+    report.src = link.getAttribute("href");
+  }
+  show("web");
+  document.querySelector("#stage").scrollIntoView({ behavior: reduced ? "instant" : "smooth", block: "start" });
+  report.focus({ preventScroll: true });
+}));
 document.querySelector("[data-start]").addEventListener("click", () => {
   if (!self.crossOriginIsolated) { location.href = "try/"; return; }
   app = document.createElement("iframe");
@@ -523,79 +618,6 @@ document.querySelector("[data-start]").addEventListener("click", () => {
 // The terminal app needs a keyboard and some width; phones get the report first.
 show(matchMedia("(max-width: 760px)").matches ? "web" : "tui");
 
-// scrollytelling
-const shots = document.querySelectorAll(".shots img");
-const io = new IntersectionObserver(entries => entries.forEach(e => {
-  if (!e.isIntersecting) return;
-  document.querySelectorAll(".steps li").forEach(li => li.classList.toggle("on", li === e.target));
-  shots.forEach((img, i) => img.classList.toggle("on", i == e.target.dataset.shot));
-}), { rootMargin: "-45% 0px -45% 0px" });
-document.querySelectorAll(".steps li").forEach(li => io.observe(li));
-
-// token economics (showcase numbers from harness-browse)
-const types = [
-  { k: "Cache read", c: "--t-cache-read", tok: 96.0, usd: 60.1, n: "9.7B", d: "$5,060.19",
-    why: "Rereading the same context on every turn is cheap per token, so a huge volume costs comparatively little." },
-  { k: "Output", c: "--t-output", tok: 0.43, usd: 13.8, n: "43.9M", d: "$1,159.84",
-    why: "Under half a percent of the tokens, but output is the priciest token type, so it lands 14% of the money." },
-  { k: "Cache write", c: "--t-cache-write", tok: 1.0, usd: 13.0, n: "105.8M", d: "$1,098.04",
-    why: "Writing to the cache costs more than plain input, and one-hour writes cost twice the input rate. OpenTab prices both." },
-  { k: "Uncached input", c: "--t-input", tok: 2.6, usd: 12.1, n: "264.4M", d: "$1,018.64",
-    why: "Whatever the cache didn't cover, billed at the full input rate." },
-  { k: "Reasoning", c: "--t-reasoning", tok: 0.04, usd: 0.97, n: "3.9M", d: "$81.47",
-    why: "Thinking tokens, billed as output." },
-];
-const econ = document.querySelector("[data-econ]");
-const stacks = { tok: econ.querySelector('[data-stack="tok"]'), usd: econ.querySelector('[data-stack="usd"]') };
-const legend = econ.querySelector("[data-legend]");
-const readout = econ.querySelector("[data-readout]");
-const fmt = v => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : Math.round(v)) + "%";
-types.forEach((t, i) => {
-  for (const side of ["tok", "usd"]) {
-    const seg = document.createElement("div");
-    seg.style.background = `var(${t.c})`;
-    seg.style.flex = "0 0 0%";
-    seg.dataset.i = i;
-    if (t[side] >= 8) seg.textContent = fmt(t[side]);
-    seg.title = `${t.k}: ${fmt(t[side])}`;
-    seg.addEventListener("mouseenter", () => pick(i));
-    seg.addEventListener("click", () => pick(i));
-    stacks[side].append(seg);
-  }
-  const b = document.createElement("button");
-  b.innerHTML = `<i style="background:var(${t.c})"></i>${t.k}`;
-  b.addEventListener("click", () => pick(i));
-  b.addEventListener("mouseenter", () => pick(i));
-  legend.append(b);
-});
-econ.addEventListener("mouseleave", () => pick(-1));
-function pick(i) {
-  econ.classList.toggle("focus", i >= 0);
-  econ.querySelectorAll(".stack div").forEach(s => s.classList.toggle("hot", +s.dataset.i === i));
-  legend.querySelectorAll("button").forEach((b, j) => b.classList.toggle("hot", j === i));
-  if (i < 0) { readout.innerHTML = "10.1B tokens, $8,418.18 at API list rates."; return; }
-  const t = types[i];
-  readout.innerHTML = `<b>${t.k}: ${t.n} tokens (${fmt(t.tok)}) cost ${t.d} (${fmt(t.usd)}).</b> ${t.why}`;
-}
-new IntersectionObserver((es, obs) => es.forEach(e => {
-  if (!e.isIntersecting) return;
-  types.forEach((t, i) => {
-    stacks.tok.children[i].style.flex = `0 0 ${t.tok}%`;
-    stacks.usd.children[i].style.flex = `0 0 ${t.usd}%`;
-  });
-  obs.disconnect();
-}), { threshold: .4 }).observe(econ);
-
-// harness matrix (from docs/sources.md)
-const rows = [
-  ["OpenCode", "recorded", 1,1,1,1,1], ["Claude Code", "estimated", 1,1,1,1,1], ["Codex CLI", "estimated", 1,1,1,1,0],
-  ["Hermes Agent", "mixed", 1,1,1,1,1], ["GitHub Copilot CLI", "mixed", 1,1,1,1,1], ["Copilot Chat in VS Code", "estimated", 0,1,0,0,1],
-  ["pi-agent", "mixed", 0,1,1,1,1], ["omp", "mixed", 1,1,1,1,1], ["OpenClaw", "mixed", 0,1,1,1,1], ["zaly", "mixed", 0,1,1,1,1],
-  ["Gemini CLI", "estimated", 1,1,1,1,1], ["Antigravity", "estimated", 1,1,0,1,1], ["CSV / JSONL logs", "per row", 0,1,0,1,1],
-];
-document.querySelector("[data-matrix]").innerHTML = rows.map(([name, cost, ...caps]) =>
-  `<tr><td>${name}</td><td>${cost}</td>${caps.map(c => `<td class="${c ? "y" : "n"}">${c ? "●" : "—"}</td>`).join("")}</tr>`
-).join("");
 </script>
 </body>
 </html>
