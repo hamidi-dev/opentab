@@ -88,7 +88,7 @@ The optional session interface extends this without making the UI format-aware:
 | Received subagent prompt | `node_prompt(root_id, node_id)` | Optional method; `None` when unavailable |
 | Execution turns | `node_timeline(root_id, node_id)` | Optional method; `None` unavailable, `[]` valid empty |
 | Execution turn content | `node_turn_content(root_id, node_id, content_key=None)` | Optional method; owned previews or keyed full content |
-| Recorded file changes | `session_change_files(id)`, `session_change_diff(id, key)` | Optional local OpenCode/Copilot TUI contract; [semantics and controls](keys.md#session-changes) |
+| Recorded file changes | `session_change_files(id)`, `session_change_diff(id, key)` | Optional local OpenCode/Copilot TUI contract; [semantics and controls](changes.md) |
 
 The node readers resolve exact root/node IDs within the owning leaf store, never
 by agent name or sibling matches; ambiguous ownership fails closed. Execution
@@ -114,7 +114,9 @@ timeline or search index. Each leaf returns `records`, `snapshot`, `execution_id
 execution's retained user/assistant text occurrences, including zero-usage messages;
 it does not reconstruct the active branch or merge descendants. Cached and
 machine-tagged wrappers delegate the optional methods without caching their raw
-results. Remote summaries have no conversation capability or transport fallback.
+results. Remote summaries have no conversation capability or transport fallback. Readers
+budget 256 MiB of selected text or file data (`MAX_SOURCE_BYTES`) and 8 MiB per JSONL
+line; text without an explicit synthetic flag stays verbatim.
 
 `OpenTabService.session_conversation` gates raw permission first, rechecks demo,
 validates the shared window options before reading, and resolves a catalog root to
@@ -224,6 +226,133 @@ results. See [Programmatic access](programmatic.md) for their public contract.
 
 TUI search creates its own `OpenTabService` and store in a serial worker thread.
 See [TUI internals](tui.md) for lifecycle and navigation.
+
+## Web browser boundaries
+
+`web/report.py` adapts a headless App into data; `web/page.py` embeds that data and
+renders it. Keep these boundaries when adding a field or interaction, and check
+static and live views together, including a session with no optional detail:
+
+- **Explicit payload fields.** Whitelist what the page needs rather than dumping store
+  rows or App state. Notes, raw traces and content keys belong in neither the initial
+  payload nor session extras.
+- **Two cost snapshots.** Recorded (`real`) and API-equivalent (`api`) values both
+  travel; `$` swaps fields. `w` uses per-model token splits and list rates for one
+  session, never another global cost mode.
+- **Text stays text.** `render_html()` escapes the title and every `<` in embedded
+  JSON, inserting the payload last; browser helpers create text nodes for user content.
+- **Sequential store access.** Requests are handled one at a time, not thread per
+  request, because SQLite-backed stores share connections.
+- **Mutations.** `/api/reload` and `/api/refresh` are POST-only and require
+  `Content-Type: application/json`. Cross-site fetches and mismatched `Origin`s are
+  rejected before any mutation, with no preflight granted. Refresh accepts one nonempty
+  machine name, never a URL or command; demo blocks it.
+- **Received prompts are opt-in.** Only `GET /api/node-prompt?session=&node=&snapshot=`
+  calls `App.read_node_prompt`. The live page carries a transient `meta.nodeSnapshot`
+  nonce; the endpoint requires the current nonce and one unique workflow, then resolves
+  the ordinal against the memoized `session_node_rows` used for the payload. Responses
+  are `{"text": str | null}`, uncacheable, rejected in demo, and never enter static or
+  fleet payloads. The browser keeps only the selected prompt in memory; navigation,
+  reload or refresh expires stale indices. Remote executions never trigger SSH reads.
+- **Subagent executions** use only the embedded node metrics: no node IDs, raw content,
+  invented parentage, status or duration. Selection uses the original payload index, so
+  duplicate titles, sorting and `$` cannot select another execution.
+- **Tools explorer.** The ledger shows its aggregate coverage instead of assuming both
+  accounting surfaces agree. Arguments, results and content keys never enter extras or
+  the static report; a Tools call jump opens the owning turn's breakdown, and `$` keeps
+  expansion and focus. Manual tab or scope changes and reload invalidate the jump.
+- **`--include-details`** scans every session in the exported catalog and embeds the
+  live UI's detail projection (numeric counts only), so tabs work from `file://`.
+  Ordinary exports and live startup keep lazy detail loading.
+- **What's New** reads the validated bundled resource ([`whats-new.md`](whats-new.md));
+  the browser never fetches or persists it, infers no upgrade, stores no unread marker,
+  and returns focus to the control that opened it.
+
+## Portable machine summaries
+
+`stores/remote.py` reads the portable format, which is separate from the warm-start
+cache. `opentab_export` is currently 2 (optional Turns, Tools and Context);
+`opentab_version` records the producer. Older summaries load without those tabs and
+unknown fields are tolerated.
+
+Session IDs survive transfer, so synced sessions count once and live local records win.
+Keep model rows and extras attached only to sessions retained from the same file. The
+export label names the machine; the encoded cache filename identifies its saved
+connection for refresh and opt-in traces, so trace routing keeps the winning file's
+provenance even when labels collide. Normalize incoming detail rows before rendering,
+and keep raw traces, content keys and notes out of summaries.
+
+Remote turn reads need a remote OpenTab with JSON `sessions turns` (content keys) and
+gated `sessions content`. The `trace_cmd` prefix is derived from the export `cmd`
+(export tail stripped) and reaches the remote shell exactly as a pull's does; appended
+arguments are quoted, so `$HOME` is not expanded. Limits: one 30-second deadline for
+both commands, 16 MiB stdout, 64 KiB stderr, 100,000 timeline turns and 10,000 content
+events. Oversized or invalid responses fail rather than partially display, and errors
+never echo remote stderr, payloads or arguments.
+
+## Conversation index
+
+`conversations/index.py` is an explicit, private SQLite/FTS5 store; nothing writes it
+implicitly and its contents never enter rollup caches, web or fleet data.
+
+**Refresh.** The manifest shortcut is described under
+[One store contract](#one-store-contract). `CONVERSATION_READER_VERSION` is part of
+every root-content fingerprint: bump it whenever discovery, extraction, ownership or
+chunk projection changes, so unchanged sources still rebuild their passages. Codex
+invalidates affected roots on additions, deletion, replacement, reparenting and
+live/archive winner changes. OpenCode trusts every row's revision, not counts or
+`session.time_updated`; recent same-millisecond, missing or future stamps disable the
+shortcut. Schemas without row revisions keep the main-DB/WAL token, including the
+48-byte WAL-index header but not the `-shm` lock region. Manifests are change
+detectors, not integrity hashes: rewrites that preserve stamps or OpenCode revisions
+evade them, which is what `--rebuild` is for.
+
+**Scope and pruning.** A refresh prunes removed or ignored roots only inside its
+requested scope and loaded source origins; changing `--db` or a harness directory never
+treats another origin's roots as deleted. A native `--session` resolves to a qualified
+key first. One qualified root has one snapshot, so re-indexing it from another origin
+replaces only that key. `--harness` rejects accounting-only harnesses (the MCP catalog
+may still report them as unindexed), and UI options (`--demo`, `--theme`, `--port`,
+`--bind`, accounting ranges) are rejected by index and search.
+
+**Search.** Queries are tokenized with FTS5 `unicode61` plus accent folding and quoted
+as literal terms, so user FTS/SQL operators never run. Ranking is BM25 with body
+weighted above title. The candidate pool admits one execution per root before extra
+executions, keeping alternatives when a root's best match is stale. Catalog scope,
+origin and ignores filter before ranking; candidates are re-checked in the transaction
+that read their chunk and verified live, and search never rewrites the index. With
+`since`/`until`, unknown or naive timestamps are excluded. Excerpts keep the match
+rather than a prefix.
+
+**Storage.** Chunks are at most 2,000 characters with up to 200 overlap, split only at
+ASCII separators so Python and SQLite tokenization cannot disagree mid-token. On POSIX,
+directories and files are owner-only; insecure existing paths and symlinks are
+rejected, not repaired. Schema, corruption and FTS5 errors fail without dumping text.
+The manifest table is an additive migration from the v1 schema, applied only on an
+authorized write open. Clear attempts compaction; status and clear never create an
+index or scan harness data. `--debug` streams stages to stderr (JSON stays on stdout)
+and identifies roots only by run-local hashes.
+
+## JSON CLI and MCP
+
+- Help levels work offline and stop before opening stores; `opentab tui --help-all`
+  includes compatibility flags.
+- Each command exposes only options it uses: store-backed commands take harness paths,
+  cache, remote-summary and state controls; session query options appear only on
+  `sessions list`, `usage summary` and used-model listing; `sources list` takes
+  discovery paths but no cache/state flags; preference-only commands skip discovery.
+  Catalog mode rejects selections that would change the request before discovery.
+  Relative bounds resolve once per request.
+- Programmatic `--demo` is rejected: the demo transform lives in the interactive
+  presentation path, and partially transformed detail would be less safe.
+- TUI preference saves merge only local set changes, so an open TUI never undoes
+  bookmark, ignore or pin edits made through the CLI or MCP.
+- MCP is newline-delimited JSON-RPC over stdio, supporting both the established
+  initialize flow and the newer discovery metadata flow. It survives malformed input,
+  never writes diagnostics to stdout, and reports domain failures as successful
+  responses with `isError: true`.
+- Remote content keys identify a frozen snapshot, not a row ordinal;
+  `RemoteStore.turn_content(id)` without a key returns an empty mapping.
 
 ## Diagnostics that do not repair
 

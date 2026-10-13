@@ -1,300 +1,250 @@
 # Pricing & the `$` view
 
-## Where the numbers come from
+OpenTab shows two kinds of cost: what your tools **recorded**, and an **estimate** at
+published API list prices for usage that has no recorded cost, such as a subscription.
+Press `$` to switch between them.
 
-The numbers come straight from each tool's own data (cost/tokens per message, rolled
-up per session) — *local attribution* of what your tools recorded. Some sessions show
-tokens with a `$0.00` local cost: the usage was recorded but no per-token price,
-normal whenever billing isn't per token (subscription plans, credit/token plans).
-That money isn't missing, it's billed elsewhere — by your subscription or account
-credits — so OpenTab surfaces it as "unpriced tokens" rather than guessing.
+A third tool, `w`, compares one session against a single model. `P` opens the rate
+table behind all of it.
 
-Two formatting rules keep this honest: sub-cent costs render as `<$0.01`, while a red
-`$0.00` specifically means *unpriced*. And the `$` view **starts on by default** —
-most sessions bill nothing per call, so the recorded view would be a wall of `$0.00`;
-press `$` for the recorded numbers, and your choice is remembered.
+| Key | What it shows |
+|-----|---------------|
+| `$` | Recorded spend, or the API-equivalent estimate (the default) |
+| `w` | One session's tokens repriced as if one model had produced them all |
+| `P` | The per-model list-price table |
 
-## The `$` what-if view
+## Recorded spend and `$0.00`
 
-Press `$` (non-demo) for the **estimate** view: recorded spend plus what `$0.00`
-subscription/credit usage *would have cost* at published API list prices, with
-**GitHub Copilot usage fully repriced** as described below. It's a
-toggle — press `$` again for the recorded numbers — and your choice is remembered
-between runs.
+Recorded numbers come straight from each tool's own data: cost and tokens per message,
+added up per session. Many sessions show tokens with a `$0.00` cost. That usage is
+billed elsewhere, by a subscription or credits, so OpenTab calls it **unpriced
+tokens** rather than guessing.
 
-Duration-based JSONL usage also contributes to this estimate: provider-reported
-seconds multiplied by the producer's logged per-minute USD rate. These charges have
-no fabricated token count and remain separate from recorded dollars. Overview shows
-the reported duration and whether it is running, unconfirmed or finalized; the rate
-and raw usage can be retained in the local trace. See [JSONL duration records](sources.md#duration-usage-events-and-traces-jsonl).
+- A red `$0.00` means unpriced, not free.
+- Costs under a cent show as `<$0.01`.
 
-The estimate uses a **models.dev snapshot bundled with each release** — every
-provider, so open models on paid routes (Kimi, DeepSeek, Qwen, … via
-OpenRouter/Together/etc.) price out of the box — with family fallbacks for version
-churn and a mid-range fallback for unknown models. Ordinary price lookup stays
-offline; refreshing rates is an explicit action.
+## The `$` estimate
 
-Claude Code's recorded `usage.speed: fast` is retained as a separate `-fast` model
-bucket even before a fast rate card is available. Until then, it uses the base
-model's rates and context tiers as a fallback. Adding the fast card through refresh
-reprices existing in-memory and warm-cached usage without rereading transcripts.
-Older rollup caches are rebuilt once to recover mode distinctions they discarded.
+The estimate is recorded spend plus what the unpriced usage would cost at API list
+prices. It is **on by default**, because most subscription sessions would otherwise
+read `$0.00`. Press `$` for recorded numbers; OpenTab remembers your choice. Demo mode
+always shows recorded numbers.
 
-### Copilot list-price estimates
+Rates come from a **models.dev snapshot bundled with each release**. It covers every
+provider, so open models on paid routes (Kimi, DeepSeek, Qwen via OpenRouter and
+others) price out of the box. Unknown versions fall back to their model family, and
+unknown models to a mid-range rate. Lookup stays offline; [refreshing
+rates](#refreshing-rates) is an explicit action.
 
-For the `github-copilot` provider, the estimate replaces **all** recorded costs with
-the loaded models.dev **Copilot route** rates, including per-request context tiers.
-OpenCode can save locally calculated positive costs that are not authoritative
-Copilot charges. Other providers retain recorded dollars plus estimates of unpriced
-usage. Recorded mode always exposes the original dollars and tokens.
+A few cases price differently:
 
-OpenCode's Copilot Responses adapter can discard GPT-5.6+ cache-write counts and leave
-them in ordinary input. For each such request with zero recorded writes, OpenTab's
-estimate treats its uncached input as cache writes. This intentionally ignores the
-small genuine ordinary-input remainder: it is an **inferred allocation**, not recovered
-provider usage. GPT-5.5 and earlier, other providers, and requests already reporting
-writes keep their original split. Token totals, recorded fields and source files do
-not change. Token economics and session-local `w` use the same estimated allocation.
+| Usage | How the estimate prices it |
+|-------|----------------------------|
+| GitHub Copilot | Fully repriced, see [below](#copilot-list-price-estimates) |
+| Claude Code fast mode (`usage.speed: fast`) | Its own `-fast` model, at the base model's rates until a fast rate exists |
+| Duration-based JSONL records | Reported seconds × the producer's per-minute USD rate; no token count is invented ([JSONL duration records](sources.md#duration-usage-events-and-traces-jsonl)) |
 
-Numeric inference amounts are retained before aggregation, so a zero-write request
-and a positive-write request sharing one model/context bucket remain correctly priced.
-Full root-only splits keep positive-cost root and subagent contributions separate.
-Tools use proportional shares of the same request estimate. Warm caches and machine
-exports preserve these ingredients, never frozen dollar estimates.
+For duration records, Overview shows the reported duration and whether it is running,
+unconfirmed or finalized.
 
-Token economics labels inferred writes and incomplete/missing Copilot rates with `~`.
-Missing route cards use the existing fallback rates and are explicitly approximate.
-Prices (`P`) shows the loaded snapshot date; programmatic model estimates expose their
-price source and approximation reasons. These are **list-price estimates, not a
-Copilot subscription invoice**. Older summaries without inference/root splits cannot
-recover those missing details.
+## Copilot list-price estimates
+
+For the `github-copilot` provider, the estimate **replaces all recorded costs** with
+models.dev's Copilot route rates, including per-request context tiers. OpenCode can
+store locally calculated Copilot costs that are not real charges, so they are not
+kept. Other providers keep their recorded dollars and only fill in unpriced usage.
+Recorded mode (`$`) always shows the original dollars and tokens.
+
+These are **list-price estimates, not a Copilot invoice**.
+
+- **Inferred cache writes.** OpenCode's Copilot adapter can drop GPT-5.6+ cache-write
+  counts into ordinary input. For such requests that report zero writes, the estimate
+  treats their uncached input as cache writes. Token totals and source files don't
+  change, and Token economics and `w` use the same allocation.
+- **Approximations are marked.** Token economics shows `~` for inferred writes and for
+  missing Copilot rates, which fall back to ordinary rates.
+- **Where to check.** `P` shows the loaded snapshot date. Programmatic model estimates
+  include their price source and the reasons they are approximate.
+- **Older data.** Summaries without the per-request detail can't recover it.
 
 ## Comparing models with `w`
 
-`$` estimates Copilot and fills in other unpriced usage. **`w` asks a different question:** what would this
+`$` fills in unpriced usage. **`w` asks a different question:** what would this
 session's recorded tokens cost if one model had produced them all?
 
-Press `w` to choose from your used models or, on the second tab, the full priced
-catalog. `Tab` / `h` / `l` switch tiers, `f` filters, and `Enter` selects. Used models
-are ranked by token usage; catalog models are ranked by effective price at your
-app-wide token mix, not just this session's mix. When no used model is priceable,
-the catalog opens directly. Press `w` again to clear the comparison. It also works
-in demo mode and is never remembered between runs.
+| Key | Action |
+|-----|--------|
+| `w` | Pick a target model; press again to clear it |
+| `Tab` / `h` / `l` | Switch between your used models and the full priced catalog |
+| `f` | Filter the list |
+| `Enter` | Select the target |
 
-The session's Overview compares **Your models**, **All at target**, and **Change**.
-Subagents adds a What-if column beside the ordinary Cost column, including the root
-node, followed by the same session comparison. A session without subagents still
-has its Overview comparison. Other sessions, rollups and Trends do not change.
+Your used models are ranked by token usage. Catalog models are ranked by effective
+price at your overall token mix. If none of your models has a price, the catalog opens
+directly. `w` works in demo mode and is never remembered between runs.
 
-Both sides use **list rates**, with the baseline calculated from the session's
-per-model token splits. Comparing against recorded dollars would make a subscription
-session's baseline zero; pricing every node at its dominant model would misprice
-nodes that switched models. Consequently, comparing a single-model session with
-that same model produces zero change. There is no per-node saving: node totals
-alone cannot supply an honest mixed-model baseline.
+Where it shows:
 
-The ordinary Cost column retains its recorded/API-equivalent meaning and need not
-add up to the list-rate comparison. This is a **rate substitution, not a rerun**:
-it does not predict another model's token use, output quality or cache behavior.
+- **Overview** compares **Your models**, **All at target** and **Change**.
+- **Subagents** adds a Compared column next to Cost, including the root, then the same
+  comparison.
+- Other sessions, totals and Trends don't change.
+
+Both sides use **list rates**, with your side calculated from the session's per-model
+token split. So comparing a single-model session with that same model shows zero
+change, and a subscription session's baseline isn't zero. There is no per-node saving:
+node totals alone can't give an honest mixed-model baseline.
+
+This is a **rate substitution, not a rerun**. It doesn't predict another model's token
+use, quality or cache behavior. The ordinary Cost column keeps its meaning and need not
+add up to the comparison.
 
 ## Token economics
 
-Overview's token-economics card compares the token mix with its share of list-rate
-cost. A cache-heavy session can have mostly cache-read tokens while output accounts
-for most of its price. Five categories are additive: uncached input, output,
-reasoning, cache reads and cache writes. Reasoning uses the output rate, but only
-gets a separate count when the harness records it outside output.
+The token-economics card on Overview compares each token type's share of the tokens
+with its share of the list-price cost. A cache-heavy session can be mostly cache-read
+tokens while output accounts for most of the price.
 
-The calculation uses each producing model's rates, not one blended model label.
-It excludes local-model tokens from both distributions and reports them separately.
-Unknown prices are marked approximate. This is a token-type explanation at list
-rates, **not a decomposition of a provider invoice**, even when recorded dollars
-are available for that model.
+| Type | Priced at |
+|------|-----------|
+| Uncached input | Input rate |
+| Output | Output rate |
+| Reasoning | Output rate; counted separately only when the harness records it apart from output |
+| Cache read | Cache-read rate |
+| Cache write | Cache-write rate ([lifetimes](#cache-write-lifetimes)) |
+
+Each token is priced at the rate of the model that produced it. Local-model tokens are
+left out and reported separately, and unknown prices are marked approximate. This
+explains token types at list rates; it is **not a breakdown of a provider invoice**.
+
+- **A drilled model** narrows the card to that model in the current scope. Its Sessions
+  tab shows **Model list** and **Model tok**, and `$` doesn't change them ([drilling into a
+  model](filters.md#drill-into-a-model)).
+- **Trends → Models** opens Economics and Sessions for the selected model in the
+  Trends range, independent of the sidebar scope and `$`.
 
 ### Context pricing tiers
 
-OpenTab preserves models.dev's context-tier rate cards and prices each recorded
-request at the highest threshold its **input context** exceeds. Input context includes
-uncached input, cache reads and cache writes, but excludes output and reasoning.
-The threshold is strict: a request exactly at the boundary still uses the lower rate.
-The selected tier prices the whole request, including output; it is not marginal
-pricing of just the tokens above the threshold.
+Some models charge more for long requests. OpenTab prices each request at the highest
+tier its **input context** exceeds: uncached input plus cache reads and writes, not
+output.
 
-For example, GPT-5.6 Sol's 272,000-token tier doubles input/read/write rates and
-raises output from $20/M to $30/M. Two separate 200,000-token requests still use
-base rates, despite their combined total exceeding that boundary. Explicit tier
-tables take precedence over legacy `context_over_200k` metadata; the legacy field
-alone supplies a 200,000-token boundary.
+- The threshold is strict: a request exactly at the boundary uses the lower rate.
+- The tier prices the **whole** request, output included, not just tokens above it.
+- Requests are judged one at a time. Two 200,000-token requests both use base rates.
 
-Numeric context buckets survive model/session rollups, warm caches and machine
-exports. Token economics, `$` estimates, model comparisons, Turns and tool-call
-attribution use them in the terminal and browser. Rates can refresh without
-rereading transcripts because buckets retain context sizes, not calculated dollars.
-Recorded mode remains unchanged; `$` estimates the unpriced portion for other routes
-and fully revalues Copilot using the same request buckets.
+For example, GPT-5.6 Sol's 272,000-token tier doubles input, read and write rates and
+raises output from $20/M to $30/M. Rates refresh without rereading transcripts.
 
-Summary-only records and older exports cannot establish individual request sizes.
-Their tiered usage uses base rates as an approximation, with a `~` and an explanation
-in Token economics. Codex accepts a request size only when its recorded final-request
-usage reconciles with the entire accepted cumulative delta; multi-request deltas
-remain unknown. CSV/JSONL producers can supply `context_tokens` explicitly.
-VS Code chat combines final-round input with accumulated multi-round output, so
-its tier context remains unknown rather than applying the last round's tier to
-all output. Claude's execution-level Turns and Copilot's CLI cost path retain the
-same request context as their session rollups.
-The `P` table and its effective-price rankings show **base rates**; context tiers
-are selected when calculating request costs, not from aggregate monthly tokens.
+When OpenTab can't tell individual request sizes, tiered usage is priced at base rates
+and marked `~` with an explanation in Token economics. That happens for summary-only
+records, older exports, Codex deltas that span several requests, and VS Code chat.
+CSV/JSONL producers can supply `context_tokens` to avoid it.
 
-Drilling a Models row narrows this card to the model's contribution in the current
-scope. Its Sessions tab shows **Model list** and **Model tok**, not whole-session
-totals. `$` does not change those model-attributed figures; see
-[model navigation](keys.md#drilling-a-model).
-
-Trends → Models also opens Economics / Sessions. Its economics card uses the
-selected model within the active Trends range, independent of the sidebar scope
-and `$`. The Trends session list retains its current-price-mode Cost column.
+The `P` table shows **base rates**; tiers apply per request, not to monthly totals.
 
 ### Cache-write lifetimes
 
-Anthropic cache writes can buy five minutes or one hour of reuse. The recorded
-`cache_write_1h` value is a **subset of total cache writes**, not an extra token
-category. If 100,000 writes include 20,000 one-hour tokens, OpenTab prices 80,000
-at the short rate and 20,000 at the long rate, still totaling 100,000 tokens.
+Anthropic cache writes buy either five minutes or one hour of reuse. The one-hour count
+is **part of** total cache writes, not extra. Of 100,000 writes with 20,000 one-hour
+tokens, 80,000 are priced at the short rate and 20,000 at the long rate.
 
-The catalog supplies the short-write rate. OpenTab derives Anthropic's long rate
-as twice the input rate, never below the short rate; other model families retain
-their ordinary write rate. Claude records the TTL split, while most harnesses
-discard it. Those records cannot support an exact long-TTL adjustment.
+| Provider | Cache-write rate | Lifetime |
+|----------|------------------|----------|
+| Anthropic | Catalog rate for 5 minutes; 2× input (never below the short rate) for 1 hour | 5 minutes or 1 hour |
+| OpenAI GPT-5.6+ | 1.25× input when the catalog omits it; reads cost 0.1× input | At least 30 minutes after the last write or reuse |
+| Older OpenAI models | No write charge | None to measure |
 
-GPT-5.6 and later also report cache writes as a separate input category. OpenAI
-charges those writes at 1.25 times the ordinary input rate and guarantees the entry
-for at least 30 minutes after its latest write or reuse; cache reads cost one tenth of
-ordinary input. OpenTab uses the documented write multiplier if an otherwise valid
-catalog row omits that fourth rate. Because 30 minutes is a minimum rather than an exact
-expiry, cache-miss analysis treats a drop after a longer gap as an expiry but labels the
-lifetime "guaranteed", never claiming that the entry died at that boundary. Older OpenAI
-models cache opportunistically, with no write charge and no lifetime to measure against.
+Only Claude records the one-hour split; other harnesses discard it, so their writes
+can't get an exact long-lifetime adjustment.
 
 ### Cache misses are estimates
 
-Cache-miss analysis compares consecutive main-thread turns for a previously cached
-prefix that was bought again. It requires a substantial prefix and a large drop
-in reuse, rather than labeling every uncached token a miss. Subagents' independent
-context windows are excluded from that comparison.
+Cache-miss analysis flags a turn that paid again for a large, previously cached prefix.
+It needs a substantial prefix and a large drop in reuse, so ordinary uncached tokens
+aren't called misses. Subagents are excluded because they have their own context.
 
-The reported cause is an inference: a model switch, compaction, a recorded reasoning
-effort change, other prefix invalidation, or a cache lifetime exceeded while the
-agent worked or the user waited. Anthropic gets an explicit five-minute or one-hour
-TTL and GPT-5.6+ its 30-minute minimum; OpenTab does not invent an expiry for
-opportunistic providers. Codex has no context curve, but its turn rows are single
-requests, so it still gets cache-miss markers.
-The previous turn owns the expired entry's lifetime; the new turn may buy another
-tier. The estimated penalty is what the replacement cost above a cache hit, not
-the entire turn's bill. It is useful diagnostic evidence, not a provider receipt.
+The cause shown is an inference:
+
+- a model switch, a compaction or a reasoning-effort change;
+- another change to the prefix;
+- the cache lifetime ran out while the agent worked or you waited.
+
+Anthropic uses its 5-minute or 1-hour lifetime and GPT-5.6+ its 30-minute minimum,
+labeled "guaranteed" because a longer gap doesn't prove when the entry died. OpenTab
+invents no lifetime for providers that cache opportunistically. Codex gets markers when
+every turn in the session records its request context; otherwise they are off.
+
+The penalty is what rebuying the prefix cost above a cache hit, not the whole turn's
+bill. Treat it as diagnostic evidence, not a receipt.
 
 ## The `P` price table
 
-`P` opens the per-model rate table behind the estimate. Each row shows a model you've
-used, deduped to its canonical id (dots == dashes, date pins and reasoning-effort
-suffixes folded together), with:
+`P` opens the per-model rates behind the estimate. Each row is a model you've used,
+with spelling variants merged (dots and dashes, date pins and reasoning-effort
+suffixes).
 
-- **eff $/M** — the decision column: the model's list rates blended at **your**
-  app-wide token mix (in practice cache-read-heavy), so models compare on what *you*
-  would pay, cheapest first. A missing cache-read rate is never treated as free —
-  those reads bill at the input rate, the eff value gets a `~` and the raw cell a `—`.
-- **use** — your token share as a bar: which models you actually rely on.
-- The four raw list rates (input / output / cache-read / cache-write), heat-shaded
-  green→red per column.
+| Column | Meaning |
+|--------|---------|
+| **eff $/M** | List rates blended at **your** overall token mix, cheapest first. A missing cache-read rate is never treated as free: those reads use the input rate and the value gets a `~` |
+| **use** | Your share of tokens, as a bar |
+| input / output / cache-read / cache-write | The raw list rates, shaded green to red per column; `—` when missing |
 
-The table's usage, token mix and model-session drill exclude ignored sessions and
-projects. Press `I` to show them again (including their costs in the browse totals
-and Prices); press `I` again to hide them. The table remains all-time regardless
-of the selected date range.
+The table covers all time, regardless of the selected range. It leaves out ignored
+sessions and projects; press `I` to include them, also in the browse totals.
 
-`p` (or `h`/`l`, or a tab click) cycles four views:
+### Four views
 
-1. **flat** — one ungrouped list (cheapest-for-your-mix is a cross-vendor question).
-2. **by vendor** — grouped under `▸ Anthropic/OpenAI/…` headers, rows tagged with
-   their access route(s).
-3. **by provider** — one row per (route, model) under `▸ anthropic/github-copilot/…`
-   headers, rows tagged with their vendor.
-4. **models.dev** — the *whole* catalog (~5k rows): every model on every route,
-   eff-sorted at your mix — a cheapest-for-your-mix leaderboard where the same model
-   deliberately repeats across gateways (resale markups are the information). Models
-   you've used keep their use bar on every route that resells them; $0-rate and local
-   models are excluded (they'd own the cheap end); a status tag marks
-   alpha/beta/deprecated.
+Press `p` (or `h` / `l`, or click a tab) to switch:
 
-Inside `P`:
+| View | Shows |
+|------|-------|
+| **flat** | One list across vendors |
+| **by vendor** | Grouped under Anthropic, OpenAI and so on, with each row's access routes |
+| **by provider** | One row per route and model, grouped by route, with each row's vendor |
+| **models.dev** | The whole catalog (about 5,000 rows) ranked at your mix |
+
+In the models.dev view the same model repeats across gateways on purpose: resale
+markups are the point. Your models keep their use bar on every route that sells them.
+Free and local models are left out, and a tag marks alpha, beta and deprecated models.
+
+### Keys
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Select a row |
-| `Space` | Pin the selected row to a ★ shortlist that floats first in every view — pinning one gateway's catalog row pins just that route, never every reseller of the same model. Persisted between runs |
-| `Enter` | Drill into the sessions that used the model (aggregated across routes and alias spellings) |
-| `s` (or a header click) | Sort by model / eff / use / a rate column |
-| `f` | Fuzzy filter over model/vendor/route — word-anchored, so `opus48` and `snt45` match while mid-word scatter (`opus` → `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**) doesn't — what tames the catalog's ~5k rows |
-| `r` | Refresh rates from models.dev in place (see below) |
-| `p` / `h` / `l` | Cycle / switch the four views |
+| `Space` | Pin the row to a ★ shortlist shown first in every view; pinning a catalog row pins only that route. Remembered between runs |
+| `Enter` | Show the sessions that used the model, across routes and spellings |
+| `s` (or click a header) | Sort by model, eff, use or a rate |
+| `f` | Filter by model, vendor or route; matches word starts, so `opus48` and `snt45` work |
+| `r` | Refresh rates from models.dev |
+| `p` / `h` / `l` | Switch views |
 
-The web browser has the same overlay on `P`, with clickable ☆/★ pins kept in
-`localStorage`.
+The web browser has the same table on `P`, with clickable ☆/★ pins saved in the browser.
 
 ## Refreshing rates
 
-Want rates fresher than your release? Refresh from models.dev:
+For rates newer than your release, fetch them from models.dev:
 
 ```sh
-opentab --refresh-models     # fetch every provider's list prices into a local cache
+opentab --refresh-models
 ```
 
-This writes `~/.cache/opentab/prices.json` through an explicitly requested network
-fetch (stdlib `urllib`, no dependency). The newer of the cache and the bundled
-snapshot wins; you can also press **`r`** inside
-`P` to refresh in place. The TUI fetch runs in the background so navigation and quit
-remain responsive; repeated refresh requests share the pending fetch. On completion,
-the UI adopts rates and reprices the current data. Cache writes use unique temporary
-files and atomic replacement so concurrent OpenTabs cannot collide mid-write.
-The `P` overlay's source line names which layer is serving the rates.
+Or press `r` inside `P`. The fetch runs in the background, so you can keep navigating,
+and the current data is repriced when it finishes. Rates are saved to
+`~/.cache/opentab/prices.json`; OpenTab uses whichever of that file and the bundled
+snapshot is newer. The source line in `P` says which one is in use.
 
-When OpenTab notices models it has no built-in price for, it offers this fetch
-**once** on startup (`y` now, `n` not now, `d` never — remembered in `state.json`,
-suppressed under `--no-state`/`--demo`).
+When OpenTab finds models it has no price for, it offers the fetch **once** at startup:
+`y` now, `n` not now, `d` never. Your answer is remembered, except with `--no-state`
+or `--demo`.
 
-## Contributing to pricing
+## Good to know
 
-[`accounting/pricing.py`](../src/opentab/accounting/pricing.py) owns rate resolution and arithmetic.
-App groups the per-model rows once and keeps recorded and API-equivalent workflow
-snapshots; `_apply_price_mode()` selects one rather than recomputing spend on every
-toggle. The estimate applies only to the `unpriced_*` portion of mixed-billing rows.
-Keep the root-only split as well as the subtree split so delegated usage does not
-leak into the root's own cost.
+- Recorded cost, the `$` estimate and `w` are separate questions; none of them
+  changes the others.
+- Estimates use public list prices, so negotiated discounts and plan limits don't
+  appear in them.
 
-In the TUI, `whatif_session_totals()` supplies one comparison to Overview and
-Subagents, while `token_economics()` supplies the token-type card. The browser
-mirrors those calculations in `web/page.py` with `whatifTotals()` and
-`tokenEconomics()`, using serialized model splits and rates. Changes to this
-arithmetic need updates and checks in **both implementations**.
-
-The one-hour write subset must survive every intermediate aggregation, including
-root-only rows, model scopes, nodes, caches and exports. Adding it to token totals
-instead would double-count usage.
-
-Rate lookup has two catalog layers with the same schema: the bundled snapshot and
-the user's cache, newest fetch first. `model_price()` prefers catalog matches and
-unpinned model cards, then family rules, then the generic fallback. Local providers
-short-circuit to zero price but still have context windows. `has_known_price()`
-checks the rate's provenance, not whether its numeric tuple happens to equal the
-fallback; `has_catalog_row()` answers the stricter question of whether an exact
-catalog entry exists.
-
-One distinction is intentional: **eff $/M** rankings substitute input price when a
-cache-read rate is missing, so absent metadata cannot make a model look free to
-use. The API-equivalent total and token-economics decomposition retain the catalog's
-zero-rate arithmetic, with the latter flagging missing rates. Cache-penalty analysis
-also uses the conservative input-rate substitute for its hypothetical hit.
-
-The bundled `src/opentab/data/models.json` is generated, not hand-edited. Maintainers
-refresh it with `python3 scripts/update_prices.py`; the script and runtime refresh
-share `prune_models_dev()`. Review the generated diff and pricing tests together
-when changing catalog pruning, aliases or fallback rules.
+For how pricing is implemented, see [Pricing and the rate catalog](backends.md#pricing-and-the-rate-catalog) and
+[CONTRIBUTING.md](../CONTRIBUTING.md).

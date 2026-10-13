@@ -1,559 +1,192 @@
 # Keys & navigation
 
-OpenTab opens on a stacked **Months / Days** (or Projects) sidebar, lazygit-style:
-drill from a month or day into its detail tabs, from the Sessions tab into a single
-session — cost split, model mix, subagent tree — and step back out with `Esc`.
+OpenTab is keyboard-first, with mouse support throughout. Press `?` anywhere for the
+keys that work where you are; the footer shows the most useful ones.
 
-Press **`?`** in the app for the cheat sheet: a small panel that floats over what you
-were looking at and lists, lazygit-style, the keys that work **where you are** (this
-view, this tab, this overlay — Trends, the price table and a model's session list each
-have their own), then Navigation, then the Global keys. One short line per key; the long
-form is *this* page. The footer strip reads the same table, so it can only ever offer a
-key that does something here — and `j/k` in Trends says whether it is paging a month or
-walking a list, because there it depends on the tab.
+Every key below can be remapped; see [Remap any key](configuration.md#remap-any-key).
 
-Footer actions are left-aligned, separated by thin `│` dividers, with muted keys,
-bright labels and accented active toggles. Help stays at the right edge (using your
-configured binding). Narrow terminals drop whole hints; the full list and app
-version are in Help.
+![OpenTab browsing a day across all harnesses](assets/harness-browse.png)
 
 ## How the views nest
 
-Three levels: **browse** → **zoom** → **session**. `Enter` (or `+`) drills in, `Esc`
-steps back out. Zoom is not full-screen: the detail pane takes focus *beside* the
-sidebar, which stays clickable to re-scope in place; `+` maximizes/restores the
-detail pane (remembered between runs). The session view is full-screen.
+OpenTab has three levels. `Enter` drills in, `Esc` steps back out.
 
-Detail tabs per scope: years/months/days get Overview · Models · Projects · Sessions.
-Drilling a row of the **Models** tab replaces them with that model's
-own two: **Economics** (what it cost here, split by token type) and **Sessions** (the
-sessions that used it, with the cost and tokens *it* accounts for) — see
-[Scope & filter](#scope--filter). A session adds **Turns** (prompt costs and per-turn drill-down, every harness
-that records per-step usage), **Tools** (per-tool / MCP spend) and **Context** (the
-context window's growth curve, % of the model's window, compaction markers, and —
-on harnesses whose logs carry content — an estimated breakdown of what filled it)
-when its harness supports them. Local OpenCode/Copilot sessions also add **Changes** after
-Tools, and **Harnesses** joins in the merged `all` view.
-The Context tab also overlays how the session evolved: what it spent (with a
-per-turn and per-hour burn rate), its wall-clock span with clock times pinned to
-the chart's edges, and the clock time — and how far into the session — of each
-compaction.
+```text
+browse ──Enter──▶ zoom ──Enter──▶ session
+       ◀──Esc───      ◀──Esc───
+```
+
+- **Browse**: a sidebar on the left (Years, Months, Days, or Projects, Harnesses,
+  Machines) and a detail pane on the right.
+- **Zoom**: the detail pane takes focus. The sidebar stays visible and clickable.
+  `+` maximizes the detail pane; OpenTab remembers that.
+- **Session**: one session, full screen, with its own tabs.
+
+Switch what the sidebar groups by with `t` (Time), `p` (Projects), `u` (Harnesses)
+or `m` (Machines).
+
+### Detail tabs
+
+| Selection | Tabs |
+|-----------|------|
+| A year, month or day | Overview, Models, Projects, Sessions; Harnesses in the merged `all` view |
+| A model (`Enter` on Models) | Economics, Sessions ([Drill into a model](filters.md#drill-into-a-model)) |
+| A session | Overview, Subagents, Turns, Tools, Changes, Context, when its harness supports them |
+
+What each session tab shows: [Reading a session](sessions.md). Changes:
+[Changes](changes.md).
 
 ## Move around
 
-The **Models** and **Harnesses** detail tables support `s` sorting by name, cost,
-total tokens, message/session count, and individual token categories. Click a
-column header to sort; click it again to reverse. Each table remembers its sort
-independently, and reordering keeps the selected model or harness under the cursor.
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `↑` / `↓` | Move in a list, or scroll the detail pane |
+| `h` / `l`, `←` / `→` | Previous / next detail tab |
+| `Enter` | Drill into the selection |
+| `Esc`, `Backspace` | Step back out |
+| `Tab` / `Shift-Tab` | Cycle the sidebar panels (Years → Months → Days) |
+| `1` `2` `3` / `0` | Jump to a sidebar panel / the detail pane, from anywhere |
+| `+` | Focus the detail pane; maximize / restore it |
+| `PgDn` / `PgUp` | Half a page; `Ctrl-D` / `Ctrl-U` and `Space` / `Shift-Space` too |
+| `g` / `G` | Top / bottom |
+
+Each panel shows its number in its title (`[1] Years`, `[0]` for the detail pane).
+
+The mouse works too: the wheel scrolls, a click selects, a double-click drills in.
+Click a tab to switch to it, or a column header to sort (click again to reverse).
+
+## Key reference
+
+### Everywhere
 
 | Key | Action |
 |-----|--------|
-| `t` / `p` / `u` / `m` | Switch to Time / Projects / Harnesses / Machines browse mode. Harnesses opens on `∑ All harnesses`, then one row per loaded harness; Machines opens on `∑ all machines` (the whole fleet as one scope), then one row per box (just this one until you [pull](machines.md) another) |
-| `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
-| `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
-| `Enter` | Drill into the selection; on Turns, open a prompt, then its selected turn. Inside a turn, expand / collapse the selected `▸` tool's output |
-| `+` | `expand`: focus detail from browse; maximize / restore the zoom pane. Highlighted only when the visible zoom pane is maximized. Sessions stay full-screen; pressing it there changes the zoom layout on return |
-| `Esc` | Step back out — turn → prompt → session → zoom → browse; returning from a turn keeps the selected row visible |
-| `h` / `l` | Switch detail tabs |
-| `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane; on the Turns tab, move the `▸` prompt cursor |
-| `PgDn` / `PgUp` | Half a page (`Ctrl-D` / `Ctrl-U` too); `Space` / `Shift-Space` page down / up where supported (see below) |
-| `g` / `G` | Jump to the top / bottom |
-| `[` / `]` | Inside a turn, read the previous / next turn of the same prompt |
-| `{` / `}` | Inside a turn, select and jump to the previous / next tool call |
-| `c` | Inside a turn, pick a call from a numbered list of tool names and commands; `j`/`k` move, `g`/`G` choose first/last, `Enter` jumps, `Esc` cancels |
-| `z` | Inside a turn, expand its full recorded content / collapse to the preview |
-| `y` | Inside a turn, copy the selected tool call's full recorded command/arguments, parameters and output as Markdown |
-| `Y` | Inside a turn, copy the selected command / arguments; shell commands are plain text ready to paste |
-| `O` | Inside a turn, copy only the selected call's recorded output as plain text |
-| Mouse | Wheel scrolls · click selects (anywhere in the preview pane focuses it) · double-click drills · click a tab, or a column header to sort (again to reverse). Inside a turn, click a tool header, arguments or result to select that call; double-click toggles its output. Clicking the Output label selects and toggles it directly |
+| `?` | Keys for the current view |
+| `q` | Quit (`Ctrl-C` always quits and cannot be remapped) |
+| `r` | Reload the data |
+| `R` | Date range ([Scope & filters](filters.md#pick-a-date-range)) |
+| `a` | Back to all time |
+| `t` / `p` / `u` / `m` | Browse by Time / Projects / Harnesses / Machines |
+| `H` | Harness picker |
+| `M` | Machine picker (with several machines) |
+| `F` | Pull machine summaries again over SSH (with several machines) |
+| `$` | Estimates: add list-price estimates to recorded spend ([Pricing](pricing.md)) |
+| `T` | Trends ([Overlays](overlays.md#trends)) |
+| `P` | Model prices ([Pricing](pricing.md)) |
+| `C` | Colour theme |
+| `D` | Demo mode, for screenshots |
+| `Ctrl-P` | Hide your prompts without demo mode |
+| `W` | What's New |
+| `N` | Notifications you missed |
+| `K` | Edit the keymap in `$EDITOR` |
+| `Ctrl-F` | [Search past conversations](conversation-search.md) |
 
-On **Subagents**, `j`/`k` select an execution, `g`/`G` jump to the first/last,
-and `Enter` or a click opens its compact execution summary, received prompt preview
-and selectable turns directly. Follow-up prompts appear as sections on the same
-page. `Enter` on a turn opens its trace; `Esc` returns to the turns, then directly
-to the execution list with selection and scroll restored. `z` expands/collapses
-full prompts, the full title, metadata, contribution and exact token/cache breakdown.
-Unsupported executions retain their summary detail with an availability explanation.
-Hints and help follow remapped bindings. The overview adds
-delegation counts and shares, plus summaries by agent and representative model.
-Narrow terminals hide optional table columns; the execution detail retains them.
-Shares use summed node metrics, which can differ from session rollups. Models
-are representative, not proof that an execution used only one model.
-
-The nested reader stays inside **Subagents** and shows only that execution's own
-prompts and turns, not its descendants or siblings. `j`/`k` select turns across
-prompt sections, then scroll inside a trace. `g`/`G` select the first/last turn,
-and scroll to the top/bottom inside a trace; `[`/`]` step between turns of this
-execution, including follow-ups, and `z` inside a trace toggles full turn content.
-Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support this drill when exact
-records survive. Gemini, Antigravity and Remote do not; demo blocks it. Missing or
-ambiguous ownership is unavailable, while a valid execution with no turns is empty.
-
-**Received prompt** reads the selected child's first recorded user message, separately
-from its generated title. OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support this
-when the message and exact child identity are retained. It is not the complete
-system instructions or inherited context. Missing/ambiguous records and unsupported
-harnesses are labeled explicitly; demo hides real prompts. The read happens only
-after opening the execution, and its text is released when you leave the detail.
-Nested prompt and trace reads are also lazy, with scoped content released on leaving
-the drill. The session's **Turns** and **Context** tabs keep their existing root
-scope, including the existing interleaved subagent rows in Turns. Web views and
-ordinary exports are unchanged; an explicit `e` export inside the nested reader
-uses that execution's numeric turn rows, not raw prompt or trace content. This
-drill adds no raw-content support to web, fleet, CLI or MCP.
-
-On the Turns tab, `j`/`k` select a prompt and `Enter` (or a click) opens its full
-text and per-turn rows; `g`/`G` jump to the first/last prompt. Inside a prompt,
-`j`/`k` select a turn, `g`/`G` jump to the first/last turn, and `Enter` opens its
-token breakdown and recorded content where supported. The Content column shows
-text, thinking and tool names where space allows. Inside a turn, `j`/`k` scroll
-while `[`/`]` step between turns and `{`/`}` select tool calls. Scrolling never
-changes the selected call. The prompt, turn identity and selected call's number,
-tool name and command stay visible above the transcript; the selected call has a
-highlighted header and accented left gutter. `c` opens a compact, scrollable call
-picker without changing selection until you confirm. In preview mode, the picker
-lists retained preview calls; use `z` for all recorded calls in a long turn.
-`z` reads the selected
-turn's full arguments, reasoning and output; a second `z` returns to the capped preview.
-Expansion is temporary and is released when you leave the turn. Recorded tool
-errors are labeled explicitly. Sources without recorded content still have numeric
-turn detail, but no output expansion. Real content is unavailable in demo mode.
-
-To copy a command and its result, select its call and press **`y`**. Use **`Y`**
-for the command / arguments alone or **`O`** for output alone. The pinned header
-identifies the target before copying, and the confirmation names its call number,
-tool and copied part. Copy reads the full recorded text even when the call is
-collapsed, preserving spacing and long lines inside Markdown code fences. It
-includes the tool name, recorded status and other parameters; empty output stays
-empty in the combined copy; copying an empty part leaves the clipboard untouched.
-Missing source content also leaves the clipboard untouched, and any recorded
-output omissions are labeled. Nested Subagents traces copy the selected execution's
-call; remote traces reuse the already fetched turn. Demo disables copy. This uses
-the same remappable `[main] copy_conversation` binding as session chat copy.
-The additional actions are `trace_call_prev`, `trace_call_next`, `trace_calls`,
-`trace_copy_args` and `trace_copy_output`; the picker uses the shared `[menu]` bindings.
-
-Prompt and turn details show a colored token breakdown and exact counts. Prompt
-totals sum the answering turns, not the text you typed. One-hour cache writes are
-shown as a subset; separate reasoning may be zero when already included in output.
-Recorded totals are preserved even when the category sum differs.
-
-On **Tools**, `j`/`k` select a tool or server/namespace ranking and `Enter` or
-double-click opens its contribution, per-call averages, token composition and exact
-model attribution. The chronological call list uses the same keys; `Enter` opens
-the owning prompt's turn list with the relevant turn selected. Another `Enter`
-opens the existing trace reader where supported. `Esc` returns through each level,
-restoring the originating tool call and ranking. `g`/`G` select first/last; page keys
-and the mouse wheel scroll the details. `$` updates attribution without changing
-the selected tool. The rankings remain useful for aggregate-only sources, which
-explicitly report that individual calls are unavailable. Tools CSV export remains
-the session's aggregate tool/model attribution, not the selected call ledger.
-
-The overview chart shows **total cost per prompt**, matching the prompt table.
-Inside a prompt, the charts show **cost per turn and context growth** for that
-prompt only, with the same session-wide turn numbers as its table. Each peak is
-local to the displayed chart; the Context tab shows the full-session curve.
-
-For [managed SSH remotes](machines.md#read-a-remote-turn), opening a turn explicitly
-fetches that turn and shows the remote machine and loading state. `Esc` closes the
-trace and cancels an in-flight read; after an error, close and reopen to retry.
-`[`/`]` discards the previous turn and fetches the selected one. Its preview and
-full content stay only in memory while that turn is open, so `z` and tool-output
-expansion reuse the fetched content. Leaving or reloading releases it. Ordinary
-snapshot browsing stays offline; URL entries and arbitrary imports cannot fetch
-traces. Raw content remains absent from web and fleet exports.
-
-A `▼` line marks each **context compaction** — where the window was cleared
-between two turns, with what it dropped from and to. The tab's title counts them
-and the tokens they freed, and the lines stay visible while the prompts are
-folded: a compaction is a session-level event, not a turn. The Context tab charts
-the same events (one rule, both tabs) — and where that tab doesn't apply, because
-the harness records cumulative-total deltas rather than per-request prompts
-(Codex), neither tab marks anything.
-
-### Session changes
-
-On **Changes**, the file list groups recorded edits across the root and subagents
-by path. OpenCode retains completed `apply_patch`, `edit`, and `write` metadata and
-per-prompt snapshots: a snapshot can also contain shell or formatter changes missing
-from the tool patch. Copilot retains successful built-in `edit`, `create`,
-`str_replace_editor`, and `apply_patch` calls, with native diffs matched to recorded
-paths. Its read-only `view` results are excluded even when they look like diffs.
-`j`/`k` and `g`/`G` select files,
-`Enter` opens a syntax-colored diff in your last selected layout (Unified by default);
-`v` toggles **side-by-side** (Before / After),
-`[`/`]` step through that file's recorded occurrences, and `Esc` returns to the
-list. Movement and page keys scroll the diff; old/new line numbers flank the patch
-and long lines wrap without losing indentation. Added/deleted lines have green/red
-backgrounds, with stronger highlights on changed text within paired lines. The
-split view aligns replacements and context, leaving gaps for one-sided edits.
-Below 80 content columns it falls back to Unified; widening restores the selected
-split mode. The selected mode is saved on exit and restored on the next launch
-(unless `--no-state` or demo disables preference saving). The narrow-window fallback
-does not change this preference. Toggling keeps the current patch position.
-`v` is configurable as `[main] diff_layout`.
-`Space` / `Shift-Space` use the main `page_down` / `page_up` bindings here,
-scrolling the diff by half a visible page.
-**Diff** says `yes`, `some`, or
-`no` for retained text availability.
-
-Each occurrence identifies its evidence source; moves also show the old path.
-Completed writes can name a changed file without retaining a diff. **Records** counts
-evidence entries, not unique edits. Line counts sum records, not net changes; file
-totals show `?` when snapshot and tool records overlap for the same execution,
-prompt and path. Each record keeps its own counts. Snapshots may overlap across subagents
-or include concurrent non-agent edits; reverted history remains recorded. OpenTab
-never uses today's Git diff or guesses from shell commands, and formatter/shell
-changes may be missing. No metadata does not prove no edits happened. Large
-histories and patches are bounded, with omissions labeled.
-
-Files and selected patches load in the background, so you can navigate away while
-they load. Loaded file lists and patches remain in memory across tabs and sessions
-until you quit, reload (`r`), change the harness, or enter demo. Revisiting does not
-read them again; reload explicitly to pick up new edits. This is an in-memory
-cache, not a disk history archive. Changes is local OpenCode/Copilot TUI-only and disabled
-in demo; source contents are not added to web, fleet, CSV, CLI, or MCP output.
-
-#### External diff viewer
-
-The built-in viewer needs no extra program. To use your own pager, set
-`OPENTAB_DIFF_PAGER` before starting OpenTab, then press `d` inside a loaded diff:
-
-```sh
-export OPENTAB_DIFF_PAGER='delta --paging=always --line-numbers'
-# Or: export OPENTAB_DIFF_PAGER='less -R'
-```
-
-The command receives the recorded unified patch on stdin, not paths to live files.
-Quit the pager to return to OpenTab. Quoted arguments work; shell pipelines and
-expansions do not. Truncated patches are not sent to external viewers. The command
-is user-trusted and runs locally; OpenTab does not install or auto-select a pager.
-
-## Scope & filter
-
-`Ctrl-F` opens [conversation search](conversation-search.md); `/` outside search
-still filters metadata. Printable keys type while editing; finish with `Enter`
-or `Tab` before using letter shortcuts. `Ctrl-G` opens Filters without leaving
-the query. In the project picker, type to find a project and use arrow keys to select it.
-
-| Search key | Action |
-|------------|--------|
-| `Enter` | Input to Results; selected match to Conversation |
-| `Ctrl-F` / `/` | Return to query input (`Ctrl-F` also works while typing) |
-| `Ctrl-G` | Open Filters: Project, Harness and Message date; works while typing |
-| `h` / `l`, Left/Right | Switch Results / Conversation tabs |
-| `Tab` / `Shift-Tab` | Finish typing / switch matches and preview focus |
-| `j` / `k`, Up/Down, `PgDn` / `PgUp` | Move results or scroll the focused pane |
-| `J` / `K` | Scroll only the preview, without changing focus or selection |
-| `S` | Scope picker: All sessions / This session |
-| `s` / `a` | Selected session / all sessions; keep other filters |
-| `H` | Harness picker: OpenCode / Claude Code / Codex / Hermes / Copilot / pi / omp / all |
-| `p` | Search known projects and choose one; All projects clears |
-| `d` | UTC message dates: Today, Last 7/30 days, or custom `YYYY-MM-DD..YYYY-MM-DD` |
-| `R` | Clear project, harness and dates; keep session scope and query |
-| `I` | Confirm an index update; date filters do not limit indexing |
-| `[` / `]` | Read earlier / later messages or remaining text |
-| `L` | Launch/copy the owning root session via tmux, Herdr or a hook |
-| `Esc` | Back from a filter picker, reader or editing; then close (scope changes add no back steps) |
-| `?` | Search help |
-
-Tabs, the scope selector and Filters are clickable. Active filter chips have an
-`x` to remove just that filter; Clear removes all three without changing scope.
-Click a result to select; double-click to read.
-The wheel moves one result or three preview lines under the pointer, without
-changing focus.
-
-**Harnesses** (`u`) compares the data already loaded, within the active date range
-and machine filter. Its sidebar shows cost, tokens and session counts; `s` or a
-column-header click sorts the harness rows while **All harnesses** stays first.
-Enter opens Overview, Models, Projects and Sessions, plus Machines for a fleet.
-Project, machine and model drills keep the selected harness scope. Detail search
-does not change the selected harness, and `e` exports the focused list.
-
-This is different from `H`: the harness picker changes which sources are loaded
-(or filters the loaded fleet by harness). Selecting a sidebar row never loads a
-different backend. If only one source is loaded, use `H` to choose All when other
-harnesses are detected; the browse mode remains available with a single source.
+### Lists
 
 | Key | Action |
 |-----|--------|
-| `Ctrl-F` | Search retained conversation text in the current local catalog; available from the main views and supported overlays |
-| `R` | Date-range picker: type `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` straight away, or `Tab` to presets and From / To dates |
-| `a` | Back to all time, keeping the current selection where possible |
-| `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`). Sessions offer **Start Date** (`created_at`, default) and **Last Activity** (`ended_at`, including subagent activity where tracked), also in the **Days** pane. Day membership follows the session's start date; Last Activity ranks those sessions by their latest activity, falling back to the start when unavailable. The Date column follows whichever is active, and its header shows "Last act" under the latter. In Days it shows the activity time for same-day activity, or the date for activity on a later day. Projects offer the matching pair: **Recency** (the newest session's *start*) and **Last Activity** (the newest activity in any of the project's sessions, subagents included) |
-| `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**) and projects. Sessions rank by match quality; projects keep the selected column sort. Model lists (`P`, `w`) match word-anchored (letters may scatter inside a word, a new word only joins at its first letter — `opus48` works, `opus` no longer drags in `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**), routes by substring. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
+| `s`, `S` | Sort picker |
+| `f`, `/` | Filter the list as you type |
 | `x` | Clear the filter |
+| `e` | Export the list to CSV |
+| `i` / `I` | Ignore the selection / show ignored rows |
+| `b` / `B` | Bookmark a session / show only bookmarks |
+| `n` | Note on a session |
+| `o` | Open the session's or project's directory |
+| `L` | Resume the session in its own tool |
+| `y` | Copy the session's conversation as Markdown |
+| `w` | Compare the session at another model's prices |
 
-### Date-range picker
+Details: [Working with sessions](sessions.md#working-with-sessions) and
+[Scope & filters](filters.md).
 
-`R` opens one popup with three areas: the **Range** field, the preset list and the
-**From / To** dates. The Range field has focus on open, seeded with the applied
-expression (empty for all time); the first character you type replaces the seed,
-`Backspace` edits it. Every key types there, including menu letters such as `j` or
-`a`, and the preview line shows the resolved bounds before `Enter` applies them.
-
-`Tab` / `Shift-Tab` cycle Range → presets → From → To; the Tab button names where
-focus goes next. `↓` / `↑` in a field also move to the presets, and `/` in the
-presets returns to the Range field. `Enter` applies whichever area has focus: the
-typed expression, the highlighted preset, or From..To. `Esc` cancels without
-changing scope.
-
-In the presets, `j`/`k`, arrows and `g`/`G` move the highlight and `a` resets to all
-time; any other printable key types into the Range field. Click focuses a field or
-selects a preset, double-click applies a preset, and the wheel moves the highlight.
-Presets include All time, Today, Yesterday, Last 7/30 days, This month, Last month
-and This year. Last 7/30 days covers exactly that many inclusive dates through
-today; month/year presets cover the full calendar period, including future dates.
-Dates use local today, captured when the picker opens. No range is persisted.
-
-From / To take `YYYY-MM-DD`; leave either blank for an open bound. Invalid input
-stays in place with an inline error. `Ctrl-U` clears a field and `Ctrl-W` deletes a
-word. The preset list follows `[menu.range]` / shared `[menu]`; the fields follow
-`[input.range]` / `[input]` remaps.
-
-Quick expressions retain their existing semantics: `30d` starts on today minus
-30 days with no upper bound; `2m` includes the current and previous calendar month
-with no upper bound. A single `YYYY-MM-DD` means **since** that date, not just that
-day. The preview explicitly shows `Any start` / `No end` for open bounds.
-
-### Drilling a model
-
-`Enter` on a row of the **Models** tab drills into that model *within the scope you're
-in*: the month, year, project or machine. By contrast, Trends follows the active
-date range and `P` uses app-wide model usage. The scope drill opens two tabs:
-
-- **Economics** — how many sessions and messages used it here, its tokens, and its
-  spend split by token type (uncached input / output / reasoning / cache read / cache
-  write), the same chart every Overview carries.
-- **Sessions** — the sessions that used it, but with the two metric columns re-pointed
-  at the model: **Model list** and **Model tok** are what *this model* accounts for, not
-  the session's whole bill. So the list ranks by how much of the spend was really this
-  model's, and a cheap session that leaned on it sorts above an expensive one that
-  barely touched it. `e` exports those columns alongside the session totals.
-
-The cost figures deliberately use **list rates** for a consistent token-type
-decomposition, even when the harness records per-model spend. A `~` marks a guessed
-rate; a local model has no list-price cost. See [Token economics](pricing.md#token-economics).
-`Esc` steps back to the Models table you came from.
-
-**Trends → Models** opens the same **Economics / Sessions** tabs, scoped to the
-active date range rather than the sidebar selection. `h`/`l` switches those tabs;
-`Enter` on Economics goes to Sessions. `j`/`k`, paging and `g`/`G` scroll Economics
-on small terminals. Its chart always uses list rates; the Trends session table
-keeps its existing Cost/Tokens columns and current price mode. Other ranked
-Trends rows still open Sessions directly.
-
-## Sessions & projects
-
-Every session list carries a **Worked** column — how long the agent was *actually
-working*, summing its bursts and dropping the idle gaps where it waited for your next
-prompt (so a session you left open for hours shows minutes, not hours). It's derived
-from the human turns the transcript logs, not a guessed timeout; blank when the
-backend can't tell work from waiting (a source with no human-turn markers like Copilot
-OTEL or VS Code, or an export from an older opentab). It's sortable like any column
-(`s` picker or a header click), and a session's Overview spells it out: `Started: … ·
-worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock story
-(burn rate, per-turn offsets).
+### Inside a turn
 
 | Key | Action |
 |-----|--------|
-| `i` / `I` | Ignore / unignore the selection; `I` shows hidden rows and includes their usage in totals and Prices while shown, so they can be unignored |
-| `b` / `B` | Bookmark ★ the selected session (remembered between runs); `B` shows only bookmarks, within the active range |
-| `n` | Note ✎ on the selected session — *why* it cost what it did, which no token count records. Opens a prompt seeded with the existing note (`Enter` saves · `Ctrl-U` clears · `Ctrl-W` kills a word · `Esc` cancels); saving an empty note removes it. An annotated session shows a `✎` in every list and the note in its **Overview**; `f`/`/` searches note text too, and `e` exports it as a `note` column. Notes live in their own `~/.local/share/opentab/notes.json` and are written the moment you save. Off under `--demo` / `--no-state` |
-| `o` | Open the selected session's / project's directory |
-| `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window/tab · `s` right split · `v` lower split · `p` popup · `y` copy the command. tmux offers all spawn targets. Herdr offers a tab and both splits only when it provides a valid `HERDR_PANE_ID` for the current pane; otherwise it offers only the tab and copy. A [launcher hook](#custom-launchers) may offer all four. `y` copies anywhere. If tmux and Herdr are nested, OpenTab uses the innermost multiplexer. A session **pulled from another machine** reopens *there* only when its `remotes.json` entry has an SSH target: every available target uses `ssh -t` and the remote user's interactive login shell to load its PATH and run `cd … && …`; `y` yanks that same line. A box reached by `url` (no SSH target) offers only the yank |
-| `e` | Export the current list to a CSV in the working directory — whatever the pane is showing, including a model scope's attributed columns |
-| `y` | Copy the selected/open session's retained user and assistant messages as Markdown (`## User` / `## Assistant`), including intermediate replies and code blocks. Available in the focused Sessions list and every session tab for local OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp. Inside an open turn trace, copies the targeted tool call instead (see above). Elsewhere copies the root conversation, including inside Subagents; excludes tool calls/results, thinking, system messages and attachments. Disabled in demo |
+| `[` / `]` | Previous / next turn of the same prompt |
+| `{` / `}` | Previous / next tool call |
+| `c` | Pick a tool call from a list |
+| `z` | Show the full recorded content / back to the preview |
+| `Enter` | Expand / collapse the selected tool's output |
+| `y` | Copy the selected call: arguments, parameters and output |
+| `Y` | Copy only the command / arguments |
+| `O` | Copy only the output |
 
-Conversation copy reads the source freshly on each press and preserves its message
-order and full retained text, rather than copying truncated Turns previews. It does
-not need a conversation index. Deleted history cannot be recovered; retained branches
-or repeated prompts can still appear. `Ctrl-P` only hides displayed prompts, so `y`
-copies the original text. The remappable action is `[main] copy_conversation`.
+See [Turns](sessions.md#turns).
 
-## Views & overlays
+### Changes
 
 | Key | Action |
 |-----|--------|
-| `T` | Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Projects · Harnesses. `h`/`l` tabs · `j`/`k` page months/weeks/years. On the charts and Calendar: `Enter` focuses, arrows pick a bar/day, `Enter` drills in, `Esc` back. On rankings: `j`/`k` pick · `s` sort · `Enter` drill. Models opens Economics / Sessions; other rows open Sessions directly |
-| `P` | Model prices — the table behind the `$` estimate; see [Pricing](pricing.md) for the views, sorting, and pinning |
-| `W` | What's New — offline highlights for this and earlier bundled releases. `h`/← goes newer; `l`/→ goes older, without wrapping. `j`/`k`, ↑/↓, paging and `g`/`G` scroll. `o` opens the full GitHub release currently shown; `Esc`, `q`, or `W` closes. Reopening starts at the installed release; opening from Help returns to Help |
-| `$` | Toggle what-if prices — what unpriced usage would cost at API list rates |
-| `w` | Compare the current session at one model's list rates. Pick from used models or the catalog (`Tab` switches tiers, `f` filters, `Enter` selects, `Esc` cancels). Overview and Subagents show the comparison; other totals stay unchanged. Press `w` again to clear. See [Comparing models](pricing.md#comparing-models-with-w) for the arithmetic and limitations |
-| `H` | Harness picker (`Tab` Single / Multiple · `j`/`k` move · `Space` toggle in Multiple · `a` all/none · `Enter` apply · `Esc` cancel) |
-| `M` | Machine picker (fleet) — narrow **every** view to selected machines (`Tab` Single / Multiple · `j`/`k` move · `Space` toggle in Multiple · `a` all/none · `Enter` apply · `Esc` cancel) |
-| `C` | Colour-theme picker — `j`/`k` live-preview · `Enter` keep · `Esc` revert (themes are shared with the web browser) |
-| `D` | Demo (anonymize for a shareable screen) — opens a multi-check picker of what to scramble: **Titles** (session / prompt / model / machine names), **Paths** (project directories), **Turns** (the expandable full prompt text), **Spend** (dollars + token magnitudes). Paths are separate from titles because a project tree is often the one label a demo *wants* real — leave it unchecked to keep real project names on an otherwise anonymised screen. `j`/`k` move · `Space` toggle a category · `a` all/none · `Enter` apply · `Esc` cancel. **While demo is on, `D` switches it straight back off** (one press, no picker); the categories are remembered, so `D` again re-offers them. From the CLI: `--demo` (all) or `--demo titles,spend` |
-| `Ctrl-P` | Hide your prompts without demo — every session's Turns swaps the prompts you typed (titles and full text) for stable fakes. Prompts the main agent wrote to subagents stay real: received prompts, a delegated execution's turns, and Hermes child rows. So do titles, paths, spend, traces and `Ctrl-F` search. A CSV export of Turns carries the fakes too. Not saved; `Ctrl-P` again shows them |
-| `r` / `q` / `?` | Reload the data · quit · help (Help also links to What's New) |
+| `v` | Side-by-side / Unified diff |
+| `d` | Open the diff in `$OPENTAB_DIFF_PAGER` |
+| `[` / `]` | Previous / next recorded edit of the file |
 
-The harness picker's **Single** tab switches immediately on `Enter`, including an
-**All** option. **Multiple** lets you combine any detected harnesses; check at least
-one and press `Enter` to apply. `Esc` discards pending changes. Tabs and rows are
-clickable. Local combinations are restored on the next launch (when saving state
-is enabled); fleet selections filter the loaded machines for the current run.
+See [Changes](changes.md).
 
-The machine picker uses the same **Single / Multiple** controls. Machine and
-harness selections compose: selected machines **and** selected harnesses. Choosing
-all machines clears the machine filter. Fleet filters last for the current run;
-reloading drops unavailable selections and clears a filter if none remain.
+### Conversation search
 
-The global toggles stay live inside Trends and Prices: `?`, `W`, `Ctrl-F`, `C`, `H`,
-`M` (fleet), and `D`. Help, What's New and notification history also accept `Ctrl-F`;
-Help accepts the theme, harness, machine and demo pickers too. Other
-modals own their input and show their controls as buttons on their bottom border; a
-click on a button presses its key. The Help
-body describes the view underneath it; close Help before using that view's keys.
+| Key | Action |
+|-----|--------|
+| `Enter` | From the query to the results; open the selected match |
+| `Ctrl-F`, `/` | Back to the query |
+| `Ctrl-G` | Filters: project, harness, message date |
+| `h` / `l` | Results / Conversation tab |
+| `Tab` / `Shift-Tab` | Finish typing / switch focus |
+| `J` / `K` | Scroll only the preview |
+| `S` | Scope: all sessions / this session |
+| `s` / `a` | This session / all sessions, keeping other filters |
+| `H` | Harness |
+| `p` | Project |
+| `d` | Message dates: today, last 7 / 30 days, or `YYYY-MM-DD..YYYY-MM-DD` (UTC) |
+| `R` | Clear project, harness and dates |
+| `I` | Update the index |
+| `[` / `]` | Earlier / later messages |
+| `L` | Launch or copy the session |
+| `Esc` | Back, then close |
 
-`Space` is contextual rather than global. It pages down in browse, zoom and
-session views (including traces and Changes diffs), Help, What's New,
-notification history, Trends drills and the Prices session drill. It keeps its
-existing special actions in the Prices model table (pin/unpin), Demo picker
-(toggle category), and the harness/machine pickers' Multiple tab (toggle item).
-Printable-input contexts, including filters, prompts, search
-fields and searchable pickers, still insert a literal space. Other menus and
-overlays keep their existing behavior.
+See [Conversation search](conversation-search.md).
 
-`Shift-Space` pages up in these scrollable views, including the Prices model
-table. It requires the terminal to send a distinct key sequence: OpenTab accepts
-CSI-u (`ESC [ 32 ; 2 u`) and xterm modifyOtherKeys (`ESC [ 27 ; 2 ; 32 ~`).
-OpenTab does not enable an extended keyboard protocol globally. If your terminal
-sends plain Space for both keys, configure its Shift-Space shortcut to send
-`\x1b[32;2u`, or use `Ctrl-U` / `PgUp`. Text fields still insert a literal space.
+### Pickers and prompts
 
-If an older keymap explicitly sets `page_down = pgdn, ctrl-d`, add `, space`
-in the desired sections or remove those overrides to use the new defaults.
-Keep `[prices]` unchanged: its model table uses Space for pinning.
-For upward paging, add `, shift-space` to existing `page_up` lines or remove
-those overrides to use the new defaults.
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `g` / `G` | Move the highlight |
+| `Enter` | Apply |
+| `Esc` | Cancel |
+| `Space` | Toggle an item (multi-select pickers) |
+| `a` | All / none (multi-select pickers) |
+| `Tab` | Switch picker tabs, such as Single / Multiple |
+| `Ctrl-U` / `Ctrl-W` | Clear the field / delete a word |
 
-## What persists between runs
+Buttons on a popup's bottom border are clickable and press their key.
 
-The active **harness, sort, focused sidebar panel, ignored projects, bookmarks,
-pinned price rows, theme, `$` what-if view, and the last release announcement are remembered between runs**, stored in
-`~/.local/state/opentab/state.json` (the XDG *state* dir — regenerable prefs). Pass
-`--no-state` to disable; `--demo` never persists.
+## Space and Shift-Space
 
-**Session notes (`n`) are kept apart**, in `~/.local/share/opentab/notes.json` (the XDG
-*data* dir). Everything in `state.json` is a preference opentab can regenerate or shrug
-off; a note is the one thing you wrote, so it gets its own file in the data dir, is saved
-on the edit rather than at quit, and a note whose session has since disappeared (a
-rotated transcript, a harness you didn't merge in this run) is **kept, never pruned**.
+`Space` pages down and `Shift-Space` pages up in scrollable views. Where Space has its
+own job, it keeps it: pinning in the price table, toggling items in multi-select
+pickers, and typing a space in text fields.
 
-A `w` **what-if target model is deliberately not remembered**: it's a transient
-analysis mode, and a persisted one would silently re-frame every future launch's
-Subagents tab.
+Many terminals send the same code for `Shift-Space` and `Space`. OpenTab recognizes
+`ESC [ 32 ; 2 u` and `ESC [ 27 ; 2 ; 32 ~`. If yours sends plain Space, map
+`Shift-Space` to `\x1b[32;2u` in the terminal, or use `PgUp` / `Ctrl-U`.
 
-The **date range (`R`) is deliberately not remembered either**: every launch starts on
-the default window, or on `--since`/`--until`/`--days` when you pass one. A range
-narrowed for one look would otherwise keep hiding spend runs later, with only the small
-range chip to explain the missing money.
+## Reading the numbers
 
-Two formatting rules worth knowing: sub-cent costs render as `<$0.01` so they aren't
-confused with a red `$0.00`, which specifically means *unpriced* (tokens with no
-local price); and git worktrees fold into their main repo (`--no-worktrees` keeps
-them split).
-
-## Remap any key
-
-Bindings in every view, picker, overlay, pager, prompt and text field are
-remappable. Launch target letters are fixed shortcuts, hidden when a configured
-menu binding takes their key. The keymap lives at `~/.config/opentab/keymap.conf`, a fully
-commented INI file installed on first run (also in the wheel as
-`opentab/data/keymap.conf`; `opentab --keymap` prints the path). Press **`K`** inside
-opentab to open it in `$EDITOR` (`$VISUAL` wins, `vi` as fallback): edit, save, quit,
-and the new bindings are live the moment the editor returns — the footer chips, the
-`?` cheat sheet, and every modal title re-label themselves from the file, so the UI
-never advertises a key that isn't bound.
-
-One line per action, first key shown in the UI, comma-separated aliases, empty value
-unbinds:
-
-```ini
-[main]
-# sort this list
-sort = o
-# step back out — session → zoom → browse
-back = esc, backspace, h
-# an empty value unbinds (comments are full-line only: # or ; at line start)
-export =
-
-[menu]
-# one line re-teaches j/k in EVERY picker (sort, themes, launch, …)
-down = n
-up = e
-```
-
-Key syntax: a single character (case-sensitive — `S` is shift-s; non-ASCII like `ö`
-works), named keys (`enter esc space tab shift-tab backspace delete insert up down
-left right pgup pgdn home end f1`–`f12`, `comma` for a literal `,`), and control chords
-(`ctrl-u` or `^u`, letters only). `Ctrl-C` is the hardwired panic quit and cannot be
-rebound.
-
-Contexts mirror what owns the keyboard: `[main]` for browse/zoom/session, `[search]`
-for search commands and `[search.edit]` for query/date typing, `[menu.search-project]`
-for the searchable project picker, `[trends]`
-(+ `[trends.chart]` for a focused chart, `[trends.drill]` for a ranked row's session
-list), `[prices]` (+ `[prices.sessions]`), `[help]`, `[whats-new]`, `[notices]`, the shared `[menu]`
-with per-picker overrides (`[menu.sort]`, `[menu.theme]`, `[menu.launch]`,
-`[menu.whatif]`, `[menu.range]` for range presets, …), `[filter]` for the live filter
-line, `[input]` for text prompts such as notes, `[input.range]` for editing range
-expressions and From / To fields, and `[prompt.prices]`. A sub-context falls back to its family for anything it
-doesn't name; anything the file doesn't name falls back to the built-in default — so
-the file survives upgrades, and deleting a line (or the whole file) restores stock
-behavior.
-
-Typos never break the TUI: a bad key name, an unknown action, or two lines fighting
-over one key each fall back sanely and land a precise warning as a toast (press `N`
-for the list). Rebinding a key *takes it away* from whatever held it — bind `x` to
-`down` and `x` no longer clears the filter (with a warning that `clear_filter` is now
-unreachable, unless you bind or unbind it yourself).
-
-## Custom launchers
-
-If an executable exists at `~/.config/opentab/launcher` (or `$OPENTAB_LAUNCHER`
-points at one), every `L`-menu launch is handed to it instead of the built-in
-tmux commands — git-hooks style. It's called as
-
-```sh
-launcher <kind> <directory> <command>
-# kind ∈ window | hsplit | vsplit | popup
-# e.g. launcher window /repo/myproj 'claude --resume abc123'
-```
-
-and a nonzero exit shows its stderr as the launch error. The footer reads
-"launch via launcher hook" when one is active.
-
-For a session pulled from another machine the `<command>` is already the full
-`ssh -t … 'cd … && …'` line and `<directory>` is your home — the hook runs it
-locally, exactly as it runs a local one, and the `cd` happens on the far side.
-
-**Example hook** — route launches through zellij (or kitty, or your own popup
-manager):
-
-```sh
-#!/bin/sh
-# ~/.config/opentab/launcher — example: zellij instead of tmux
-kind=$1 dir=$2 cmd=$3
-case $kind in
-  window) exec zellij action new-tab --cwd "$dir" -- sh -c "$cmd" ;;
-  popup)  exec zellij run --floating --cwd "$dir" -- sh -c "$cmd" ;;
-  *)      exec zellij run --cwd "$dir" -- sh -c "$cmd" ;;
-esac
-```
+- `<$0.01` is a real cost under one cent. A red `$0.00` means **unpriced**: tokens
+  with no known price. See [Pricing](pricing.md).
+- Git worktrees count under their main repository. `--no-worktrees` keeps them apart.
 
 ## Supporting OpenTab
 
-After your third interactive TUI launch, a small optional prompt explains how
-GitHub stars help others discover OpenTab. For release notifications, use
-**Watch → Custom → Releases** on GitHub; starring alone does not subscribe you.
+After your third launch, OpenTab asks once whether you'd like to star it on GitHub.
 
-- `o`: open the repository. Once the browser launch succeeds, OpenTab stops asking.
-- `r` or `Esc`: remind me on a launch at least **30 days** later.
-- `d`: dismiss permanently.
+| Key | Action |
+|-----|--------|
+| `o` | Open the repository; OpenTab stops asking |
+| `r`, `Esc` | Remind me in at least 30 days |
+| `d` | Don't ask again |
 
-Choices are saved immediately in OpenTab's local state. Startup warnings and the
-model-pricing prompt take priority. Demo, `--no-state`, web reports, and headless
-commands neither show this prompt nor count as launches. Existing installations
-start counting from their first TUI launch with this feature. Keys can be remapped
-in the `prompt.star` section of `keymap.conf`.
+To hear about releases, use **Watch → Custom → Releases** on GitHub. The prompt never
+appears in demo mode, with `--no-state`, in web reports or in scripted commands.

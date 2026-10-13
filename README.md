@@ -58,16 +58,10 @@ on native Windows. [Windows & WSL setup](docs/windows.md).
 
 <a id="usage"></a>
 
-Prefer a browser? Run **`opentab web`**. Showing someone your screen? **`opentab --demo`**
-anonymizes your existing history in memory. If a tool is missing, **`opentab doctor`**
-explains what was found and what needs attention.
-
-**`opentab --help`** is the quick guide. Add **`--help-all`** to any command for
-every option, including source paths and compatibility flags.
-
-Automating it? OpenTab also provides versioned JSON resource commands and a local
-stdio MCP server: `opentab usage summary --range 30d` and `opentab mcp`. See
-[Programmatic access](docs/programmatic.md) for commands, schemas, and privacy gates.
+**New here? Read the [Quick start](docs/quick-start.md).** Prefer a browser? Run
+**`opentab web`**. Showing someone your screen? **`opentab --demo`**. A tool missing?
+**`opentab doctor`**. **`opentab --help`** is the quick guide. Automating it? See
+[Programmatic access](docs/programmatic.md) for JSON commands and the local MCP server.
 
 ## Follow the work behind the numbers
 
@@ -75,23 +69,11 @@ stdio MCP server: `opentab usage summary --range 30d` and `opentab mcp`. See
 
 ### Follow an expensive session down to the turn
 
-Pick a day on the spend heatmap. Open its sessions, sort by cost, and follow the largest
-one. The **Subagents** view shows how the work's cost splits between the main agent and
-its delegates, including nested subagents. You can see whether one delegate accounts for
-most of the total or the cost is spread across the team.
-
-Then open **Turns**: prompts, the steps that followed, and their token usage and cost in
-order. On supported tools, inspect a turn's recorded narration, reasoning, and exact tool
-calls and results right in the terminal.
-Use **`[` / `]`** to move between turns. Tool results start as compact previews;
-click a result or press **Enter** to expand the output marked `▸` (the section at
-the top of the viewport, or the next below it). **`z`** expands the whole turn,
-including full arguments and output.
-
-The **Tools** view groups usage by tool and MCP server. Its treemap separates tools that
-ran often from those associated with expensive calls, with exact figures underneath.
-Attribution comes from the model turns that used each tool; calls in the same turn share
-that turn's usage.
+Pick a day on the spend heatmap, open its sessions, sort by cost, and follow the largest
+one. **Subagents** shows how its cost splits between the main agent and its delegates.
+**Turns** lists prompts and the steps after them with tokens and cost; on supported tools
+you can read a turn's recorded narration, reasoning and exact tool calls. **Tools**
+groups usage by tool and MCP server. [Sessions](docs/sessions.md) · [Keys](docs/keys.md)
 
 ### Understand why token counts and costs tell different stories
 
@@ -132,64 +114,28 @@ Detail views depend on what each tool records. [Compare support below](#the-tool
 
 ## Built to be poked at
 
-Move between daily, weekly, and monthly trends, a calendar heatmap, and rankings of
-models, providers, projects, and coding tools. Follow a chart or a ranking into the
-sessions behind it. Filter as you type, change the date range, and keep exploring.
+Move between daily, weekly and monthly trends, a calendar heatmap, and rankings of
+models, providers, projects and tools. Follow a chart into the sessions behind it, filter
+as you type, and change the date range.
 
-- **Find your way back.** Bookmark sessions, add searchable notes, and reopen supported
-  sessions in their original coding tool with **`L`**. Launch through tmux, Herdr, or a
-  custom launcher, or copy a ready-to-run resume command.
+- **Find your way back.** Bookmark sessions, add notes, and reopen supported sessions in
+  their original tool with **`L`**, or use `opentab launch` for an fzf picker.
+  [Sessions](docs/sessions.md)
+- **Scope and filter.** [Filters](docs/filters.md)
+- **See file edits.** The **Changes** tab shows the edits a session recorded (OpenCode and
+  GitHub Copilot). [Changes](docs/changes.md)
+- **Make it yours.** 30 themes, remappable keys, remembered preferences, CSV export.
+  [Configuration](docs/configuration.md) · [Keys](docs/keys.md)
 
-  `opentab launch` opens an external [fzf](https://github.com/junegunn/fzf) picker of
-  cached local sessions, then resumes the selected harness in the current terminal
-  from its recorded project directory. It opens instantly from OpenTab's rollup
-  caches, refreshes them in the background and swaps in the updated list (fzf 0.36+).
-  `--refresh` waits for the refresh before opening; `--no-refresh` never reads
-  harness records. Esc or Ctrl-C cancels without launching. fzf is optional and
-  must be on `PATH`.
-- **Make it yours.** Keyboard and mouse navigation, 30 bundled themes, and remappable
-  keys. Your sort, selected tool, theme, bookmarks, and pricing view are remembered; the
-  date range is not, so every launch starts on the default window.
-- **Take a view with you.** Press **`e`** to export the current list to CSV, including
-  the filters and scope you've chosen.
-
-[Keys & navigation](docs/keys.md) · [Watch the full narrated tour on YouTube](https://www.youtube.com/watch?v=EsJPw4y5zgU)
+[Watch the full narrated tour on YouTube](https://www.youtube.com/watch?v=EsJPw4y5zgU)
 
 ## Search past conversations
 
 Find what you discussed across local **OpenCode, Claude Code, Codex, Hermes, pi and
-omp** sessions.
-Search matches recorded user/assistant text, not just session titles, and returns
-excerpts with message anchors so you or your agent can read the surrounding context.
-This is keyword search, not semantic memory. Press **`Ctrl-F`** in the TUI, or use
-the CLI or MCP.
-Tool outputs, reasoning, and attachments are not indexed.
-
-**Enable it explicitly after installing or upgrading.** Building the index stores
-sensitive conversation text in plaintext on your machine; it makes no provider calls
-and leaves the original records untouched.
-
-```sh
-opentab conversations index --allow-raw-content
-opentab conversations search "sqlite locking" --allow-raw-content
-opentab conversations status
-```
-
-Add `--project /path/to/project` to index and search only that project. Saved session
-and project ignores apply by default. **Rerun the index command when you want to
-include new or changed conversations.** Startup, search, and reload never refresh it
-automatically; stale source evidence is withheld until refreshed.
-
-For agent access, add the optional `--allow-raw-content` flag to your MCP server's
-arguments: `"args": ["mcp", "--allow-raw-content"]`. Without it, ordinary usage queries
-work, but conversation reads, search, and indexing are disabled. Restart the MCP
-server after changing its configuration.
-
-**You can also ask your agent to build or refresh the index.** It uses
-`opentab_index_conversations` with `confirm_index: true` after your explicit request;
-search and conversation reads require `confirm_raw: true`. Enabling raw access alone
-does not build or refresh anything. Retrieved text can enter the agent's model context.
-[Search setup, limits, and clearing the index](docs/conversation-search.md) ·
+omp** sessions with **`Ctrl-F`**, the CLI or MCP. It is keyword search over recorded
+user/assistant text. **It is off until you enable it:** building the index stores
+conversation text in plaintext on your machine, and you must opt in explicitly.
+[Setup, limits, and clearing the index](docs/conversation-search.md) ·
 [MCP configuration](docs/programmatic.md#mcp-server)
 
 ## In your terminal. In your browser. In one file.
@@ -208,38 +154,20 @@ with no server or dependencies. Links to months, days, and sessions let someone 
 part you want to show them.
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/b497c617-8a6c-4132-b6e2-aaf5078b8a4e" alt="OpenTab's web interface, with the time sidebar and session detail views" width="900">
+  <img src="docs/assets/web-report.png" alt="OpenTab's web interface: the time sidebar and a session's Turns, with context compactions under their prompts" width="900">
   <br><sub><b>Keep exploring in the browser.</b> The same history, with familiar keys and clickable tables.</sub>
 </p>
 
-Turn traces and personal notes are absent from web reports; the TUI and gated
-[CLI/MCP API](docs/programmatic.md#raw-content) provide separate access. The static
-HTML report includes Turns, Tools, and Context when exported with `--include-details`.
-This embeds retained user prompts and session metrics for offline drill-down.
-[Web browser & exports](docs/web.md).
+Turn traces and personal notes are absent from web reports unless you export with
+`--include-details`, which embeds retained prompts. [Web browser & exports](docs/web.md)
 
 <a id="fleet"></a>
 
 ## Every machine, one tab
 
 Your laptop, workstation, and remote box can all contribute to the same view.
-**`opentab pull`** gathers their usage summaries over SSH and opens them together with
-this machine's history. Filter any view by machine, compare projects across boxes, or
-reopen a supported session on the machine where it ran.
-
-```sh
-opentab pull laptop workstation gpu-box
-opentab pull                              # refresh your saved machines next time
-opentab remote                            # browse the last pull without reconnecting
-```
-
-Each remote needs `opentab` on its `PATH`. **No background agent or listening service**
-is needed for SSH pulls. Summaries contain no raw traces. Opening a supported remote
-turn in the TUI explicitly fetches just that turn over SSH; `Esc` cancels, and closing
-and reopening retries a failed read. Ordinary browsing stays offline. Remote traces
-need a managed cached summary, saved SSH connection and compatible remote OpenTab CLI.
-
-[SSH setup, portable exports, and managing machines](docs/machines.md).
+**`opentab pull`** gathers usage summaries over SSH, with no background agent or listening
+service and no raw traces in summaries. [SSH setup and managing machines](docs/machines.md)
 
 ## Live prices in your sidebar
 
@@ -272,38 +200,11 @@ cost for that project. **`opentab --goto "$PWD"`** opens that session for inspec
 and **CSV/JSONL logs** of your own API requests.
 
 Use **`H`** to switch tools live, or `opentab --harness NAME` to start with one.
-You can also hand it a file: `opentab requests.csv` or `opentab path/to/opencode.db`.
 
-<details>
-<summary><strong>What each tool's records support on top</strong> — cost, subagent tree, Turns, Trace, Tools, Context</summary>
+What each tool's records support on top (recorded vs estimated cost, subagent tree,
+Turns, Trace, Tools, Context) is a per-tool capability table in the sources guide.
 
-| Harness | Cost | Subagent tree | Turns | Trace | Tools | Context |
-|--------|------|:---:|:---:|:---:|:---:|:---:|
-| OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | — |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
-| GitHub Copilot CLI | mixed — AI-credit charges real, rest estimated | — | ✓ | — | — | ✓ |
-| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
-| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
-| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
-| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
-| Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Antigravity | tokens only — `$` estimates | ✓ | ✓ | — | ✓ | ✓ |
-| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | — | ✓ | ✓ |
-
-**Subagent tree** — recursive per-subagent cost under the session that delegated ·
-**Turns** — the per-turn cost timeline · **Trace** — one turn's recorded narration,
-reasoning and exact calls/results, local to the TUI · **Tools** — token attribution per
-tool call and MCP server · **Context** — the context-window growth curve (it rides on
-Turns). A `—` means the required data or a safe mapping is unavailable; sources.md says
-which, and why, for each one.
-
-</details>
-
-
-[Data locations, setup, and the CSV/JSONL schema](docs/sources.md). Some tools need setup,
+[Capability table, data locations, setup, and the CSV/JSONL schema](docs/sources.md). Some tools need setup,
 such as Copilot CLI's opt-in telemetry export; `opentab doctor` helps you find the gaps.
 
 > [!TIP]

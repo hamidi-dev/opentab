@@ -94,6 +94,16 @@ OpenCode uses `variant`, Claude assistant records carry the setting, Codex gets 
 from `turn_context`, and omp/zaly update a running value from settings events.
 An absent value stays unknown rather than inheriting an invented default.
 
+Programmatic Node and Tool rows can be incomplete. An aggregated row from an older
+backend may mix metered and unpriced calls without their token split; its
+`api_equivalent_cost_usd` is then null and `api_equivalent_cost_complete` false. Node
+labels can name only the dominant model, so a non-root node returns an incomplete
+result unless its usage belongs to one known model; roots use exact per-model splits.
+Model, Turn and Tool `estimate` metadata names the basis, price snapshot and
+`approximation_reasons` (`cache_write_inferred`, `copilot_rate_fallback`).
+`token_breakdown_complete` stays true when legacy uncached input is inferred from the
+remaining count; model groups may reconcile even when session totals do not.
+
 Lazy content reads still need record ownership checks. A tool-call id may be reused;
 even a call outside the selected turn must invalidate an older binding with that
 id. Otherwise a later result can appear under the wrong call. `TraceContent` applies
@@ -155,7 +165,7 @@ fold descendants into root workflows and expose their own usage as nodes.
   legacy inputs limited to 256 KiB / 2,000 lines per side before diff generation.
   OpenCode's [summary implementation](https://github.com/anomalyco/opencode/blob/ae93d4afb3e414a541f520e062be924573b126e1/packages/opencode/src/session/summary.ts)
   defines the per-prompt snapshot boundary. See
-  [Changes controls and semantics](keys.md#session-changes).
+  [Changes controls and semantics](changes.md).
 - OpenCode can persist OpenAI cache writes, but some ChatGPT OAuth responses omit the
   `cache_write_tokens` detail. Those tokens then remain in OpenCode's uncached-input
   bucket and `tokens.cache.write` is zero. OpenTab cannot reconstruct the exact split from
@@ -273,6 +283,13 @@ no corresponding assistant message in SQLite.
   breakdown. Resumed log totals can exceed Hermes' own accumulated session totals.
 - Log rotation removes Turns/Tools availability for old sessions while database
   rollups survive. A retained summary is not evidence that its detailed calls survive.
+- Hermes registers MCP tools as `mcp_server_tool`, not `mcp__server__tool`, so
+  `util.tool_namespace()` files them all under the generic `mcp` namespace.
+- Conversation text comes from the `messages` table in its own fresh read-only
+  transaction, independent of the logs: user/assistant content only, ordered by
+  timestamp then message ID, Unix seconds converted to ms, with SQLite rowids as
+  disclosed anchors on schemas without message IDs. The execution tree includes
+  zero-usage descendants and excludes archived sessions and anything behind them.
 
 ## GitHub Copilot CLI
 
@@ -437,7 +454,8 @@ Reader: [`stores/omp.py`](../src/opentab/stores/omp.py), extending pi's parser
 
 omp shares pi's token and mixed-cost rules, but reads authentication type from
 SQLite. It selects only provider and credential type, never the credential payload.
-Provider and model are recorded separately and joined for attribution.
+Provider and model are recorded separately and joined as `provider/model`, which
+Trends' Providers tab groups by.
 
 The tree comes from **paths**, not UUID-shaped directory names: the parent of
 `.../Parent/Child.jsonl` is `.../Parent.jsonl`, at every depth. Agent-named child
@@ -449,6 +467,12 @@ with descendants attached to the nearest surviving ancestor; cost lookup protect
 its requested root even if that root only delegated. Tree folding preserves both
 the metered/unpriced split and the root's own share. `reasoningTokens` is already
 part of output and must not be added again.
+
+Conversation reads (pi and omp) establish identity from fresh JSONL headers (metadata
+within 64 KiB) before any message. A UUID-named file must agree with its header ID;
+omp's nickname-named children use the native header ID and directory parentage, never
+usage-based splicing. Missing, ambiguous, conflicting or cyclic identity fails closed.
+Resumed and replayed occurrences stay distinct, ordered by file path then line.
 
 ## OpenClaw
 
@@ -579,6 +603,49 @@ tracks that fact explicitly rather than guessing from an id prefix, and disables
 Context curves for those buckets of potentially unrelated conversations. Neither
 format expresses a subagent tree. See the [request schema](sources.md#schema) before
 changing aliases or producer expectations.
+
+## Pricing and the rate catalog
+
+[`accounting/pricing.py`](../src/opentab/accounting/pricing.py) owns rate resolution
+and arithmetic. App groups per-model rows once and keeps recorded and API-equivalent
+workflow snapshots; `_apply_price_mode()` selects one instead of recomputing on every
+`$`. The estimate applies only to the `unpriced_*` portion of mixed-billing rows. Keep
+the root-only split beside the subtree split so delegated usage never leaks into the
+root's own cost, and keep the one-hour write subset through every aggregation (root
+rows, model scopes, nodes, caches, exports); adding it to totals would double-count.
+
+The TUI's `whatif_session_totals()` and `token_economics()` have browser twins,
+`whatifTotals()` and `tokenEconomics()` in `web/page.py`. Arithmetic changes need
+**both implementations** updated and checked.
+
+Lookup has two catalog layers with one schema: the bundled snapshot and the user's
+cache, newest fetch first. `model_price()` prefers catalog matches and unpinned model
+cards, then family rules, then the generic fallback; local providers price at zero but
+keep context windows. `has_known_price()` checks provenance, not whether the tuple
+equals the fallback; `has_catalog_row()` asks for an exact catalog entry. **eff $/M**
+rankings and cache-penalty analysis substitute the input rate for a missing cache-read
+rate so absent metadata cannot make a model look free; API-equivalent totals and token
+economics keep the catalog's zero rate and flag it.
+
+Explicit context-tier tables win over legacy `context_over_200k`, which alone implies a
+200,000-token boundary. Numeric request-context buckets, not dollars, survive rollups,
+warm caches and machine exports, so a rate refresh reprices without rereading
+transcripts. Codex accepts a request size only when its final-request usage reconciles
+with the whole cumulative delta; multi-request deltas stay unknown. VS Code chat's tier
+context stays unknown because it combines final-round input with all rounds' output.
+Copilot's cache-write split for GPT-5.6+ is an inferred allocation that ignores the
+small genuine input remainder; inference amounts are kept before aggregation so
+zero-write and positive-write requests sharing a bucket still price correctly, and tools
+take proportional shares. A cache miss's expired entry belongs to the previous turn's
+lifetime; the new turn may buy another tier. Adding the Claude fast-mode card through a
+refresh reprices warm-cached usage without rereading; older rollup caches rebuild once
+to recover the mode distinction.
+
+`src/opentab/data/models.json` is generated: run `python3 scripts/update_prices.py`
+(it shares `prune_models_dev()` with the runtime refresh) and review the diff with the
+pricing tests. The runtime refresh uses stdlib `urllib`, shares one pending fetch, and
+writes its cache through unique temporary files and atomic replacement; the offer's
+answer lives in `state.json`.
 
 ## Merging and checking a change
 

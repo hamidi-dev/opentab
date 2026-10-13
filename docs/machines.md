@@ -1,79 +1,74 @@
-# Every machine, one tab
+# Multiple machines
 
-`opentab pull` gathers usage summaries from your machines and opens them alongside
-your local history. Each SSH remote needs `opentab` on its `PATH` or a configured
-command path; no background agent or listening service is required.
-
-## Pull over SSH
+`opentab pull` fetches usage summaries from your other machines and opens them next
+to this machine's history. Each remote only needs `opentab` installed; nothing runs
+in the background and nothing listens on a port.
 
 ```sh
 opentab pull laptop workstation gpu-box   # fetch in parallel, then browse
-opentab pull                              # refresh all saved machines
-opentab remote                            # reopen the last pull, without connecting
+opentab pull                              # refresh every saved machine
+opentab remote                            # reopen the last pull without connecting
 ```
 
-A target can be an SSH host alias (`box`), `user@host`, or `name=user@host` to give
-it a label. SSH config handles keys, ports, and bastions as usual. You can also
-specify a port directly:
+## Pull a machine over SSH
+
+A target is an SSH host alias (`box`), `user@host`, or `name=user@host` to give it
+a label. Your SSH config handles keys, ports and bastions. A port also works inline:
 
 ```sh
 opentab pull box=ssh://user@host:2222
 ```
 
-Pull runs `opentab export -` remotely and streams the summary back over SSH. It
-includes session metadata, totals, per-model breakdowns, and available
-Turns / Tools / Context data, but no raw turn traces or authored notes. Summaries
-can still contain **full user prompts**, session titles and project paths. They
-are private usage records, not anonymous statistics; inspect any snapshot before
-sharing it, even when using [demo mode](privacy.md#demo-mode).
+Pull runs `opentab export -` on the remote and streams the summary back. Pull uses
+SSH batch mode, so set up key-based login first; it never prompts for a password.
 
-`--demo` changes the fleet view opened after a pull; it does not suppress the
-connection or ask the remote export to anonymize itself. A pull is always an
-explicit network request. Fleet commands always merge every present local harness
-with the summaries, so a conflicting local `--harness` selection is rejected;
-`--harness remote` remains an explicit alias for the normal fleet selection.
+A summary contains session titles, project paths, totals, per-model breakdowns and
+the Turns / Tools / Context tabs. It can contain **full user prompts**. It never
+contains raw turn traces or your notes. Treat a summary as private, even one made
+with [demo mode](privacy.md#demo-mode).
 
-## Pull an exported URL
+## Pull an exported file from a URL
 
-HTTP(S) pulls fetch an **exported JSON file** hosted at a URL you can reach:
+If you host an exported summary on your own access-controlled server, pull it by URL:
 
 ```sh
+opentab export usage.json                                   # on the source machine
 opentab pull workstation=https://private-host.example/usage.json
 ```
 
-Generate that file with `opentab export usage.json` on the source machine and host
-it using your own access-controlled file server. The root of `opentab web` serves
-HTML, not a machine summary; OpenTab currently has **no fleet-export HTTP API**.
-Fetching the URL again gets whatever snapshot is hosted there, not a fresh scan
-of that machine's harnesses.
+Pulling the URL again fetches whatever file is hosted there, not a fresh scan of that
+machine. `opentab web` does not serve machine summaries; there is no fleet HTTP API.
 
 ## Browse and resume
 
-- **`m`** opens Machines mode; **`M`** filters every view to one or several machines.
-  In the picker, **Tab** switches Single / Multiple, **Space** toggles a machine,
-  **a** selects all/none, **Enter** applies and **Esc** cancels. Machine selections
-  compose with the **`H`** harness filter; selecting all machines clears the filter.
-- **`L`** resumes a supported session on its original machine when its saved entry
-  has an SSH target. Launches and copied commands wrap the resume command in SSH;
-  a machine saved only by URL has no SSH resume target.
-- Hermes sessions without a recorded working directory resume from the remote
-  user's home directory. Hermes looks up the session by ID; no project path is
-  required.
-- **`opentab forget <machine>`** removes a saved machine and its cached summary.
+| Key | Action |
+|-----|--------|
+| `m` | Machines browse mode: all machines, then one row per machine |
+| `M` | Filter every view to one or several machines (combines with the `H` harness filter) |
+| `L` | Resume the selected session on its own machine, over SSH |
+| `F` | Re-pull the selected machine; on the fleet row, every loaded machine with a saved connection |
+| `r` | Reload this machine's local data (not remote machines) |
 
-Saved connections live in `~/.config/opentab/remotes.json`; cached summaries live
-under `~/.cache/opentab/remotes/`. Both honor their corresponding XDG overrides.
+In the `M` picker, `Tab` switches Single / Multiple, `Space` toggles a machine, `a`
+selects all or none, `Enter` applies and `Esc` cancels. Selecting every machine
+clears the filter.
 
-Remote launches (including copied commands) request a terminal and run the resume
-command through the remote user's `$SHELL` in interactive login mode. This loads
-the shell's normal startup files (including `.zshrc` for zsh), so user-installed
-harness commands are found just as in a normal terminal. The harness must be
-installed for the saved SSH user. Shell startup files run on each launch.
+`L` works only for machines saved with an SSH target. It runs the resume command in
+the remote user's `$SHELL` as a login shell, so tools installed in `.zshrc` or similar
+are found. The harness must be installed for that SSH user. Hermes sessions without a
+recorded directory resume from the remote home directory.
 
-### Saved connections
+## Saved connections
 
-Pull remembers targets automatically. Edit `remotes.json` when you need a custom
-remote command, for example when OpenTab is not on the non-interactive SSH `PATH`:
+Pull remembers every target in `~/.config/opentab/remotes.json`. Cached summaries live
+in `~/.cache/opentab/remotes/`. Both follow their XDG overrides. Remove a machine and
+its summary with:
+
+```sh
+opentab forget workstation
+```
+
+Edit `remotes.json` when OpenTab is not on the remote's non-interactive `PATH`:
 
 ```json
 {
@@ -90,136 +85,120 @@ remote command, for example when OpenTab is not on the non-interactive SSH `PATH
 }
 ```
 
-Each entry uses `ssh` or `url`; optional `cmd` is a command run **on the SSH
-machine**, not a place for local SSH flags. Put ports, keys and bastions in SSH
-config or use an `ssh://` target. Pull uses batch mode, so test key-based login
-first; it will not prompt for a password. Configure only commands you trust.
+| Field | Meaning |
+|-------|---------|
+| `ssh` | SSH target for pulls, resumes and turn reads |
+| `url` | An exported summary to fetch instead (no resume, no turn reads) |
+| `cmd` | Command run **on the remote** to export; not a place for local SSH flags |
+| `trace_cmd` | Optional argv prefix for reading turns, when `cmd` can't be reused |
 
-Trace reads reuse `cmd`. OpenTab strips its export tail (an `export` subcommand,
-`--export -`, `--label`, a date range) and runs what is left as the command prefix,
-so the entry above traces through `/home/user/.local/bin/opentab` with nothing
-further to configure. That prefix reaches the remote shell exactly as a pull's does,
-variables included, so `$HOME/.local/bin/opentab` still expands; the `sessions turns`
-and `sessions content` arguments OpenTab appends are quoted. With no `cmd` at all,
-trace reads use `opentab`.
+Put ports, keys and bastions in SSH config or an `ssh://` target. Only configure
+commands you trust.
 
-Add an optional `trace_cmd` only when `cmd` is not a plain OpenTab invocation OpenTab
-can take apart: a pipeline, `cd x && ...`, a `bash -lc` wrapper, an unrecognized flag,
-or a path containing spaces. So `"cmd": "bash -lc 'opentab --export -'"` needs
-`"trace_cmd": ["/opt/tools/opentab"]` beside it. It is an **argv prefix**, not a shell
-string: write `["env", "NAME=value", "opentab"]`, not `"NAME=value opentab"`. Every
-argument in it is quoted, so a `trace_cmd` cannot expand `$HOME`; give a real path.
-When neither the derived prefix nor a `trace_cmd` is usable, the Turns reader says so
-on that machine's sessions instead of doing nothing.
+### Reading turns with a custom `cmd`
+
+Turn reads reuse `cmd`: OpenTab drops its export part (`export`, `--export -`,
+`--label`, date ranges) and runs the rest, so the entry above reads turns through
+`/home/user/.local/bin/opentab`. Variables such as `$HOME` still expand. Without
+`cmd`, turn reads run `opentab`.
+
+Add `trace_cmd` only when `cmd` is not a plain OpenTab call: a pipeline,
+`cd x && ...`, a `bash -lc` wrapper, an unknown flag, or a path with spaces. It is a
+list of arguments, not a shell string, and nothing in it expands:
+
+```json
+"cmd": "bash -lc 'opentab --export -'",
+"trace_cmd": ["/opt/tools/opentab"]
+```
+
+Write `["env", "NAME=value", "opentab"]`, not `"NAME=value opentab"`. If neither works,
+the Turns reader says so on that machine's sessions.
 
 ## Read a remote turn
 
-Ordinary fleet browsing, including Turns / Tools / Context and trace capability
-checks, stays offline. In the TUI, opening a selected turn explicitly fetches that
-turn's trace over SSH. The reader shows the machine and loading state; **`Esc`
-closes the trace and cancels an in-flight request**. After a failure, close and
-reopen the trace to retry. `[` / `]` steps to another turn and requests that turn.
+Browsing a pulled machine, including its Turns, Tools and Context tabs, stays offline.
+Opening a turn is the one action that connects: it fetches that turn's full trace over
+SSH. The reader shows the machine and a loading state.
 
-Remote traces require all of the following:
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the turn and fetch its trace |
+| `[` / `]` | Previous / next turn (fetches that turn) |
+| `z` | Expand the turn's content (reuses what was fetched) |
+| `Esc` | Close the trace and cancel a running fetch |
 
-- The managed default cache directory, `~/.cache/opentab/remotes/` (honoring XDG),
-  opened as a directory through the fleet view, such as bare `opentab remote`.
-- A saved SSH connection for the summary's encoded cache filename, not its display
-  label, plus a valid trace command as described above.
-- A compatible remote OpenTab CLI supporting JSON `sessions turns` with content
-  keys and gated `sessions content`, and retained content in a supported harness.
+After a failure, close and reopen the turn to retry. If the turn changed on the
+remote since your last pull, the read fails rather than guessing: refresh with `F` or
+`opentab pull`, then reopen it. Refreshing cannot bring back content the harness has
+deleted.
 
-URL entries, arbitrary snapshot files/directories, and explicit file/list imports
-are unsupported for traces, even when a named file is inside the managed directory.
-Symlinked summary files and demo mode cannot enable remote trace reads. Older
-summaries remain browsable without promising that live content can be resolved.
+Remote turns need all of these:
 
-The reader keeps **one selected remote turn in memory**, both its capped preview
-and fetched full content. `z` and individual output expansion reuse that content;
-collapsing does not fetch again. Leaving the turn, stepping, reloading, or changing
-harness clears it. There is **no raw-content disk cache** and no bulk session fetch.
+- The summary was pulled into the default `~/.cache/opentab/remotes/` and opened
+  through the fleet view, for example with a bare `opentab remote`.
+- The machine has a saved SSH connection and a usable turn command (see above).
+- The remote runs an OpenTab recent enough to serve turn content, and its harness
+  still has the content.
 
-Each read first resolves the snapshot turn against the live remote timeline using
-its recorded identity and accounting fields, then reads its unique live content
-key. It never matches by ordinal or guesses the nearest turn. Stale, missing, or
-ambiguous matches fail closed: refresh the summary with `F` or `opentab pull`, then
-reopen the turn. Refresh cannot recover content that the harness no longer retains.
-
-Both SSH commands share one **30-second per-turn deadline**. Each response is
-limited to 16 MiB stdout and 64 KiB stderr; timelines are capped at 100,000 turns
-and content at 10,000 events. Oversized or invalid responses fail rather than being
-partially displayed. Errors do not echo remote stderr, payloads, or command arguments.
-
-The same one-turn reads are available through explicitly gated
-[CLI/MCP content requests](programmatic.md#raw-content). Raw traces and their
-content keys remain absent from web payloads and fleet exports; SSH trace reads
-are a separate opt-in channel, not an extension of the summary format.
+URL entries, summary files you opened by name, symlinked summaries and demo mode
+cannot read remote turns. The same one-turn reads are available through the gated
+[CLI and MCP content requests](programmatic.md#raw-content).
 
 ## Refresh and offline history
 
-Saved summaries are snapshots: Machines shows their export time and OpenTab
-version, while this machine is marked live. No background polling is involved.
+Saved summaries are snapshots. The Machines view shows each one's export time and
+OpenTab version; this machine is marked live. Nothing polls in the background.
 
-- `opentab pull` fetches all saved targets; naming targets fetches only those.
-  Fetches run in parallel and failures are reported per machine.
-- `opentab remote` opens cached summaries without connecting. Ordinary `r` reloads
-  local data, not remote harnesses.
-- In the TUI, `F` on a machine re-pulls that machine; on the fleet scope it
-  re-pulls the loaded machines with saved connections. On the live machine it
-  reloads locally. The live web report offers a per-machine refresh button too.
-- Files opened explicitly with `opentab remote FILE...` cannot be re-pulled in
-  place. Replace the files yourself and reopen them, or use the managed pull
-  directory and saved connections. Demo disables in-app fleet refresh.
+| Command or key | Effect |
+|----------------|--------|
+| `opentab pull` | Re-fetch every saved machine, in parallel; failures are reported per machine |
+| `opentab pull NAME...` | Re-fetch only those machines |
+| `opentab remote` | Open cached summaries without connecting |
+| `F` | Same as above; on this machine it reloads local data |
+| Web report | A per-machine refresh button in `opentab web` |
 
-A failed fetch leaves the previous cached summary available; it does not turn
-old usage into zero. Check the export time when a machine looks stale. A URL
-refresh can still return an old file if its publisher has not regenerated it.
+A failed fetch keeps the previous summary; old usage never drops to zero. Check the
+export time when a machine looks stale. Files opened with `opentab remote FILE...`
+can't be re-pulled in place, and demo mode disables in-app refresh.
 
 ## Move an export yourself
 
-If this machine cannot reach the other one, run this **on the other machine**:
+When this machine can't reach the other one, export there:
 
 ```sh
 opentab export --label workstation usage.json
 ```
 
-Transfer `usage.json` by your usual method, then run this **here**:
+Copy `usage.json` over however you like, then open it here:
 
 ```sh
 opentab remote usage.json
 ```
 
-The file opens merged with this machine's history, with no separate import step.
-`opentab remote FILE...` accepts several files or a directory. To retain one for
-later browsing, place it in `~/.cache/opentab/remotes/`; a bare `opentab remote`
-then picks it up.
+It opens merged with this machine's history; there is no import step.
+`opentab remote` accepts several files or a directory. To keep a file for later, put it
+in `~/.cache/opentab/remotes/`, and a bare `opentab remote` picks it up.
 
-You can also capture a remote export directly when SSH is available:
+With SSH available, you can also capture an export directly:
 
 ```sh
 ssh box opentab export - > box.json
 opentab remote box.json
 ```
 
-A machine's name travels **inside** the export, not in its filename. It defaults
-to the source hostname; give machines distinct labels with
-`opentab export --label NAME` when they share one, or their usage appears under
-the same machine identity. A `name=target` pull alias names the saved connection,
-not the label inside the export.
+## Good to know
 
-## Contributing to transfers
+- A machine's name travels inside the export, not in the filename. It defaults to
+  the hostname; use `opentab export --label NAME` when two machines share one.
+- The `name` in `name=target` names the saved connection, not the label inside the
+  export.
+- `--demo` changes how the fleet view looks after a pull. It does not skip the
+  connection or anonymize the remote export.
+- Fleet commands always merge every local harness with the summaries, so a narrower
+  local `--harness` is rejected. `--harness remote` is accepted as the same thing.
+- A fetched turn stays in memory until you leave it, step, reload or change harness.
+  OpenTab never caches raw content on disk and never fetches whole sessions.
+- Each turn read has 30 seconds and responses are capped (16 MiB output, 100,000
+  turns, 10,000 events). Errors never echo the remote's output.
 
-The portable format in `stores/remote.py` is separate from the local warm-start
-cache. Its `opentab_export` version is currently 2 (adding optional Turns / Tools /
-Context); `opentab_version` records the producing application's version. Older
-summaries still load without those tabs, and unknown fields are tolerated.
-
-Session IDs survive transfer so synced sessions are counted once, with live local
-records taking precedence. Keep model rows and extras attached only to sessions
-retained from the same file. The export label identifies the machine; the encoded
-cache filename identifies its saved connection for refresh and opt-in traces.
-Trace routing retains the winning file's provenance per session, even if labels
-collide. Preserve that distinction, normalize incoming detail rows before rendering,
-and keep raw traces, their content keys and notes out of portable summaries.
-
-[Back to the README](../README.md#every-machine-one-tab)
+Changing the export format? See [Portable machine summaries](architecture.md#portable-machine-summaries).
