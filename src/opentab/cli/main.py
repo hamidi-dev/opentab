@@ -777,7 +777,7 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="*",
         metavar="HOST",
         help="an ssh target -- `box`, `user@host`, `name=user@host`, or "
-        "`http://host:port` for an `opentab web` box. None given = refresh every machine "
+        "`https://host/usage.json` for a hosted `opentab export` file. None given = refresh every machine "
         "already in remotes.json. Set a machine's `cmd` in remotes.json if opentab isn't "
         "on its non-interactive PATH",
     )
@@ -907,7 +907,7 @@ def _build_parser() -> argparse.ArgumentParser:
     }
     brief = {
         "path": "Source file or directory; harness detected automatically.",
-        "hosts": "SSH host, user@host, name=user@host, or http://host:port.",
+        "hosts": "SSH host, user@host, name=user@host, or a URL of a hosted export JSON.",
         "files": "Exported JSON files or directories (default: saved fleet).",
         "file": "Output file (default: - for stdout).",
         "targets": "Directory or session ID; - reads targets from stdin.",
@@ -1118,6 +1118,7 @@ def timings_command(args: argparse.Namespace) -> int:
     t_start = time.perf_counter()
     present, detect_ms = timed(lambda: sources.available_sources(args))
     source_key = resolve_source(args, {})
+    sources.require_history(args, source_key)
     (store, _loading), build_ms = timed(lambda: sources.make_store(args, source_key))
 
     # Retain parsed rows for the fleet breakdown rather than scanning again.
@@ -1937,7 +1938,7 @@ def pull_command(args: argparse.Namespace) -> None:
     if not targets:
         sys.stderr.write(
             "opentab --pull: no machines configured. Add one, e.g. "
-            "`opentab --pull user@host` (or name=user@host, or http://host:port).\n"
+            "`opentab --pull user@host` (or name=user@host, or a URL of a hosted export JSON).\n"
         )
         return
     remotes_dir = _remotes_write_dir(args)
@@ -2131,6 +2132,7 @@ def web_command(args: argparse.Namespace) -> int:
     use_state = not args.demo and not args.no_state
     state = load_state() if use_state else {}
     source_key = resolve_source(args, state)
+    sources.require_history(args, source_key)
     store, loading = sources.make_store(args, source_key)
     sys.stderr.write(loading)
     sys.stderr.flush()
@@ -2236,6 +2238,7 @@ def _run(args: argparse.Namespace) -> int:
     use_state = not args.demo and not args.no_state
     state = load_state() if use_state else {}
     source_key = resolve_source(args, state)
+    sources.require_history(args, source_key)
     goto = None
     goto_hint = None
     if getattr(args, "tab", None) and getattr(args, "goto", None) is None:

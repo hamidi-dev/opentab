@@ -458,6 +458,41 @@ def resolve_source(args: argparse.Namespace, state: dict | None = None) -> str:
     return present[0] if present else "opencode"
 
 
+def no_history_message(args: argparse.Namespace) -> str:
+    """Explain a first run: what was checked, and what to do next."""
+    where = [
+        ("OpenCode", getattr(args, "db", "")),
+        ("Claude Code", getattr(args, "claude_dir", "")),
+        ("Codex", getattr(args, "codex_dir", "")),
+    ]
+    lines = ["No supported AI usage history was found. Checked:"]
+    lines += [f"  {label:<12} {short_path(path, 80)}" for label, path in where if path]
+    others = [
+        v for k, v in SOURCE_LABELS.items() if k not in ("opencode", "claude", "codex", "all")
+    ]
+    lines.append("  and: " + ", ".join(others))
+    lines += [
+        "Next:",
+        "  opentab doctor            show every location checked",
+        "  opentab --harness NAME    pick a harness; --db/--claude-dir/--codex-dir set its path",
+        "  opentab requests.csv      open a CSV or JSONL request log",
+    ]
+    return "\n".join(lines)
+
+
+def require_history(args: argparse.Namespace, source_key: str) -> None:
+    """Exit with a friendly message when auto-detection found nothing at all."""
+    if args.source != "auto":
+        return
+    # A present-but-unusable OpenCode database keeps its own, more specific, error.
+    if (
+        source_key == "opencode"
+        and not available_sources(args)
+        and opencode_db_verdict(args.db)[0] == "missing"
+    ):
+        raise SystemExit(no_history_message(args))
+
+
 def _wrap_cache(store, key: str, args: argparse.Namespace):
     # Cache leaves independently; never persist per-process demo transforms.
     if key == "all" or getattr(store, "combined", False):
