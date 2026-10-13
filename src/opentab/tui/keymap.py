@@ -1241,11 +1241,11 @@ KEYS: tuple[Key, ...] = (
         id="whatif",
         ctx="main",
         actions=("whatif",),
-        summary="what-if — reprice a session at one model",
+        summary="compare model — reprice one session at another model's list rates",
         section="pickers",
         # Session-scoped, but remain visible elsewhere while armed so it can be cleared.
         when=lambda app: in_session(app) or (in_main(app) and bool(app.whatif_model)),
-        chip="model",
+        chip="compare",
         active=lambda app: bool(app.whatif_model),
     ),
     Key(
@@ -1346,7 +1346,7 @@ KEYS: tuple[Key, ...] = (
         summary="price subscription usage at API list rates",
         section="global",
         when=lambda app: not app.store.demo,
-        chip="what-if",
+        chip="estimates",
         active=lambda app: app.show_api_prices,
     ),
     Key(

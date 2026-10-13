@@ -1112,7 +1112,7 @@ f = fields(); assert.equal(f.get('API-equivalent cost'), '$30.00');
 assert.equal(f.get('cost share'), '50% of all nodes');
 WHATIF.model = 'target'; render();
 assert.equal(NODE_DRILL, 2);
-assert.equal(fields().get('what-if at target'), money(whatifCost(fixtures[2].tok, WI_PRICE.get('target'))));
+assert.equal(fields().get('compared at target'), money(whatifCost(fixtures[2].tok, WI_PRICE.get('target'))));
 assert.equal(fields().get('API-equivalent cost'), '$30.00');
 assert.equal(key('Escape').prevented, true); assert.equal(NODE_DRILL, null);
 assert.equal(location.hash, '#/s/w1'); assert.ok(text().includes('TOTAL (list rates)'));

@@ -218,7 +218,11 @@ REGISTRY: tuple[Context, ...] = (
             ),
             Action("open_dir", ("o",), "open the selection's directory"),
             Action("launch", ("L",), "resume this session in its own tool"),
-            Action("whatif", ("w",), "what-if — reprice a session at one model"),
+            Action(
+                "whatif",
+                ("w",),
+                "compare model — reprice one session at another model's list rates",
+            ),
             Action("range", ("R",), "set the date range"),
             Action("all_time", ("a",), "all time"),
             Action("reload", ("r",), "reload the data"),
@@ -359,7 +363,11 @@ REGISTRY: tuple[Context, ...] = (
             Action("harness", ("H",), "harness picker / fleet filter"),
             Action("machine", ("M",), "machine filter (fleet)"),
             Action("demo_toggle", ("D",), "flip demo anonymization in place"),
-            Action("api_prices", ("$",), "flip the $ what-if pricing behind the table"),
+            Action(
+                "api_prices",
+                ("$",),
+                "toggle $ estimates: recorded vs recorded + list-price estimates",
+            ),
         ),
     ),
     Context(
@@ -377,7 +385,7 @@ REGISTRY: tuple[Context, ...] = (
     Context(
         "menu",
         "Every small picker shares these: the H harness/source menus, M machines,\n"
-        "s sort, C themes, D demo, L launch, w what-if. A per-picker section below\n"
+        "s sort, C themes, D demo, L launch, w compare model. A per-picker section below\n"
         "overrides one picker; this section re-teaches all of them at once.",
         None,
         (
@@ -479,7 +487,7 @@ REGISTRY: tuple[Context, ...] = (
     ),
     Context(
         "menu.whatif",
-        "The w what-if model picker.",
+        "The w compare-model picker.",
         "menu",
         (
             Action("advance", ("w",), "w again walks the list"),
@@ -489,7 +497,7 @@ REGISTRY: tuple[Context, ...] = (
     ),
     Context(
         "menu.whatif.filter",
-        "Typing in the what-if picker's filter (printable keys edit the query).",
+        "Typing in the compare-model picker's filter (printable keys edit the query).",
         None,
         (
             Action("select", ("enter",), "pick the highlighted model"),

@@ -1706,7 +1706,7 @@ class App:
         if not self.whatif_model or has_known_price(self.whatif_model):
             return
         stale, self.whatif_model = self.whatif_model, None
-        self.notify(f"what-if cleared — no list rate for {stale}", "warn")
+        self.notify(f"compare cleared — no list rate for {stale}", "warn")
 
     def _ensure_models(self) -> None:
         if not self._models_loaded:
@@ -3721,11 +3721,11 @@ class App:
     def select_whatif_model(self, name: str) -> None:
         # Never reprice app-wide here: that would make `$` inert while still toggling its state.
         self.whatif_model = name
-        self.notice = f"what-if {name}: see a session's Subagents tab"
+        self.notice = f"compare {name}: see a session's Subagents tab"
 
     def clear_whatif_model(self) -> None:
         self.whatif_model = None
-        self.notice = "what-if off"
+        self.notice = "compare off"
 
     def _whatif_pick(self, rows: list[tuple[str, int]]) -> None:
         if not rows:

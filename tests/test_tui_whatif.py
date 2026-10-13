@@ -70,11 +70,11 @@ def test_whatif_overview_answers_for_a_solo_session_that_has_no_subagents():
         opus_in = ot.model_price("anthropic/claude-opus-4.5")[0]
         haiku_in = ot.model_price("anthropic/claude-haiku-4.5")[0]
 
-        assert not any("What-if" in ln for ln in app.renderer.detail_overview(wf, 100))
+        assert not any("Compared" in ln for ln in app.renderer.detail_overview(wf, 100))
 
         app.select_whatif_model("anthropic/claude-haiku-4.5")
         lines = app.renderer.detail_overview(wf, 100)
-        assert any("Money card · what-if anthropic/claude-haiku-4.5" in ln for ln in lines)
+        assert any("Money card · compare anthropic/claude-haiku-4.5" in ln for ln in lines)
         # BOTH sides at list rates -- the baseline is its 1M Opus tokens at Opus rates,
         # NOT the $1.50 that happened to be recorded (that would compare a list-price
         # counterfactual against a metered bill and call the difference a saving).
@@ -317,7 +317,7 @@ def test_whatif_subagents_tab_prices_the_session_tree_and_the_savings_footer():
         lines = _table(app.renderer.detail_subagents(wf, 200))
         cells = box_cells(lines)
         assert "anthropic/claude-opus-4.5" in lines[0]  # the box title names the target
-        assert "What-if" in cells[0] and "Δ" not in cells[0]
+        assert "Compared" in cells[0] and "Δ" not in cells[0]
         # The root joins the table: both nodes of the tree are listed.
         depths = [c.split()[2] for c in cells[1:3]]
         assert sorted(depths) == ["0", "1"]
@@ -342,7 +342,7 @@ def test_subagents_tab_is_unchanged_without_a_whatif_target():
         lines = _table(app.renderer.detail_subagents(app.loaded[0], 200))
         assert "Subagent Executions" in lines[0]  # the title, on the box's top border
         cells = box_cells(lines)
-        assert "What-if" not in cells[0] and "Δ" not in cells[0]
+        assert "Compared" not in cells[0] and "Δ" not in cells[0]
         assert not any(ln.startswith("TOTAL") for ln in lines)
         rows = [c for c in cells[1:] if c.strip()]
         assert len(rows) == 1 and "Docs" in rows[0]  # the subagent only, never the root
@@ -445,7 +445,7 @@ def test_whatif_target_is_not_tagged_into_the_header():
         assert ot.money(1.94) in header  # still the actual spend
 
         # ... and the footer chip does light up, so "armed" is never invisible.
-        assert "w Model" in screen_text(footer)
+        assert "w Compare" in screen_text(footer)
 
 
 def test_whatif_key_opens_the_picker_and_clears_an_active_target():
@@ -463,13 +463,13 @@ def test_whatif_key_opens_the_picker_and_clears_an_active_target():
         assert not app.whatif_menu
         assert app.whatif_model == "anthropic/claude-opus-4.5"
         assert round(app.loaded[0].total_cost, 2) == 1.94
-        assert "What-if" in _table_cells(app.renderer.detail_subagents(app.loaded[0], 200))[0]
+        assert "Compared" in _table_cells(app.renderer.detail_subagents(app.loaded[0], 200))[0]
 
         assert app.handle_key(None, ord("w"))
         assert not app.whatif_menu
         assert app.whatif_model is None
         assert round(app.loaded[0].total_cost, 2) == 1.94
-        assert "What-if" not in app.renderer.detail_subagents(app.loaded[0], 200)[1]
+        assert "Compared" not in app.renderer.detail_subagents(app.loaded[0], 200)[1]
 
         assert app.handle_key(None, ord("w"))
         assert app.whatif_menu

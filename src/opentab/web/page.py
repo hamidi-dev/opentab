@@ -1,7 +1,7 @@
 """Render the self-contained HTML frontend from a web payload.
 
 Navigation is hash-routed while tabs and overlays remain transient. The page
-mirrors the TUI's dual-cost and session-scoped what-if invariants. Payload
+mirrors the TUI's dual-cost and session-scoped compare-model invariants. Payload
 replacement runs last and escapes ``</`` so user text cannot collide with
 template tokens or close the data script.
 """
@@ -2478,7 +2478,7 @@ function executionTable(nodes, t) {
     { key: 'model', label: 'Model', asc: true, fmt: r => modelCell(r.model || '-') },
     { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
     { key: 'share', label: 'Share', align: 'r', sortVal: mCost, fmt: r => pct(mCost(r), total) },
-    ...(t ? [{ key: 'wi', label: 'What-if', align: 'r', fmt: r => moneyCell(r.wi) }] : []),
+    ...(t ? [{ key: 'wi', label: 'Compared', align: 'r', fmt: r => moneyCell(r.wi) }] : []),
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
   ], rows, { defaultSort: { key: 'index', desc: false },
     rowLabel: r => 'Open execution ' + (r.index + 1) + ': ' + (r.title || '(untitled)'),
@@ -2567,7 +2567,7 @@ function executionDetail(nodes, index, t) {
     ['cache hit', pct(tok[3], tok[0] + tok[3] + tok[4]) + ' (read / (input + read + write))'],
   ];
   if (tok[5]) fields.push(['1h cache write', exact(tok[5]) + ' (subset of cache write)']);
-  if (t) fields.push(['what-if at ' + t.target, money(whatifRowCost(n, t.target))]);
+  if (t) fields.push(['compared at ' + t.target, money(whatifRowCost(n, t.target))]);
   return pane('Execution ' + (index + 1) + ' of ' + nodes.length,
     h('div', { class: 'execution-detail' },
       h('button', { class: 'hbtn', onclick: closeExecution }, 'Back to executions (Esc)'),
@@ -2601,7 +2601,7 @@ function whatifTree(nodes, t) {
     h('div', { class: 'hint' }, 'both sides priced at list rates — the only apples-to-apples basis. The Cost column follows $ (recorded or API-equivalent), independently of this comparison.'),
     h('div', { class: 'hint' }, 'no per-node Δ: a node can mix models, so its baseline isn’t computable — the exact comparison exists at session level, where the tokens are split per model.'),
     t.est ? h('div', { class: 'hint' }, '~ your models include one with no known list rate — its tokens are priced at a generic estimate, so the baseline is not a real list price.') : null,
-    drift ? h('div', { class: 'hint' }, 'this session’s node totals disagree with its message totals, so the What-if column adds up to slightly ' + drift + ' than the TOTAL. The TOTAL is the exact one.') : null);
+    drift ? h('div', { class: 'hint' }, 'this session’s node totals disagree with its message totals, so the Compared column adds up to slightly ' + drift + ' than the TOTAL. The TOTAL is the exact one.') : null);
 }
 function donut(root, sub) {
   const R = 30, SW = 11, SZ = 84, c = SZ / 2, C = 2 * Math.PI * R;
@@ -2647,7 +2647,7 @@ function moneyCard(w, wi) {
     kids.push(h('div', { class: 'hint' }, 'both sides at list rates — recorded spend is unchanged, here and everywhere else.'));
     if (wi.est) kids.push(h('div', { class: 'hint' }, '~ a model in your mix has no known list rate — its tokens use a generic estimate.'));
   }
-  return pane('Money card' + (wi ? ' · what-if ' + wi.target : ''), ...kids);
+  return pane('Money card' + (wi ? ' · compare ' + wi.target : ''), ...kids);
 }
 
 function whatifRows() {
@@ -2712,10 +2712,10 @@ function renderWhatif() {
       h('button', { class: WHATIF.cat ? 'on' : null, onclick: () => { if (!WHATIF.cat) whatifFlip(); } }, 'models.dev')),
     h('span', { class: 'tr-note' }, WHATIF.cat ? 'eff $/M at your mix — cheapest first' : 'tokens you ran through each'));
   const panel = h('div', { class: 'tr-panel rp-panel wi-panel' },
-    h('div', { class: 'tr-head' }, h('h3', null, 'What-if model'), filter,
+    h('div', { class: 'tr-head' }, h('h3', null, 'Compare model rates'), filter,
       h('button', { class: 'tr-close', onclick: closeWhatif }, 'esc ✕')),
     h('div', { class: 'pr-intro' }, 'Compare a session’s tree against one model’s list rates — ',
-      h('b', null, '“what if this model had done all of it?”'),
+      h('b', null, '“what would this session cost at this model’s rates?”'),
       ' The session’s Subagents tab and Overview reprice; every other view keeps its actual cost.'),
     tier,
     rows.length ? h('div', { class: 'wi-list' }, list)
@@ -2862,7 +2862,7 @@ function renderDetail(sc, ws) {
     if (tree) root.appendChild(delegationPane(nodes));
     if (tree) { const fl = flamePane(nodes); if (fl) root.appendChild(fl); }
     if (!tree) root.appendChild(pane('Session tree', h('div', { class: 'hint' }, 'no subagents in this session')));
-    else if (wi) root.appendChild(pane('Session tree · what-if ' + wi.target, whatifTree(nodes, wi)));
+    else if (wi) root.appendChild(pane('Session tree · compare ' + wi.target, whatifTree(nodes, wi)));
     else root.appendChild(pane('Session tree', executionTable(nodes, null)));
     if (tree) root.appendChild(h('div', { class: 'hint' }, 'Click an execution for detail; focus a row and use j/k or arrows, then Enter. Model labels are representative, not a full model mix.'));
   } else if (TAB === 'Turns') root.appendChild(pane('Turns · cost over time',
@@ -2928,14 +2928,14 @@ function chrome() {
   chips.appendChild(h('span', { class: 'chip click', title: 'Set range (R)', onclick: openRange }, 'range ', h('b', null, rangeLabel())));
   chips.appendChild(h('span', { class: 'chip' }, META.serve ? 'live · ' + META.generated : META.generated));
   if (META.demo) chips.appendChild(h('span', { class: 'chip demo' }, 'demo data'));
-  if (WHATIF.model) chips.appendChild(h('span', { class: 'chip wi click', title: 'what-if target (w changes it, w again clears it)',
-    onclick: openWhatif }, 'what-if ', h('b', null, WHATIF.model)));
+  if (WHATIF.model) chips.appendChild(h('span', { class: 'chip wi click', title: 'compare-model target (w changes it, w again clears it)',
+    onclick: openWhatif }, 'compare ', h('b', null, WHATIF.model)));
   const right = document.getElementById('hright');
   right.textContent = '';
   if (!META.demo) {
     right.appendChild(h('div', { class: 'seg' },
-      h('button', { class: MODE === 'real' ? 'on' : null, onclick: () => setCostMode('real') }, 'actual $'),
-      h('button', { class: MODE === 'api' ? 'on' : null, onclick: () => setCostMode('api') }, 'what-if $')));
+      h('button', { class: MODE === 'real' ? 'on' : null, onclick: () => setCostMode('real') }, 'recorded $'),
+      h('button', { class: MODE === 'api' ? 'on' : null, onclick: () => setCostMode('api') }, 'estimates $')));
   }
   if (META.demo) { }
   else if (MODE === 'api') right.appendChild(h('span', { class: 'badge est' }, 'estimated · list prices'));
@@ -2949,7 +2949,7 @@ function chrome() {
     onclick: () => fetch('/api/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' } }).then(() => location.reload()) }, '↻ refresh'));
   const hints = document.getElementById('hints');
   hints.textContent = '';
-   [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['w', 'what-if model'],
+   [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'estimates'], ['w', 'compare model'],
     ['t/p/u/m', 'time/proj/harness/machines'], ['T', 'trends'], ['P', 'prices'], ['C', 'theme'], ['W', "what's new"], ['R', 'range']]
     .forEach(([k, lbl]) => hints.append(h('kbd', null, k), ' ' + lbl + '   '));
   document.getElementById('stamp').textContent =
@@ -3245,7 +3245,7 @@ function renderTrends() {
   if (META.demo) footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · esc close'));
   else if (MODE === 'api') footer.append(h('span', { class: 'badge est' }, 'estimated · list prices'));
   else if (W.some(w => w.unpriced > 0)) footer.append(h('span', { class: 'tr-note' }, 'press $ to estimate unpriced usage at API list prices'));
-  else footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · $ what-if · esc close'));
+  else footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · $ estimates · esc close'));
   const panel = h('div', { class: 'tr-panel' },
     h('div', { class: 'tr-head' },
       h('h3', null, 'Trends · ' + rangeLabel()),

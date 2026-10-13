@@ -4371,7 +4371,7 @@ class Renderer:
             delta = whatif - actual
             sign = "+" if delta >= 0 else "-"
             approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
-            title = f"# Money card · what-if {target}"
+            title = f"# Money card · compare {target}"
             whatif_rows = [
                 kv("★ Your models (list)", f"{approx}{money(actual)}"),
                 kv(f"★ All at {shorten(target, max(4, inner - 22))}", money(whatif)),
@@ -4381,7 +4381,7 @@ class Renderer:
                 ),
             ]
             notes.append(
-                "! What-if sides are list rates — the apples-to-apples basis; recorded "
+                "! Compared sides are list rates — the apples-to-apples basis; recorded "
                 "spend above and everywhere else is unchanged."
             )
             if approx:
@@ -4580,7 +4580,7 @@ class Renderer:
         approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
         lines = [
             "",
-            f"# What-if · {target}",
+            f"# Compare · {target}",
             f"Your models:  {approx}{money(actual)}   (list rates, each model its own)",
             f"All at {target}:  {money(whatif)}",
             f"Change:       {sign}{money(abs(delta))} "
@@ -6092,7 +6092,7 @@ class Renderer:
                 status=[tier_hint],
             )
         my, mx, mh, mw = self.draw_modal(
-            stdscr, scr_h, scr_w, "What-if model", self._menu_lines(layout), buttons=buttons
+            stdscr, scr_h, scr_w, "Compare model rates", self._menu_lines(layout), buttons=buttons
         )
         if self.whatif_filter_active and filter_line is not None and filter_line < mh - 4:
             text = f" filter: {self.whatif_query}"

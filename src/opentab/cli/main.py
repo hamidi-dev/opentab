@@ -359,7 +359,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="fetch the latest model list prices from models.dev into a local cache "
         f"({price_cache_path()}) and exit; the cache overlays the embedded table for the "
-        "$ what-if estimate (also available with 'r' in the P prices overlay)",
+        "$ estimates (also available with 'r' in the P prices overlay)",
     )
     parser.add_argument(
         "--timings",
@@ -1096,7 +1096,7 @@ def refresh_models_command() -> int:
     except (OSError, ValueError) as exc:
         raise SystemExit(f"price refresh failed: {exc}") from exc
     print(f"Cached {count} model prices to {path}.")
-    print("These overlay the embedded table for the $ what-if estimate; rerun to update.")
+    print("These overlay the embedded table for the $ estimates; rerun to update.")
     return 0
 
 
