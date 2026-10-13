@@ -23,7 +23,7 @@ _BAR = 16
 _QUICK_S = 0.05
 
 
-class _Task:
+class Task:
     __slots__ = ("label", "start", "end", "done", "total", "note")
 
     def __init__(self, label: str):
@@ -43,7 +43,7 @@ class Board:
         self._delay = delay
         self._interval = interval
         self._lock = threading.Lock()
-        self._tasks: list[_Task] = []
+        self._tasks: list[Task] = []
         self._start = time.monotonic()
         self._painted = 0  # lines currently on screen
         self._frame = 0
@@ -51,8 +51,8 @@ class Board:
         self._thread = threading.Thread(target=self._loop, name="opentab-progress", daemon=True)
         self._thread.start()
 
-    def add(self, label: str) -> _Task:
-        task = _Task(label)
+    def add(self, label: str) -> Task:
+        task = Task(label)
         with self._lock:
             self._tasks.append(task)
         return task
@@ -109,7 +109,7 @@ class Board:
         state = f"{running} still loading" if running else "opening"
         return f"OpenTab  {len(self._tasks)} {noun} · {state}  {_elapsed(now - self._start)}"
 
-    def _row(self, t: _Task, now: float) -> str:
+    def _row(self, t: Task, now: float) -> str:
         name = f"  {t.label[:12]:<12} "
         if t.end is not None:
             note = f"  {t.note}" if t.note else ""
@@ -168,6 +168,11 @@ def task(label: str):
         _local.task = previous
 
 
+def track(task: Task) -> None:
+    """Report this thread's progress into ``task`` without a board (a loader process)."""
+    _local.task = task
+
+
 def active() -> bool:
     """True on a tracked thread, so a backend can skip work that only feeds a bar."""
     return getattr(_local, "task", None) is not None
@@ -184,6 +189,8 @@ def advance(done: int, total: int | None = None) -> None:
 
 def note(store) -> str:
     """Cache outcome for a finished row, from CachedStore's per-call flags."""
+    if getattr(store, "served_by_process", False):
+        return ""  # parsed, just elsewhere; its rows arrived through the cache
     if getattr(store, "served_from_cache", None):
         return "cached"
     if getattr(store, "served_incrementally", False):
