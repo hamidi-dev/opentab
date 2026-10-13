@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenTab Docs</title>
 <meta name="description" content="OpenTab documentation: install, keys, harnesses, pricing, web reports, multiple machines and privacy.">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="icon" href="../favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
 <link rel="canonical" href="https://opentab.hamidi.dev/docs/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="OpenTab">
@@ -175,7 +178,7 @@ dialog.palette::backdrop { background: #05061099; backdrop-filter: blur(3px); }
 <body>
 <header class="top">
   <button class="icon-btn menu-btn" type="button" aria-label="Open navigation" data-menu>☰</button>
-  <a class="mark" href="../">OpenTab <span>docs</span></a>
+  <a class="mark" href="../"><img src="../favicon.svg" alt="" width="20" height="20">OpenTab <span>docs</span></a>
   <button class="search-btn" type="button" data-search>⌕ <span>Search the docs</span><kbd>/</kbd></button>
   <nav>
     <a class="opt" href="../">Home</a>
@@ -247,10 +250,10 @@ const cache = {};
 
 // ── theme ─────────────────────────────
 const root = document.documentElement;
-try { const t = localStorage.getItem("ot-docs-theme"); if (t) root.dataset.theme = t; } catch {}
+try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-docs-theme"); if (t) root.dataset.theme = t; } catch {}
 document.querySelector("[data-theme-toggle]").onclick = () => {
   root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
-  try { localStorage.setItem("ot-docs-theme", root.dataset.theme); } catch {}
+  try { localStorage.setItem("ot-theme", root.dataset.theme); } catch {}
 };
 document.querySelector("[data-menu]").onclick = () => document.body.classList.toggle("menu");
 

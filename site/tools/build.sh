@@ -25,6 +25,7 @@ done
 # OpenTab writes details owner-only (they hold prompts); these are synthetic and public.
 chmod 644 "$site/report.html" "$site"/report-details/*.json
 chmod 755 "$site/report-details"
+python3 "$site/tools/build-story.py"
 
 # The docs changelog: every published GitHub release, fetched at build time (the docs
 # CSP keeps the browser off api.github.com). Without gh, the last good file stays.
