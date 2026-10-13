@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenTab Docs</title>
+<meta name="description" content="OpenTab documentation: install, keys, harnesses, pricing, web reports, multiple machines and privacy.">
+<link rel="canonical" href="https://opentab.hamidi.dev/docs/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="OpenTab">
+<meta property="og:title" content="OpenTab documentation">
+<meta property="og:description" content="OpenTab documentation: install, keys, harnesses, pricing, web reports, multiple machines and privacy.">
+<meta property="og:url" content="https://opentab.hamidi.dev/docs/">
+<meta property="og:image" content="https://opentab.hamidi.dev/media/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="OpenTab: find the session behind the spike, next to the OpenTab terminal app">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,300..800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<style>
+:root {
+  --ink: #0d0f1e; --ink-2: #14172b; --ink-3: #1c2038; --line: #262b4b;
+  --text: #e2e5f6; --dim: #8a90b4; --lav: #b8c0ff; --cost: #9ece6a; --tok: #f7768e;
+  --t-cache-read: #d4910f; --t-output: #e2582b; --t-cache-write: #d9579b; --t-input: #3f8ef0; --t-reasoning: #1fa774;
+  --spectrum: linear-gradient(90deg, var(--t-cache-read), var(--t-output), var(--t-cache-write), var(--t-input), var(--t-reasoning));
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --ink: #f6f6fb; --ink-2: #ecedf6; --ink-3: #e1e3f1; --line: #d3d6ea;
+  --text: #1b1e33; --dim: #5d6286; --lav: #4a55c8; --cost: #3c7d12; --tok: #c0304f;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html { scroll-padding-top: 80px; }
+body { margin: 0; background: var(--ink); color: var(--text); font: 16.5px/1.7 var(--display); -webkit-font-smoothing: antialiased; }
+a { color: var(--lav); text-underline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--lav); outline-offset: 2px; border-radius: 4px; }
+kbd { font: 12px var(--mono); padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: var(--ink-3); color: var(--lav); }
+
+/* top bar */
+header.top {
+  position: sticky; top: 0; z-index: 30; height: 60px;
+  display: flex; align-items: center; gap: 18px; padding: 0 20px;
+  background: color-mix(in oklab, var(--ink) 80%, transparent); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+header.top::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--spectrum); opacity: .7; }
+.mark { font: 700 15px var(--mono); color: var(--text); text-decoration: none; display: flex; gap: 8px; align-items: center; }
+.mark span { background: var(--lav); color: var(--ink); padding: 0 6px; border-radius: 3px; }
+.search-btn {
+  all: unset; cursor: pointer; margin-left: 24px; flex: 0 1 340px; display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--ink-2); color: var(--dim); font-size: 14px;
+}
+.search-btn kbd { margin-left: auto; }
+header.top nav { margin-left: auto; display: flex; gap: 18px; font-size: 14.5px; align-items: center; }
+header.top nav a { color: var(--dim); text-decoration: none; }
+header.top nav a:hover { color: var(--text); }
+.icon-btn { all: unset; cursor: pointer; color: var(--dim); font: 14px var(--mono); padding: 4px 8px; border-radius: 6px; }
+.icon-btn:hover { color: var(--text); background: var(--ink-3); }
+.menu-btn { display: none; }
+
+/* layout */
+.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr) 220px; max-width: 1440px; margin: 0 auto; }
+aside.side { position: sticky; top: 60px; height: calc(100vh - 60px); overflow-y: auto; padding: 28px 18px 40px 24px; border-right: 1px solid var(--line); }
+.side h4 { margin: 22px 0 6px 10px; font: 500 12px var(--mono); color: var(--dim); }
+.side h4:first-child { margin-top: 0; }
+.side a {
+  display: block; padding: 5px 10px; border-radius: 7px; color: var(--text); text-decoration: none; font-size: 15px;
+  position: relative;
+}
+.side a:hover { background: var(--ink-2); }
+.side a[aria-current="page"] { background: var(--ink-3); color: var(--lav); font-weight: 600; }
+.side a[aria-current="page"]::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; background: var(--spectrum); }
+.side .ver { margin: 28px 10px 0; font: 12px var(--mono); color: var(--dim); }
+
+main { padding: 44px clamp(20px, 5vw, 64px) 120px; min-width: 0; }
+.crumb { font: 13px var(--mono); color: var(--dim); margin-bottom: 10px; }
+.crumb b { color: var(--lav); font-weight: 500; }
+article { max-width: 76ch; }
+article h1 { font-size: clamp(36px, 4.4vw, 52px); line-height: 1.05; margin: 0 0 20px; letter-spacing: -.02em; font-weight: 760; font-variation-settings: "opsz" 72, "wdth" 92; }
+article h2 { font-size: 28px; line-height: 1.2; margin: 56px 0 12px; letter-spacing: -.01em; font-weight: 700; padding-top: 8px; }
+article h3 { font-size: 20px; margin: 36px 0 8px; font-weight: 650; }
+article h4 { font-size: 17px; margin: 28px 0 6px; }
+article :is(h2, h3, h4) .anchor { opacity: 0; margin-left: 8px; color: var(--dim); text-decoration: none; font-weight: 400; }
+article :is(h2, h3, h4):hover .anchor { opacity: 1; }
+article p, article li { color: color-mix(in oklab, var(--text) 88%, var(--dim)); }
+article strong { color: var(--text); }
+article :is(h1, h2, h3) code { font-size: .78em; padding: 0 .3em; vertical-align: .08em; }
+article code { font: .86em var(--mono); background: var(--ink-3); padding: .12em .4em; border-radius: 5px; color: var(--lav); }
+article pre {
+  position: relative; background: var(--ink-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px 18px; overflow-x: auto; font-size: 13.5px; line-height: 1.6;
+}
+article :not(pre) > code { overflow-wrap: anywhere; }
+article pre code { background: none; padding: 0; color: var(--text); font-size: 13.5px; }
+article pre .copy { position: absolute; top: 8px; right: 8px; opacity: 0; transition: opacity .15s; }
+article pre:hover .copy, article pre .copy:focus-visible { opacity: 1; }
+.copy { all: unset; cursor: pointer; font: 11.5px var(--mono); color: var(--dim); border: 1px solid var(--line); background: var(--ink-3); padding: 3px 9px; border-radius: 6px; }
+article table { border-collapse: collapse; width: 100%; font-size: 14.5px; margin: 20px 0; display: block; overflow-x: auto; }
+article th, article td { border-bottom: 1px solid var(--line); padding: 9px 12px; text-align: left; vertical-align: top; }
+article th { font: 500 12.5px var(--mono); color: var(--dim); }
+article img { max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); }
+article blockquote { margin: 20px 0; padding: 12px 18px; border-left: 3px solid var(--line); background: var(--ink-2); border-radius: 0 10px 10px 0; color: var(--dim); }
+article blockquote.callout { border-left-color: var(--t-input); }
+article blockquote.callout.warning, article blockquote.callout.important { border-left-color: var(--t-cache-read); }
+article blockquote.callout .label { display: block; font: 600 13px var(--mono); color: var(--text); margin-bottom: 4px; }
+article details { border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; margin: 14px 0; background: var(--ink-2); }
+article details summary { cursor: pointer; }
+article hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
+article p[align="center"] { text-align: center; }
+article sub { color: var(--dim); font-size: 13.5px; line-height: 1.5; display: inline-block; margin-top: 6px; }
+.pager { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 72px; max-width: 76ch; }
+.pager a { border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; text-decoration: none; color: var(--text); }
+.pager a:hover { border-color: var(--lav); }
+.pager a small { display: block; font: 12px var(--mono); color: var(--dim); }
+.pager a.next { text-align: right; grid-column: 2; }
+.edit { margin-top: 28px; font: 13px var(--mono); }
+.edit a { color: var(--dim); }
+
+aside.toc { position: sticky; top: 60px; height: calc(100vh - 60px); overflow-y: auto; padding: 48px 20px; font-size: 13.5px; }
+.toc h4 { margin: 0 0 10px; font: 500 12px var(--mono); color: var(--dim); }
+.toc a { display: block; padding: 3px 0 3px 12px; color: var(--dim); text-decoration: none; border-left: 1px solid var(--line); line-height: 1.4; }
+.toc a.h3 { padding-left: 24px; font-size: 13px; }
+.toc a.on { color: var(--lav); border-left-color: var(--lav); }
+
+/* changelog */
+.release { position: relative; padding: 0 0 36px 28px; border-left: 1px solid var(--line); }
+.release::before { content: ""; position: absolute; left: -6px; top: 10px; width: 11px; height: 11px; border-radius: 50%; background: var(--ink); border: 2px solid var(--lav); }
+.release:first-of-type::before { background: var(--lav); box-shadow: 0 0 0 5px color-mix(in oklab, var(--lav) 25%, transparent); }
+.release h2 { margin: 0 0 4px; font-size: 24px; padding: 0; }
+.release h2 a { color: inherit; text-decoration: none; }
+.release h2 small { font: 500 15px var(--display); color: var(--dim); margin-left: 8px; }
+.release .date { margin: 0 0 8px; font: 13px var(--mono); color: var(--dim); }
+.release h3 { font: 600 13px var(--mono); margin: 16px 0 4px; }
+.release h4 { font: 600 15px var(--display); margin: 14px 0 4px; }
+.release img { max-width: 100%; }
+.release h3.New { color: var(--cost); } .release h3.Improved { color: var(--t-input); } .release h3.Fixed { color: var(--t-cache-read); }
+.release ul { margin: 0; padding-left: 20px; }
+.release .hint { color: var(--dim); font-size: 14px; }
+
+/* search palette */
+dialog.palette {
+  width: min(640px, calc(100% - 32px)); margin: 12vh auto auto; padding: 0; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--ink-2); color: var(--text); box-shadow: 0 40px 100px -20px #000c;
+}
+dialog.palette::backdrop { background: #05061099; backdrop-filter: blur(3px); }
+.palette input { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); font: 17px var(--display); padding: 18px 20px; outline: none; }
+.palette ul { list-style: none; margin: 0; padding: 8px; max-height: 56vh; overflow-y: auto; }
+.palette li a { display: block; padding: 10px 12px; border-radius: 9px; text-decoration: none; color: var(--text); }
+.palette li a small { display: block; color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette li a mark { background: color-mix(in oklab, var(--t-cache-read) 40%, transparent); color: inherit; border-radius: 3px; padding: 0 2px; }
+.palette li a.sel { background: var(--ink-3); }
+.palette li a .where { font: 12px var(--mono); color: var(--lav); margin-left: 8px; }
+.palette .foot { padding: 10px 16px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--dim); display: flex; gap: 16px; }
+.palette .empty { padding: 18px; color: var(--dim); }
+
+@media (max-width: 1180px) { .layout { grid-template-columns: 240px minmax(0, 1fr); } aside.toc { display: none; } }
+@media (max-width: 820px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  aside.side { position: fixed; top: 60px; left: 0; bottom: 0; width: 280px; z-index: 25; background: var(--ink); transform: translateX(-100%); transition: transform .2s; }
+  body.menu aside.side { transform: none; box-shadow: 20px 0 60px #0008; }
+  .menu-btn { display: inline-block; }
+  .search-btn { margin-left: 0; flex: 1; }
+  .search-btn span, header.top nav a.opt { display: none; }
+  .pager { grid-template-columns: 1fr; } .pager a.next { grid-column: 1; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <button class="icon-btn menu-btn" type="button" aria-label="Open navigation" data-menu>☰</button>
+  <a class="mark" href="../">OpenTab <span>docs</span></a>
+  <button class="search-btn" type="button" data-search>⌕ <span>Search the docs</span><kbd>/</kbd></button>
+  <nav>
+    <a class="opt" href="../">Home</a>
+    <a class="opt" href="#/changelog">Changelog</a>
+    <a href="https://github.com/hamidi-dev/opentab">GitHub</a>
+    <button class="icon-btn" type="button" data-theme-toggle aria-label="Toggle light and dark">◐</button>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="side" data-side></aside>
+  <main>
+    <div class="crumb" data-crumb></div>
+    <article data-article><p style="color:var(--dim)">Loading…</p></article>
+    <div class="pager" data-pager></div>
+    <div class="edit" data-edit></div>
+  </main>
+  <aside class="toc" data-toc></aside>
+</div>
+
+<dialog class="palette" data-palette>
+  <input type="search" placeholder="Search every page — keys, harnesses, pricing…" aria-label="Search the docs" data-q>
+  <ul data-results></ul>
+  <div class="foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>
+</dialog>
+
+<script>
+const REPO = "https://github.com/hamidi-dev/opentab";
+const NAV = [
+  ["Start here", [
+    ["quick-start", "Quick start"],
+    ["readme", "Overview & install", "README.md"],
+    ["index", "All documentation", "md/README.md"],
+    ["changelog", "Changelog", null],
+  ]],
+  ["Guide", [
+    ["filters", "Scope & filters"],
+    ["sessions", "Reading a session"],
+    ["changes", "Changes"],
+    ["overlays", "Overlays"],
+    ["pricing", "Pricing & the $ view"],
+    ["web", "The web browser"],
+    ["machines", "Multiple machines"],
+    ["conversation-search", "Conversation search"],
+  ]],
+  ["Reference", [
+    ["keys", "Keys & navigation"],
+    ["sources", "Data harnesses"],
+    ["configuration", "Configuration"],
+    ["programmatic", "Programmatic access & MCP"],
+    ["privacy", "Privacy"],
+    ["windows", "Windows & WSL"],
+    ["troubleshooting", "Troubleshooting"],
+  ]],
+  ["Contributors", [
+    ["architecture", "Architecture"],
+    ["backends", "Backend accounting"],
+    ["caching", "Startup & caching"],
+    ["tui", "TUI internals"],
+    ["whats-new", "Maintaining release notes"],
+  ]],
+];
+const PAGES = NAV.flatMap(([group, items]) => items.map(([slug, title, file]) => ({
+  slug, title, group, file: file === undefined ? `md/${slug}.md` : file,
+  repoPath: slug === "readme" ? "README.md" : slug === "index" ? "docs/README.md" : `docs/${slug}.md`,
+})));
+const bySlug = Object.fromEntries(PAGES.map(p => [p.slug, p]));
+const cache = {};
+
+// ── theme ─────────────────────────────
+const root = document.documentElement;
+try { const t = localStorage.getItem("ot-docs-theme"); if (t) root.dataset.theme = t; } catch {}
+document.querySelector("[data-theme-toggle]").onclick = () => {
+  root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+  try { localStorage.setItem("ot-docs-theme", root.dataset.theme); } catch {}
+};
+document.querySelector("[data-menu]").onclick = () => document.body.classList.toggle("menu");
+
+// ── sidebar ───────────────────────────
+const side = document.querySelector("[data-side]");
+side.innerHTML = NAV.map(([group, items]) =>
+  `<h4>${group}</h4>` + items.map(([slug, title]) => `<a href="#/${slug}" data-slug="${slug}">${title}</a>`).join("")
+).join("") + `<p class="ver">v1.31.0 · MIT</p>`;
+
+// ── markdown ──────────────────────────
+const slugify = s => s.toLowerCase().trim().replace(/<[^>]+>/g, "").replace(/[^\w\- ]+/g, "").replace(/ /g, "-");
+function rewriteHref(href, page) {
+  if (!href || /^(https?:|mailto:|#\/)/.test(href)) return href;
+  if (href.startsWith("#")) return `#/${page.slug}${href}`;
+  const [path, frag] = href.split("#");
+  const name = path.split("/").pop();
+  if (name === "README.md") {
+    // The repository README and the docs index share a name; resolve by location.
+    const inDocs = page.slug === "readme" ? path.startsWith("docs/") : !path.startsWith("../");
+    return `#/${inDocs ? "index" : "readme"}${frag ? "#" + frag : ""}`;
+  }
+  if (name.endsWith(".md")) {
+    const slug = name.replace(/\.md$/, "");
+    if (bySlug[slug]) return `#/${slug}${frag ? "#" + frag : ""}`;
+    return `${REPO}/blob/main/${page.slug === "readme" ? "" : "docs/"}${path}`.replace("/docs/../", "/");
+  }
+  const base = page.slug === "readme" ? "" : "docs/";
+  return `${REPO}/blob/main/${base}${path}`.replace("/docs/../", "/");
+}
+function rewriteSrc(src, page) {
+  if (!src || /^https?:/.test(src)) return src;
+  if (page.slug === "readme") return src.replace(/^docs\//, "md/");
+  return "md/" + src.replace(/^\.\//, "");
+}
+async function load(page) {
+  if (cache[page.slug]) return cache[page.slug];
+  const res = await fetch(page.file);
+  if (!res.ok) throw new Error(`${page.file}: ${res.status}`);
+  return (cache[page.slug] = await res.text());
+}
+function render(md, page) {
+  const html = marked.parse(md, { gfm: true });
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html").body.firstChild;
+  const seen = {};
+  doc.querySelectorAll("h1,h2,h3,h4").forEach(h => {
+    let id = slugify(h.textContent); if (seen[id] != null) id += "-" + ++seen[id]; else seen[id] = 0;
+    h.id = id;
+    if (h.tagName !== "H1") h.insertAdjacentHTML("beforeend", `<a class="anchor" href="#/${page.slug}#${id}" aria-label="Link to this section">#</a>`);
+  });
+  doc.querySelectorAll("a[href]").forEach(a => {
+    if (a.classList.contains("anchor")) return;
+    a.setAttribute("href", rewriteHref(a.getAttribute("href"), page));
+    if (/^https?:/.test(a.getAttribute("href"))) a.target = "_blank", a.rel = "noopener";
+  });
+  doc.querySelectorAll("img[src]").forEach(img => { img.src = rewriteSrc(img.getAttribute("src"), page); img.loading = "lazy"; });
+  doc.querySelectorAll("blockquote").forEach(bq => {
+    const p = bq.querySelector("p"); const m = p && p.innerHTML.match(/^\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]\s*/);
+    if (!m) return;
+    bq.classList.add("callout", m[1].toLowerCase());
+    p.innerHTML = p.innerHTML.slice(m[0].length);
+    bq.insertAdjacentHTML("afterbegin", `<span class="label">${m[1][0] + m[1].slice(1).toLowerCase()}</span>`);
+  });
+  doc.querySelectorAll("pre").forEach(pre => pre.insertAdjacentHTML("beforeend", `<button class="copy" type="button">copy</button>`));
+  // The README's centred hero header duplicates the page title.
+  if (page.slug === "readme") {
+    const h1 = doc.querySelector("h1"); if (h1) h1.outerHTML = `<h1>OpenTab</h1>`;
+  }
+  return doc.innerHTML;
+}
+// Every published GitHub release, as written (tools/build.sh fetches docs/changelog.json).
+// Old releases open with a "What's Changed" or title heading; it repeats the version, so it
+// goes. The rest is demoted under the release's own heading.
+const SECTION = { New: /^(new|added|new features)$/i, Improved: /^(improved|changed)$/i, Fixed: /^fix(ed|es)?\b/i };
+function renderChangelog(data) {
+  const intro = `<h1>Changelog</h1><p>Every OpenTab release, newest first, from <a href="${REPO}/releases" target="_blank" rel="noopener">GitHub Releases</a>. Press <kbd>W</kbd> in the app for the highlights.</p>`;
+  return intro + data.releases.map(r => {
+    const body = document.createElement("div");
+    body.innerHTML = marked.parse(r.body || "", { gfm: true });
+    const first = body.firstElementChild;
+    if (first && /^H[1-3]$/.test(first.tagName) && (/what.s changed/i.test(first.textContent) || first.textContent.includes(r.tag))) first.remove();
+    body.querySelectorAll("h1, h2, h3, h4").forEach(h => {
+      const level = /^H[12]$/.test(h.tagName) ? "h3" : "h4";
+      const out = document.createElement(level);
+      out.innerHTML = h.innerHTML;
+      const kind = Object.keys(SECTION).find(k => SECTION[k].test(h.textContent.trim()));
+      if (kind) out.className = kind;
+      h.replaceWith(out);
+    });
+    body.querySelectorAll("a[href^='http']").forEach(a => { a.target = "_blank"; a.rel = "noopener"; });
+    const title = r.name && !r.name.endsWith(r.tag) ? ` <small>${escapeHtml(r.name.replace(/^v[\d.]+\s*-\s*/, ""))}</small>` : "";
+    return `<section class="release"><h2 id="${r.tag}"><a href="${r.url}" target="_blank" rel="noopener">${r.tag}</a>${title}</h2>` +
+      `<p class="date">${r.date}</p>${body.innerHTML}</section>`;
+  }).join("");
+}
+const escapeHtml = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ── routing ───────────────────────────
+const article = document.querySelector("[data-article]");
+const toc = document.querySelector("[data-toc]");
+let current = null;
+async function route() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  const [slug, frag] = raw.split("#");
+  const page = bySlug[slug || "quick-start"] || bySlug["quick-start"];
+  document.body.classList.remove("menu");
+  if (current !== page.slug) {
+    current = page.slug;
+    side.querySelectorAll("a").forEach(a => a.dataset.slug === page.slug ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
+    document.querySelector("[data-crumb]").innerHTML = `${page.group} / <b>${page.title}</b>`;
+    try {
+      if (page.slug === "changelog") {
+        const data = cache.changelog || (cache.changelog = await (await fetch("changelog.json")).json());
+        article.innerHTML = renderChangelog(data);
+      } else {
+        article.innerHTML = render(await load(page), page);
+      }
+    } catch (e) {
+      article.innerHTML = `<h1>Couldn't load this page</h1><p>${escapeHtml(String(e.message))}. Serve <code>site/</code> over HTTP so the docs folder is reachable.</p>`;
+    }
+    document.title = `${page.title} · OpenTab Docs`;
+    buildToc(); buildPager(page);
+    document.querySelector("[data-edit]").innerHTML = page.file ? `<a href="${REPO}/blob/main/${page.repoPath}" target="_blank" rel="noopener">Edit this page on GitHub</a>` : "";
+    if (!frag) window.scrollTo({ top: 0, behavior: "instant" });
+  }
+  if (frag) { const el = document.getElementById(decodeURIComponent(frag)); if (el) el.scrollIntoView(); }
+}
+function buildToc() {
+  const hs = [...article.querySelectorAll(current === "changelog" ? "h2" : "h2, h3")];
+  toc.innerHTML = hs.length ? `<h4>On this page</h4>` + hs.map(h =>
+    `<a class="${h.tagName.toLowerCase()}" href="#/${current}#${h.id}" data-for="${h.id}">${escapeHtml(h.textContent.replace(/#$/, "").trim())}</a>`).join("") : "";
+  spy.disconnect(); hs.forEach(h => spy.observe(h));
+}
+const spy = new IntersectionObserver(es => es.forEach(e => {
+  if (!e.isIntersecting) return;
+  toc.querySelectorAll("a").forEach(a => a.classList.toggle("on", a.dataset.for === e.target.id));
+}), { rootMargin: "-70px 0px -70% 0px" });
+function buildPager(page) {
+  const i = PAGES.indexOf(page), prev = PAGES[i - 1], next = PAGES[i + 1];
+  document.querySelector("[data-pager]").innerHTML =
+    (prev ? `<a href="#/${prev.slug}"><small><kbd>[</kbd> previous</small>${prev.title}</a>` : "") +
+    (next ? `<a class="next" href="#/${next.slug}"><small>next <kbd>]</kbd></small>${next.title}</a>` : "");
+}
+window.addEventListener("hashchange", route);
+route();
+
+article.addEventListener("click", async e => {
+  const btn = e.target.closest(".copy"); if (!btn) return;
+  try { await navigator.clipboard.writeText(btn.parentElement.querySelector("code").textContent); btn.textContent = "copied"; }
+  catch { btn.textContent = "select it"; }
+  setTimeout(() => (btn.textContent = "copy"), 1300);
+});
+
+// ── keys: / search, [ ] pages, like the TUI ─
+const palette = document.querySelector("[data-palette]");
+const q = document.querySelector("[data-q]");
+const results = document.querySelector("[data-results]");
+document.querySelector("[data-search]").onclick = openSearch;
+document.addEventListener("keydown", e => {
+  if (palette.open || e.target.closest?.("input, textarea")) return;
+  if (e.key === "/" || (e.key === "k" && (e.metaKey || e.ctrlKey))) { e.preventDefault(); openSearch(); }
+  const i = PAGES.findIndex(p => p.slug === current);
+  if (e.key === "]" && PAGES[i + 1]) location.hash = `#/${PAGES[i + 1].slug}`;
+  if (e.key === "[" && PAGES[i - 1]) location.hash = `#/${PAGES[i - 1].slug}`;
+});
+let index = null, sel = 0;
+async function openSearch() {
+  palette.showModal(); q.value = ""; q.focus(); search("");
+  if (!index) {
+    results.innerHTML = `<li class="empty">Indexing pages…</li>`;
+    index = [];
+    await Promise.all(PAGES.filter(p => p.file).map(async p => {
+      try {
+        const md = await load(p);
+        let heading = p.title, buf = [];
+        const flush = () => buf.length && index.push({ p, heading, text: buf.join(" ").replace(/[`*_>#|]|<[^>]+>|\]\([^)]*\)|\[/g, "").replace(/\s+/g, " ") });
+        md.split("\n").forEach(line => {
+          const m = line.match(/^#{1,3} (.+)/);
+          if (m) { flush(); buf = []; heading = m[1].replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[`*_]/g, "").trim(); } else buf.push(line);
+        });
+        flush();
+      } catch {}
+    }));
+    search(q.value);
+  }
+}
+function search(term) {
+  term = term.trim().toLowerCase(); sel = 0;
+  let hits;
+  if (!term) hits = PAGES.map(p => ({ p, heading: p.title, text: p.group }));
+  else {
+    const words = term.split(/\s+/);
+    hits = (index || []).map(h => {
+      const hay = (h.heading + " " + h.text).toLowerCase();
+      if (!words.every(w => hay.includes(w))) return null;
+      const score = words.reduce((s, w) => s + (h.heading.toLowerCase().includes(w) ? 10 : 0) + (h.p.title.toLowerCase().includes(w) ? 5 : 0), 0);
+      return { ...h, score };
+    }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 30);
+  }
+  if (!hits.length) { results.innerHTML = `<li class="empty">No section mentions “${escapeHtml(term)}”. Try a key like <kbd>w</kbd> or a harness name.</li>`; return; }
+  const mark = s => { let out = escapeHtml(s); term.split(/\s+/).filter(Boolean).forEach(w => out = out.replace(new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"), "<mark>$1</mark>")); return out; };
+  const snippet = (text) => {
+    if (!term) return text;
+    const at = text.toLowerCase().indexOf(term.split(/\s+/)[0]);
+    return (at > 40 ? "…" : "") + text.slice(Math.max(0, at - 40), at + 120);
+  };
+  results.innerHTML = hits.map((h, i) => {
+    const id = h.heading === h.p.title ? "" : "#" + slugify(h.heading);
+    return `<li><a href="#/${h.p.slug}${id}" class="${i === 0 ? "sel" : ""}">${mark(h.heading)}<span class="where">${h.p.title}</span><small>${mark(snippet(h.text))}</small></a></li>`;
+  }).join("");
+}
+q.addEventListener("input", () => search(q.value));
+q.addEventListener("keydown", e => {
+  const items = [...results.querySelectorAll("a")];
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault(); sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    items.forEach((a, i) => a.classList.toggle("sel", i === sel)); items[sel]?.scrollIntoView({ block: "nearest" });
+  }
+  if (e.key === "Enter" && items[sel]) { e.preventDefault(); location.hash = items[sel].getAttribute("href"); palette.close(); }
+});
+results.addEventListener("click", e => { if (e.target.closest("a")) palette.close(); });
+palette.addEventListener("click", e => { if (e.target === palette) palette.close(); });
+</script>
+</body>
+</html>
