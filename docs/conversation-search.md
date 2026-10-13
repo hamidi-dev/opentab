@@ -1,312 +1,186 @@
 # Conversation search
 
-Search retained OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp text across the
-local sessions OpenTab can already discover. This is **lexical search**, not semantic memory:
-identifiers and shared wording work best. It does not summarize conversations,
-learn a personal profile, call an embedding model, or use the network.
+Search the text of your past conversations across OpenCode, Claude Code, Codex,
+Hermes, Copilot, pi and omp. It finds words, not meanings: identifiers and exact
+wording work best. Everything stays on this machine; nothing calls a model or the
+network.
 
-## Search in the TUI
+Search reads a local index that you build yourself. Press `Ctrl-F` in the TUI, or run
+`opentab conversations` from a terminal.
 
-Press `Ctrl-F`, type a query, then `Enter` to select results. Another `Enter`
-opens the Conversation tab. Both tabs preserve their reading positions. Search
-starts within the current session when opened from one, otherwise across the
-local sessions. The scope selector switches between all sessions and one session.
+## Build the index
 
-Open **Filters** with `Ctrl-G`, even while typing. Pick a known project by name,
-choose a harness, or select Today, Last 7 days, Last 30 days or a custom date range.
-Dates are inclusive UTC **message dates**, not session start dates; active date
-chips and date presets explicitly label UTC. Only active
-filters appear below the query; click a chip's `x` to remove it, or Clear to remove
-all three filters without changing the session scope or query. Changes apply
-immediately; `Esc` returns from a picker to Filters, then to search.
-
-The first time you open search, a welcome popup explains how to build the index
-and keep it fresh. **Got it** remembers the introduction across launches (unless
-you use `--no-state`); **Back** closes search and leaves it for next time.
-Run the index command below again whenever you need fresh results, or schedule
-it yourself with cron or your operating system's task scheduler.
-
-Opening search needs no raw-content flag. A missing index offers a Build popup;
-`I` confirms an update. Indexing persists plaintext and ignores date filters.
-Search never refreshes automatically; coverage warnings identify missing or stale
-evidence. Demo and remote catalogs are unsupported.
-
-See [Search controls](keys.md#scope--filter) and [Privacy](privacy.md).
-
-## Build deliberately
-
-`opentab conversations --help` shows the index → search → read workflow;
-`opentab conversations COMMAND --help` gives a short guide to each step.
-Use `--help-all` for every scope, source override, window limit and freshness
-detail. Both help levels exit without reading or indexing conversations. For example:
+Search needs an index first. The first time you press `Ctrl-F`, OpenTab explains this
+and offers to build one; `I` builds or refreshes it later. From a terminal:
 
 ```sh
 opentab conversations index --harness all --allow-raw-content
-opentab conversations search "cache configuration" --allow-raw-content
-opentab sessions conversation SESSION_KEY --allow-raw-content --anchor ANCHOR
-```
-
-To diagnose a slow or stalled refresh, add `--debug` after `index`:
-
-```sh
-opentab conversations index --harness all --allow-raw-content --debug
-```
-
-It prints flushed stages to stderr (including catalog loading, index opening,
-source preparation and each root's manifest/read/write) while JSON results stay
-on stdout. The first stderr line gives the private JSONL log path under the XDG
-state directory. `tail -f FILE` shows nested timings, CPU and process RSS; an
-unpaired `.start` identifies the in-progress step. `--debug-log FILE` writes to
-a new file of your choice. Roots are identified only by run-local hashes; no
-prompts, source paths or query text appear in diagnostics. Search also accepts
-these flags and reports live verification stages. Debugging never indexes by
-itself: only an explicit `index` invocation refreshes text.
-
-The first command writes sensitive plaintext locally; search requires an existing
-index and never refreshes it automatically. `SESSION_KEY` and `ANCHOR` are
-placeholders from a search result. For a child hit, also pass its exact
-`execution_id` as `--execution-id`; keep the root's `session_key` as `SESSION_KEY`.
-
-Nothing is indexed during normal startup, reload, accounting queries or ordinary
-TUI/web browsing. Building an index is a separate explicit `I` or CLI/MCP action
-that **persists sensitive text**:
-
-```sh
-opentab conversations index --project ~/work/my-project --allow-raw-content
 opentab conversations status
-opentab conversations search "retry sqlite locking" --project ~/work/my-project --allow-raw-content
 ```
 
-CLI index and search load all present supported conversation readers by default:
-OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp. `--harness` (or its deprecated
-`--source` alias) can select one of them or `all`; accounting-only harnesses are
-rejected rather than loaded and later reported as unindexable. `--db`,
-`--claude-dir`, `--codex-dir`, `--hermes-db`, `--copilot-dir`, `--pi-dir`, and `--omp-dir` override
-those readers' local paths. `--from-harness` accepts the same seven harness values
-and filters the loaded catalog. Index/search also accept `--machine`, `--project`
-(an exact normalized project path), and `--session SESSION_KEY`. Saved project/session
-ignores apply; `--no-state` disables them. `--no-cache` bypasses only the
-accounting rollup cache used to construct the current session catalog, not the
-conversation index. Remote summaries are unsupported, not silently fetched over
-SSH. This CLI restriction does not change the MCP server's loaded catalog;
-unscoped MCP searches can still report unsupported catalog roots as unindexed.
+The index stores the user and assistant text of each session, its title and source
+identifiers, **as plaintext**, without removing secrets. Only index projects whose
+text you are willing to keep on disk. It lives at
+`~/.cache/opentab/conversations/index.sqlite3` (or under `$XDG_CACHE_HOME`).
 
-These are command-specific argument surfaces. Index does not accept date bounds:
-dates filter retained UTC messages during search and cannot narrow what index
-refresh persists. UI options such as `--demo`, `--theme`, `--port`, `--bind`, and
-accounting ranges are rejected; demo is not an anonymizer for indexed text.
+| Option | Effect |
+|--------|--------|
+| `--allow-raw-content` | Required: your consent to read conversations and write the index |
+| `--harness NAME` | Index one harness, or `all` (the default loads every present one) |
+| `--project PATH` | Only sessions in this project |
+| `--session SESSION_KEY` | Only this session |
+| `--from-harness NAME`, `--machine NAME` | Filter what was loaded; never load more |
+| `--rebuild` | Re-read and replace the selected scope even if nothing changed, e.g. after history was rewritten in place |
+| `--db`, `--claude-dir`, `--codex-dir`, `--hermes-db`, `--copilot-dir`, `--pi-dir`, `--omp-dir` | Read a harness from another path |
+| `--no-state` | Ignore saved project and session ignores (they apply by default) |
 
-Index refresh first compares cheap source manifests for the scoped roots. An
-unchanged manifest and unchanged catalog metadata reuse that root without opening
-its full conversation reader. A missing, changed or unverifiable manifest takes
-the authoritative path: OpenTab reads the root and all addressable executions,
-checks the manifest again, and only then stores the text and manifest atomically.
-The first refresh after upgrading an older index therefore reads each selected
-root once to seed manifests. `--rebuild` always bypasses the shortcut.
-`CONVERSATION_READER_VERSION` is also part of each root-content fingerprint; bump
-this single token whenever discovery, extraction, ownership, or chunk projection
-semantics change so unchanged source snapshots still rebuild their passages.
+Indexing ignores date filters: it always stores whole sessions. Harnesses without
+conversation text are rejected, and pulled machines are never indexed or searched.
 
-Claude manifests cover every main/resumed transcript and owned subagent sidecar
-with device, inode, size, mtime and ctime stamps. Each explicit refresh discovers
-the transcript tree once and reuses a session-to-path lookup while directory stamps
-remain unchanged. File stamps are still checked per root. Directory changes or
-uncertain discovery disable the lookup and manifest shortcut for the rest of that
-refresh, falling back to live discovery and full reads. The lookup holds no text,
-is cleared even after errors, and never changes standalone reads or startup caching.
-Hidden entries remain excluded as in the original glob search.
+### Keep it fresh
 
-Codex discovers rollout heads,
-live/archive filename winners and ownership once per stable refresh, then derives
-root-specific manifests; additions, deletion, replacement, reparenting and winner
-changes invalidate affected roots.
+The index never updates by itself: nothing is indexed at startup, on reload, or while
+you browse. Run the index command again when you need newer results, or schedule it
+with cron or your system's task scheduler. A refresh skips sessions whose sources
+haven't changed, so repeat runs are fast.
 
-OpenCode hashes each root's execution membership and message/part row identities,
-ownership, creation/update stamps, and durable event sequences where available.
-Every manifest is read from a fresh read-only SQLite snapshot using session-indexed
-metadata queries; it does not extract JSON or read conversation bodies. Ordinary
-edits, imported rows, deletions and reparenting invalidate the affected roots, not
-unrelated history. It uses every row's revision, not just counts or the newest
-timestamp, and does not trust `session.time_updated` to track text changes. Recent
-same-millisecond, missing or future row-update stamps disable the shortcut.
+Check the result instead of assuming everything worked:
 
-Schemas lacking the required row revisions or unique IDs retain the conservative
-main-DB/WAL fingerprint, including the duplicated 48-byte WAL-index header but not
-the later `-shm` reader/lock region. The first refresh after upgrading from global
-OpenCode manifests reads each selected root once to seed root-local manifests;
-unchanged text need not be rewritten. Scoped refreshes never mark untouched roots
-current. Neither path changes the accounting rollup cache.
+| Field | Meaning |
+|-------|---------|
+| `updated`, `unchanged`, `removed` | Sessions written, skipped as unchanged, or dropped |
+| `unsupported`, `errors` | Sessions that couldn't be indexed, and why |
+| `skipped_messages`, `skipped_parts`, `limited_roots` | Oversized content left out (over 8 MiB per OpenCode message) |
+| `complete` | `false` if anything failed or was skipped; `true` still doesn't mean full history |
 
-Hermes uses a conservative manifest of the main database and nonempty `-wal` file
-(not `-shm`). It reads no raw text and does not treat message timestamps as revisions;
-any database write invalidates all Hermes roots. Empty WAL creation by a reader is
-ignored. The same stamps also detect subtree changes between root and child reads.
-Copilot stamps the exact `session-state/<id>/events.jsonl` file, which contains both
-the execution tree and retained messages. Its reader verifies the matching session
-header and keeps each recorded root/child message occurrence, including zero-usage
-replies and response chunks; it excludes internal model events and streaming deltas.
-Only OTEL-backed catalog roots are publicly addressable.
-Pi and omp have no manifest shortcut, so every
-explicit refresh performs their full fresh reads; unchanged resulting snapshots still
-avoid rewriting indexed passages.
+If a source can't be read, its old text is removed rather than kept as if current.
 
-This is incremental source verification, not an incremental parser or watcher.
-Manifests are change detectors, not content-integrity hashes: they rely on source
-paths/filesystem metadata, Codex ownership heads, and OpenCode's writer-maintained
-row revisions. Direct SQL edits/restores that preserve OpenCode row revisions and
-event sequences can evade its shortcut, just as file rewrites preserving filesystem
-stamps can evade file manifests. Use `--rebuild` when investigating rewritten
-history or a writer that bypasses those revision updates. Rebuild still performs
-the full readers; search always independently verifies returned evidence live.
-
-The result includes `updated`, `unchanged`, `removed`, `unsupported`, `errors`,
-`skipped_messages`, `skipped_parts`, `limited_roots`, `complete`, and index counts.
-OpenCode limits each raw message/part cell to 8 MiB before JSON extraction. A
-larger message (including any small answer embedded in it) or legacy part is
-omitted from conversation text; remaining records continue to index. This does not
-alter token or cost accounting. Skip counts cover only roots verified and written
-during this refresh;
-`limited_roots` also includes unchanged, manifest-reused roots with recorded skips.
-The same limitations appear in reads and search results. The TUI also identifies
-sessions with omitted oversized content after a refresh. A finished command can
-report a partial build via
-`complete: false`; inspect these fields rather than assuming every root succeeded.
-Here `complete` means no root-level failures, unsupported readers or known oversized
-OpenCode cells; it does not imply complete historical retention or inclusion of
-every character; source limitations remain.
-Failed source reads remove that root's old text instead of retaining apparently
-current evidence. A refresh prunes removed/ignored roots only inside its requested
-scope and loaded source origins. Changing `--db` or a harness directory does not
-treat another origin's roots as deleted. A native `--session` selector is resolved
-to a qualified key before pruning. One qualified root has one indexed snapshot;
-indexing the same key from another origin replaces that key, not unrelated roots.
-
-Use `--rebuild` to replace the selected scope even when snapshots match. To clear
-all indexed content, independent of source discovery:
+### Clear the index
 
 ```sh
 opentab conversations clear --allow-raw-content
 ```
 
-Clear leaves an empty database file to coordinate concurrent readers/writers. It
-attempts compaction, not forensic secure erasure or deletion of OS backups. Index
-status and clear do not create a missing index or scan harness data.
+This empties the index and leaves your harness records and notes untouched. It is not
+secure erasure: backups and the empty database file remain.
 
-## Search and inspect
+## Search in the TUI
+
+Press `Ctrl-F`, type a query and press `Enter`. Opened from a session, search starts
+inside that session; otherwise it covers all local sessions. `Enter` on a result opens
+the **Conversation** tab at that message.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-F` or `/` | Edit the query |
+| `Enter` | Run the query; on a result, open its conversation |
+| `h` / `l` | Switch between the Results and Conversation tabs |
+| `j` / `k`, `J` / `K` | Move through results; scroll the preview |
+| `[` / `]` | Read earlier / later messages |
+| `Ctrl-G` | Filters: project (`p`), harness (`H`), UTC dates (`d`) |
+| `s` / `a` / `S` | Search this session / all sessions / choose |
+| `R` | Clear the project, harness and date filters |
+| `I` | Build or refresh the index |
+| `L` | Resume or copy the selected session |
+| `Esc` | Leave the reader, then close search |
+| `?` | Search help |
+
+While you edit the query, letters type into it: press `Enter` or `Tab` before using
+letter shortcuts (`Ctrl-G` works either way). Click a result to select it,
+double-click to read it; the wheel scrolls whatever is under the pointer.
+
+Active filters show as chips under the query; click a chip's `x` to remove it. Date
+filters use the date each **message** was written, in UTC, not when the session
+started. The welcome popup's **Got it** is remembered unless you use `--no-state`.
+
+## Search from the command line
 
 ```sh
 opentab conversations search "ERR_CONNECTION_RESET" --allow-raw-content
 opentab conversations search "release navigation" --since 2026-09-08 --until 2026-09-08 --allow-raw-content
-opentab conversations search "cached layout" --session SESSION_KEY --allow-raw-content
-opentab conversations search "sqlite locking" --exclude-session CURRENT_ROOT_KEY --limit 5 --max-chars 3000 --allow-raw-content
+opentab conversations search "sqlite locking" --exclude-session SESSION_KEY --limit 5 --allow-raw-content
 ```
 
-The query is tokenized using SQLite FTS5 `unicode61` with accent folding, then
-quoted as literal terms. User-supplied SQL/FTS operators are not executed.
-Punctuation separates tokens: this is not exact punctuation-preserving substring
-search. All terms are tried first within a chunk (including its session title);
-only when that yields no eligible candidates is any-term matching used. The
-response names this choice as `match_mode`. No translation, stemming, query
-rewriting, or claim of understanding paraphrases is involved.
+| Option | Default | Effect |
+|--------|---------|--------|
+| `--limit` | 10 | Hits to return, 1–100 |
+| `--max-chars` | 6000 | Total excerpt text, 1–120,000 characters |
+| `--since`, `--until` | none | Inclusive UTC message dates (`YYYY-MM-DD`) |
+| `--session` | all | Search inside one session |
+| `--exclude-session` | none | Leave out a session and its subagents, such as the one you're in |
+| `--project`, `--harness`, `--from-harness`, `--machine` | all | Same as for indexing |
 
-Matches rank by BM25, with body text weighted above the session title, not by
-recency or cost. `match_fields` distinguishes body, title, or both: a title-only
-match is session discovery, not proof that the excerpt contains your words.
-`rank` is a lexical ordering value, not a confidence/probability or answer score.
-
-Global results group by root session. The candidate pool admits one execution
-per root before extra executions, retaining alternatives when a root's best
-match is stale but its child is unchanged. With `--session`, results group by record within that
-root, including its indexed executions. Replayed occurrences remain attributable
-to their sources rather than being treated as separate human decisions. Pass
-`--exclude-session` to exclude the caller's current root and its children; MCP
-cannot infer every client's current session automatically.
-
-`since`/`until` are inclusive **UTC message dates**, unlike accounting filters that
-use root-session start dates. Unknown/naive timestamps are excluded when these
-filters are present. A resumed session can therefore match on the day of its
-answer even when it began earlier.
-
-Each hit includes a qualified `session_key`, `execution_id`, source `anchor`,
-native `message_id`, timestamp, source locator, excerpt and limitations. Read its
-surroundings with the [bounded conversation API](programmatic.md#reading-conversation-records):
+Each hit has a `session_key`, `execution_id`, `anchor`, the native `message_id`, a
+timestamp, an excerpt and its limitations. Read the conversation around a hit with:
 
 ```sh
-opentab sessions conversation SESSION_KEY --execution-id EXECUTION_ID --anchor ANCHOR --before 2 --allow-raw-content
+opentab sessions conversation SESSION_KEY --anchor ANCHOR --before 2 --allow-raw-content
 ```
 
-Result limits are 1..100 hits, default 10. The combined excerpt budget is
-1..120,000 characters, default 6,000; metadata/envelope bytes are not included.
-Smaller budgets retain the match where possible, not just a prefix of distant
-context. `excerpt_truncated` marks further output-budget clipping; budgets smaller
-than the matched token cannot show the whole token.
+For a hit in a subagent, add `--execution-id EXECUTION_ID` and keep the root's
+`SESSION_KEY`. See [Reading conversation records](programmatic.md#reading-conversation-records).
 
-## Freshness and limits
+`opentab conversations --help` walks through index → search → read; add
+`--help-all` for every option.
 
-Current catalog scope, source origin and saved ignores restrict candidates before
-ranking. Candidate metadata is checked again from the same transaction that read
-its chunk, and selected execution snapshots are verified live before returning
-text. Deleted, changed, inaccessible or differently owned evidence is withheld.
-Search itself does not rewrite the index: refresh explicitly to find new text.
-Refresh manifests do not replace this per-result live verification.
+## How matching works
 
-`unindexed_roots` counts visible catalog roots in the requested scope that have no
-index entry, after saved ignores and any session exclusion. It includes harnesses
-without conversation readers, supported roots not yet indexed, and roots removed
-after a failed read. It is not a count of missed refreshes: refreshing cannot make
-an unsupported harness searchable. Use harness-scoped searches to narrow the count;
-explicit refresh reports distinguish unsupported readers from source errors.
+- Your query is split into words; punctuation separates words, and accents are
+  ignored. Search operators are treated as plain text.
+- OpenTab first looks for passages containing all your words. Only if none match does
+  it accept any word. `match_mode` says which happened.
+- Results rank by how well the words match, with message text above session titles;
+  not by date or cost. `rank` is an ordering, not a confidence score.
+- `match_fields` shows whether a hit matched the body, the title or both. A title-only
+  hit finds the session but its excerpt may not contain your words.
+- Results group by session. Inside one session (`--session`) they group by message.
 
-`stale_metadata_roots_skipped`, `stale_executions_skipped` and `limited` expose
-additional coverage gaps. At most 1,000 fairly admitted execution candidates
-(or grouped records for an in-session query) are considered,
-and at most 20..100 distinct executions are checked live depending on the result
-limit. These are bounded checks, not a guarantee of exhaustive results. Live
-source checks can dominate query time; this is not a pure FTS latency benchmark.
-Reading a validated snapshot does not freeze a concurrently running harness.
+## Freshness and coverage
 
-Text chunks are at most 2,000 characters with up to 200 characters of overlap.
-Conservative boundaries split only at ASCII nonalphanumeric separators, avoiding
-token fragments caused by Python and SQLite using different Unicode tables.
-Unbroken spans over 2,000 characters are omitted with
-`overlong_tokens_omitted`; this can omit a long non-ASCII span that SQLite itself
-would tokenize more finely. AND is chunk-scoped, not whole-conversation-scoped.
-The original source remains readable even when a span is not indexed.
+Before returning text, OpenTab checks each hit against the live source. Text that was
+deleted, changed or moved is withheld, so refresh the index to find new text.
 
-Other [conversation reader limits](programmatic.md#reading-conversation-records)
-still apply: catalog-only roots, supported retained formats, explicit synthetic
-exclusions, source-size budgets, and no reconstruction of the active branch or
-deleted history. There is no vector index.
+| Field | Meaning |
+|-------|---------|
+| `unindexed_roots` | Sessions in scope with no index entry: unsupported harnesses, never indexed, or removed after a failed read |
+| `stale_metadata_roots_skipped`, `stale_executions_skipped` | Hits skipped because the source changed |
+| `limited` | The search hit one of its limits |
+| `excerpt_truncated` | The excerpt was cut to fit `--max-chars` |
+| `overlong_tokens_omitted` | A run of over 2,000 characters without a break wasn't indexed |
 
-## Storage and APIs
+Search considers up to 1,000 candidates and checks 20–100 of them live, depending on
+`--limit`. It is not exhaustive.
 
-The derived SQLite/FTS5 database is
-`$XDG_CACHE_HOME/opentab/conversations/index.sqlite3` (default
-`~/.cache/opentab/conversations/index.sqlite3`). It is separate from rollup caches
-and authored notes. `--no-cache` controls accounting rollups,
-not this explicitly requested index. No index contents enter web or fleet exports.
+## Use it from Python or MCP
 
-Source records stay read-only. The index stores decoded user/assistant text,
-titles and source identifiers in plaintext without automatic secret redaction.
-Only index projects whose recorded text you are willing to persist. POSIX creation
-uses owner-only directories/files; insecure existing immediate paths and symlinks
-are rejected, not silently repaired. On Windows, protection depends on the account
-directory's ACLs. SQLite transactions coordinate writes; schema/corruption/FTS5
-errors fail safely without dumping text. Incompatible files are never auto-wiped.
-The manifest table is an additive migration from the shipped v1 index schema;
-legacy indexes remain searchable and migrate only on an explicitly authorized
-write open, preserving their roots and passages.
+The MCP server offers three tools. The server must be started with
+`--allow-raw-content` ([MCP setup](programmatic.md#mcp-server)):
 
-Python uses `OpenTabService(..., allow_raw_content=True).index_conversations(...)`
-and `.search_conversations(query, ...)`. MCP adds:
+| Tool | Requires | Does |
+|------|----------|------|
+| `opentab_index_conversations` | `confirm_index: true` | Builds or refreshes the plaintext index |
+| `opentab_search_conversations` | `confirm_raw: true` | Searches the index and checks hits live |
+| `opentab_conversation_index_status` | nothing | Counts only; reads no conversations |
 
-- `opentab_index_conversations`, requiring `confirm_index: true` and process
-  `--allow-raw-content`; it explicitly writes a persistent plaintext index.
-- `opentab_search_conversations`, requiring `confirm_raw: true` and that process
-  flag; it reads the existing index and verifies candidate source snapshots.
-- `opentab_conversation_index_status`, counts only, without creating a service or
-  reading source conversations. Clear is CLI-only.
+Clearing is CLI-only. Text returned through MCP enters your agent's context. In
+Python, use `OpenTabService(..., allow_raw_content=True)` with
+`.index_conversations(...)` and `.search_conversations(query, ...)`.
 
-All index actions reject demo mode. Local indexing makes no provider requests;
-text later returned through MCP can enter the client's model context. Treat the
-index and captured results as sensitive data, not as a backup or verified facts.
+## Good to know
+
+- Demo mode can't index or search; demo isn't a way to anonymize indexed text.
+- Passages are up to 2,000 characters, so "all words" means all words in one passage,
+  not anywhere in the conversation.
+- There is no semantic or vector search, stemming, or translation.
+- `--no-cache` affects usage accounting only, not this index.
+- Indexed text never goes into the web report, machine exports or caches.
+- With `--since` or `--until`, messages without a usable timestamp are left out.
+- The index is created owner-only on macOS and Linux; on Windows it relies on your
+  account folder's permissions. An incompatible index file is never wiped
+  automatically.
+- Slow refresh? Add `--debug` (or `--debug-log FILE`) to `index` or `search` for
+  timed stages on stderr. Logs contain no prompts, paths or queries.
+- The same reader limits apply as for
+  [conversation records](programmatic.md#reading-conversation-records).
+
+See also [Privacy](privacy.md).

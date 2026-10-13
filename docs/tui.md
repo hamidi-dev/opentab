@@ -226,7 +226,8 @@ pricing starts on outside demo, unless a saved preference overrides it. Header
 labels use the store's `records_cost` capability; the recorded-mode `$0` hint uses
 unpriced token counts in the loaded range, including mixed-cost stores. The session-only `w` comparison is
 independent of both the model drill and that global price mode; the arithmetic
-and caveats belong in [Pricing](pricing.md).
+and caveats belong in [Pricing](pricing.md). The `w` target is deliberately not saved:
+a persisted comparison would silently re-frame every later launch's Subagents tab.
 
 ## Input and Overlays
 
@@ -235,7 +236,7 @@ ownership to the highest active context, approximately in this order:
 
 1. Mouse/resize events, then blocking startup warnings and the price prompt.
 2. Conversation search, including its index confirmation, query, scope and reader states.
-3. Theme, demo, source, machine, harness, and what-if pickers.
+3. Theme, demo, source, machine, harness, and compare-model pickers.
    The nonblocking date-range picker also owns input, painting and hit regions;
    `range_picker.py` retains only pending values and a captured local today.
    Parsing/preview never changes App scope; validation precedes the normal range
@@ -270,7 +271,7 @@ at 108 inner columns and stacks at 80x20. Conversation retains separate reader
 state; initial pending reads are retagged across tab switches, and paging history
 is saved only on success. Query, filter or selection changes invalidate that state.
 The launch picker resolves a unique qualified root, never a native ID alone.
-See [Search controls](keys.md#scope--filter) and [permissions](privacy.md).
+See [Search controls](conversation-search.md#search-in-the-tui) and [permissions](privacy.md).
 
 Filters reuse the menu surface, with `[menu.search-project]` reserving printable
 keys for project search. Project choices snapshot loaded local session metadata,
@@ -297,6 +298,12 @@ Live cards wrap by terminal cells and cap the body at four lines. `N` opens the
 in-memory notification history with full wrapped messages and hanging indents;
 live cards are hidden while reading it. History retains up to 200 notifications
 independently of live-card expiry, and scrolling operates on wrapped screen rows.
+
+The GitHub star request waits until startup warnings and the price prompt are gone and
+never appears in demo. `update_star_request()` records launches and choices in
+`state.json` immediately, outside the exit-time save, so an older window cannot undo a
+dismissal or shorten another window's snooze. Existing installs count from their first
+launch with the feature.
 
 ## Shared Table Geometry
 
@@ -339,7 +346,7 @@ terminal renderer and leave navigation draining queued input after the key is re
 
 Multi-row tables normally close with a rule and TOTAL row. A single row needs no
 duplicate total, and a Top-N slice must not pretend to total the whole scope.
-The what-if Subagents footer is a session-level comparison, not a sum of its
+The compare-model Subagents footer is a session-level comparison, not a sum of its
 ordinary Cost column. Overview sections place the widest Models table last.
 
 The Tools treemap summarizes the same rows as its table. Area follows the current
@@ -412,7 +419,10 @@ reach the display. `palette_writes_ignored()` detects known hosts: Konsole, and
 herdr servers before 0.8.2 (asked over `$HERDR_SOCKET_PATH`; an unknown version
 keeps the fallback).
 `OPENTAB_NO_INIT_COLOR=1` forces approximation; `=0` overrides detection in the
-other direction. This terminal-specific environment choice is not persisted.
+other direction. This terminal-specific environment choice is not persisted. It is an
+environment variable rather than a flag because it describes the terminal, not the
+run: herdr re-emits each pane's cells and forwards a palette index rather than the
+colour, and nothing readable distinguishes a terminal that ignores `init_color`.
 
 The 256-color fallback searches perceptual CIE L*a*b* distance. Distinct role
 colors claim separate indices, with background allocated first; heat ramps may
@@ -449,7 +459,7 @@ The requested diff layout is saved with the other TUI preferences; a narrow pane
 temporary Unified fallback never overwrites the selected side-by-side mode.
 The optional external pager suspends curses and receives only the
 loaded patch over stdin. User semantics and controls live in
-[Keys](keys.md#session-changes).
+[Keys](changes.md).
 
 Turns groups chronological assistant steps under their owning prompts, with
 subagent steps interleaved. Prompt drill-down exposes full prompt text and a
@@ -641,7 +651,7 @@ change those export boundaries; see [Privacy](privacy.md).
 `L` prepares a resume command; the chosen launcher decides where to run it. Command
 construction and transport stay in `util.py`, not in the renderer. The displayed
 and copied command should remain the same command passed to the launcher, including
-one quoted remote-command argument for SSH. See [custom launchers](keys.md#custom-launchers).
+one quoted remote-command argument for SSH. See [custom launchers](configuration.md#custom-launchers).
 
 Herdr integration uses its CLI rather than a socket. A tab uses `herdr tab create`;
 a split uses `herdr pane split --pane "$HERDR_PANE_ID"` to target the pane actually

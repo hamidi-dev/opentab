@@ -1,274 +1,211 @@
 # The web browser
 
-A second frontend over the same data — the TUI in your web browser, deliberately
-mirroring it: the same lazygit-style sidebar and detail tabs, the same eighth-block
-cost bars, and familiar navigation keys. It's curses-free, so it also works where
-the TUI can't.
+`opentab web` shows the same data as the terminal app in your web browser, with the
+same sidebar, detail tabs, cost bars and keys. It needs no curses, so it also works
+where the terminal app can't.
 
-```sh
-opentab web                     # serve locally and open the default browser
-opentab web --headless          # serve without opening a browser
-opentab web --html report.html  # write a static file and exit
-```
+| Command | What it does |
+|---------|--------------|
+| `opentab web` | Serve on `http://localhost:8321` and open your default browser |
+| `opentab web --headless` | Serve without opening a browser |
+| `opentab web --port 9000` | Serve on another port |
+| `opentab web --html report.html` | Write one self-contained HTML file and exit |
 
-The older `--web`, `--serve`, and `--html` flags remain available.
+Stop the server with `Ctrl-C`. The older `--web`, `--serve` and `--html` flags still
+work.
+
+## Served live
+
+The live server reads your data as you browse. Opening a session loads its **Turns**,
+**Tools** and **Context** tabs on demand. A tab only appears when the harness recorded
+that data; the server can't add detail a harness or an older machine export didn't
+keep.
+
+| Tab | Shows |
+|-----|-------|
+| **Turns** | Cost per prompt; open a prompt for per-call cost and context charts, with the same turn numbers as its table |
+| **Tools** | Which tools and servers the spend went to, down to each call |
+| **Context** | Measured request sizes and, where available, an estimate of what filled the window |
+
+The refresh button re-reads local data. It doesn't re-pull other machines; a pulled
+machine has its own refresh button ([fleet refresh](machines.md#refresh-and-offline-history)).
+
+### Turns
+
+The overview charts total cost per prompt, grouped like the table. Opening a prompt
+charts per-call cost and context with their own scales; when context wasn't recorded,
+only cost is shown. `$` updates costs at both levels.
+
+Each prompt also gets a colored token breakdown with exact counts. Expand a turn's
+token count for its own breakdown (`Tab` and `Enter` work too). These counts are the
+answering turn's usage, not the size of what you typed:
+
+- One-hour cache writes are part of cache writes, not extra.
+- Reasoning can be zero when the harness counts it as output.
+- Recorded totals are shown as recorded; any gap to the category sum is shown.
+
+### Tools explorer
+
+The **Tools** tab pairs a spend treemap with rankings by tool and by server. Select a
+row or tile to see its share, per-call averages, a token breakdown, the models used and
+a list of every call in order.
+
+| Action | Result |
+|--------|--------|
+| Click a call | Open its prompt in **Turns** with that turn highlighted |
+| `Esc`, browser Back or the Back button | Return to the call, then to the ranking |
+| `j` / `k`, arrows, `Enter` | Move and open in focused lists |
+| `$` | Switch cost basis without losing your place |
+
+Costs are **model usage shared across a turn's tool calls**, not fees for running the
+tool. Times are the turn's time; status and duration aren't guessed. Sources with only
+totals keep the rankings but have no call list. Tool arguments and results are never
+shown.
 
 ## One self-contained file: `--html`
 
-`opentab web --html` writes the browser as **one self-contained HTML file**
-(default `opentab-report.html`) — no server, no dependencies, works from disk or any
-static host.
+`opentab web --html` writes the browser as **one HTML file** (default
+`opentab-report.html`). It needs no server and works from disk or any static host.
+`--html` can't be combined with `--headless`, `--port` or `--bind`; OpenTab refuses
+rather than ignoring them.
 
-For `opentab web`, server-only options do not apply to a static file: `--html` cannot be combined
-with `--headless`, `--port`, or `--bind`. OpenTab rejects those combinations
-rather than silently ignoring them.
-
-- The top browse bar switches between **Time**, **Projects**, **Harnesses**, and
-  **Machines** (`t`/`p`/`u`/`m`). Harnesses is available even when the report contains
-  only one source; its synthetic **all harnesses** row and source rows show spend and
-  session counts within the active range. This is report navigation, not source switching.
-- The same sidebar (Years appear with >1 year of data), the same per-scope detail
-  tabs, Trends (`T`) and the price table (`P`) as overlays, live range scoping (`R`)
-  and colour themes (`C`).
-- Driven by the TUI keys (`j`/`k`, `1`–`9`, `Tab`, `h`/`l`, `Esc`, `$`, `w`, `p`/`t`/`u`/`m`, `T`, `P`,
-  `R`, `W`) or the mouse; every table sorts on a header click. `W` (or the visible
-  header action) opens the bundled offline release history without checking for updates.
-  Its Previous/Next buttons and `h`/`l` or arrow keys stop at the history ends;
-  the full-release link follows the entry currently shown.
-- Time, project, harness, machine and session scopes have **shareable deep links**
-  (`#/m/2026-06`, `#/h/<harness>`, `#/s/<session>`, …), and the browser's back button steps out.
-  In-place drills and overlay state are not encoded in the URL.
-- `$` toggles the what-if estimate instantly — both cost snapshots travel in the
-  page, so it's a client-side swap, never a reprice.
-- `w` arms a what-if **model** — the TUI's `w`, mirrored (see below).
-- Combine with `--demo` to disguise selected data:
-  `opentab web --demo --html demo.html`. Review it before publishing;
-  [demo mode is selective, not fully private](privacy.md#demo-mode).
-
-By default static HTML omits the per-session **Turns / Tools / Context** tabs.
-To bundle their available data for offline use:
+By default the file leaves out the per-session **Turns**, **Tools** and **Context**
+tabs. To include them:
 
 ```sh
 opentab web --html report.html --include-details
 ```
 
-This explicitly scans every session in the exported catalog and embeds the same
-detail projection used by the live UI: recorded user prompts, per-turn usage,
-tool attribution and call-to-turn navigation, and measured/estimated context data.
-It takes longer and produces a larger file. Date options still set the initial
-browse range; they do not remove other sessions from the export. Use a dedicated
-source when exporting a prepared recording.
+This reads every session, so it takes longer and makes a bigger file. It includes
+recorded user prompts, per-turn usage, tool attribution and context data. It never
+includes tool arguments or results, reasoning text, notes or subagents' received
+prompts. With this option the file is written readable only by you (`0600` on macOS
+and Linux), also when it replaces an existing file.
 
-Available tabs work from `file://` or a static host without API requests. Sessions
-without retained details keep those tabs hidden. Raw tool arguments/results,
-reasoning text, authored notes and received subagent prompts are not embedded.
-The file is a snapshot; regenerate it to include new usage. `--include-details`
-requires `--html` and writes the report owner-only (`0600` on POSIX), also when
-replacing an existing file; ordinary exports and live startup retain lazy detail loading.
+| Option | Effect |
+|--------|--------|
+| `--include-details` | Add Turns, Tools and Context (needs `--html`) |
+| `--details-dir DIR` | Instead, write one small details file per session to `DIR`, loaded when a session is opened; serve the report over HTTP (e.g. `python3 -m http.server`) |
+| `--harness all` | Include every discovered harness; otherwise only the selected one is in the file |
+| `--demo` | Disguise selected data, e.g. `opentab web --demo --html demo.html` |
+| date options | Set the starting range; other sessions stay in the file |
 
-A report generated from one selected harness contains only that loaded source. The
-Harnesses sidebar says so explicitly; generate with `opentab web --harness all` to
-compare all discovered harnesses in one report.
+A report is a snapshot: generate it again to include new usage. Before publishing a
+demo report, review it: [demo mode is selective, not fully private](privacy.md#demo-mode).
+
+## Getting around
+
+Keys match the terminal app, and the mouse works everywhere.
+
+| Key | Action |
+|-----|--------|
+| `t` / `p` / `u` / `m` | Browse by Time, Projects, Harnesses or Machines |
+| `j` / `k`, `1`–`9`, `Tab`, `h` / `l` | Move, jump to a panel, switch tabs |
+| `Esc` | Step back out |
+| `$` | Switch between recorded spend and the estimate ([pricing](pricing.md)) |
+| `w` | Compare a session against one model (see [below](#w--compare-model-rates)) |
+| `T` / `P` | Trends / price table |
+| `R` | Set the date range |
+| `C` | Pick a color theme |
+| `W` | What's new in each release |
+
+Click any table header to sort. Harnesses is available even when the report has one
+source; switching there is navigation, not a change of data source.
+
+**Shareable links.** Time, project, harness, machine and session views have their own
+URLs (`#/m/2026-06`, `#/h/<harness>`, `#/s/<session>`), and the browser's Back button
+steps out. Drills inside a view and open overlays aren't part of the URL.
 
 ## Drilling a model
 
-Models and Harnesses tables show Input (uncached), CacheR, CacheW and Output
-beside total tokens, plus Reason when separately recorded reasoning is present.
-These columns are sortable and included in totals. Missing harness model
-breakdowns display `-`; token categories do not replace recorded session totals.
+Click a row in **Models** to focus on that model within the current view:
 
-Clicking a row of the **Models** tab drills into that model inside the scope you're
-looking at, exactly as the TUI does — the tab strip becomes **Economics** (what it cost
-here, split by token type) and **Sessions** (the sessions that used it, with **Model
-list** / **Model tok** columns carrying what *this model* accounts for, next to the
-session's own cost). The decomposition and **Model list** use list rates so each
-token type has a comparable price; they are not a split of the recorded bill.
-This is a consistent list-rate comparison even when a harness records per-model spend.
-Unknown rates are marked approximate; local models carry no list-price cost. The
-breadcrumb grows a `model: … ✕` chip, and `Esc` (or the chip) pops the drill before
-leaving the scope. Open one of those sessions and `Esc` (or the browser's Back button)
-steps back **into** the model, not out to the session's day — the one hop a drill
-survives. Anything else you navigate to drops it, like every other in-place drill.
+- **Economics** splits what it cost here by token type.
+- **Sessions** lists the sessions that used it, with **Model list** and **Model tok**
+  showing this model's share next to each session's own cost.
 
-It isn't a deep link, though: a drill lives in the page, not the URL, so a link you copy
-from a model scope points at the scope, not at the model.
+Both use list rates so token types compare fairly; they aren't a split of your bill.
+Unknown rates are marked approximate, and local models have no list price.
 
-The **Models** ranking in Trends uses the same two-tab drill over the active `R` range:
-it opens on **Economics**, while `h`/`l` switches between **Economics** and **Sessions**.
-The other ranked Trends drills still open their session list directly. `Esc` returns to
-the ranking; opening a model's session and returning with `Esc` or browser Back restores
-that model drill on **Sessions**.
+A `model: … ✕` chip appears in the breadcrumb; `Esc` or the chip removes it. If you open
+a session from the list, `Esc` or Back returns to the model. Going anywhere else drops
+the drill, and the URL doesn't include it.
 
-## `w` — the what-if model
+The Models and Harnesses tables show Input (uncached), CacheR, CacheW and Output next to
+total tokens, plus Reason when recorded separately. Missing breakdowns show `-`.
 
-The browser mirrors the TUI's [session-only rate comparison](pricing.md#comparing-models-with-w).
-Choose from your used models or the full catalog (`Tab` switches tiers, `f` filters,
-`Enter` selects). Overview shows **Your models / All at target / Change**; Subagents
-adds a per-node What-if column and the same session comparison.
+In **Trends → Models**, a model opens on **Economics** for the active range; `h` / `l`
+switch to **Sessions**, and `Esc` returns to the ranking.
 
-Both sides use list rates, not the recorded bill. The sidebar, rollups, Trends and
-Prices remain unchanged, and `$` still works independently. Press `w` again to
-clear the target. It works in demo and is never remembered between visits.
+## `w` — compare model rates
+
+The browser has the terminal app's [session-only model comparison](pricing.md#comparing-models-with-w).
+Choose from your used models or the full catalog (`Tab` switches, `f` filters, `Enter`
+selects).
+
+- **Overview** shows **Your models**, **All at target** and **Change**.
+- **Subagents** adds a Compared column per execution and the same comparison.
+
+Both sides use list rates, not your recorded bill. The sidebar, totals, Trends and
+Prices don't change, and `$` still works on its own. Press `w` again to clear it. It
+works in demo mode and isn't remembered between visits.
 
 ## Subagent executions
 
-**Subagents** works in static and live reports; its overview and tables use only
-the embedded node metrics.
-Its delegation overview counts direct (depth 1) and nested (depth >1) executions,
-shows maximum depth, and groups delegated work by the recorded agent label. Cost
-and token shares use the sum of all nodes, including root, not session rollups.
-Zero denominators display `-`; the flamegraph still falls back to token widths
-when no node records spend.
+**Subagents** works in live and static reports. Its overview counts direct and nested
+executions, shows the deepest level, and groups work by agent. Cost and token shares
+are out of all executions, root included. A flame graph falls back to token widths
+when nothing recorded spend.
 
-Click an execution to read its wrapped full title, agent, representative model,
-start, depth, current-mode cost/share and exact token categories and recorded total.
-Cache hit is cache read divided by input + cache read + cache write; the 1h write
-count is a subset, not extra tokens. Categories need not add up to the recorded
-total. A representative model is not the execution's full model mix: `w` still
-compares list-rate baselines only at session level, with per-node target costs but
-no per-node savings. `$` updates costs and shares independently.
+Click an execution for its details: full title, agent, main model, start, depth, cost
+and exact token counts.
 
-Tables scroll horizontally on small screens; detail text wraps. `Tab` uses native
-focus within this tab; focused execution rows support `j`/`k` or arrows and
-`Enter`/Space. **Back to executions**, `Esc`, or browser Back returns from detail
-to the list without leaving the session. Selection uses the original payload
-index, so duplicate/anonymous titles, sorting and price toggles cannot select a
-different execution. Detail is not a shareable deep link, and no node IDs, raw
-content, invented parent relationships, status, duration or turn links are added
-to the embedded node metrics.
+- **Cache hit** is cache reads ÷ (input + cache reads + cache writes).
+- Token categories need not add up to the recorded total.
+- The main model isn't the full model mix, so `w` compares per session, with no
+  per-execution saving.
 
-In a **live report**, opening one execution separately loads its **Received prompt**:
-the first recorded user message in that execution (the child session for a subagent),
-not the complete system prompt or context payload. The **Title** remains separately
-labeled and is never used as a prompt fallback. Loading is explicit; available text
-is shown in full, preserving whitespace and wrapping long lines. Static reports (including `--include-details`),
-demo mode, unsupported nodes and unavailable local records explicitly say the prompt
-is not available. Remote executions do not trigger network or SSH content reads.
+`Esc`, browser Back or **Back to executions** returns to the list. Details have no
+shareable link.
 
-Only the selected prompt is kept in browser memory, not browser storage or the report
-payload. Navigation clears it and cancels pending work; responses for an old session,
-execution or page snapshot cannot replace the current selection. A server reload or
-machine refresh that invalidates the page also expires its execution indices: refresh
-an older browser tab before requesting more prompts.
+### Received prompt (live only)
 
-## Served live
+In a live report you can load an execution's **Received prompt**: the first user
+message it recorded (for a subagent, its own first message). It isn't the full system
+prompt or context. It loads only when you ask, and it's kept in page memory only until
+you navigate away.
 
-### Tools explorer
-
-The live **Tools** tab pairs the spend treemap with tool and server/namespace
-rankings. Select a row or treemap tile to inspect contribution, per-call averages,
-a token-composition band, exact token categories, model attribution and a
-chronological individual-call ledger. Tables sort on their headers; repeated
-calls remain separate, even within one turn. The ledger shows its aggregate
-coverage instead of assuming both accounting surfaces contain identical records.
-
-Select a call to open its owning prompt in **Turns**, with the exact turn
-highlighted and focused. `Esc`, browser Back or the visible Back button returns
-to that call in Tools; another Back returns to the ranking. Focused ranking/call
-rows support `j`/`k`, arrows and Enter, and `Tab` follows native browser focus.
-`$` changes the cost snapshot without losing the selected tool or call. Manual
-tab/scope changes and reload invalidate this transient navigation. Detail text
-wraps on small screens; tables scroll horizontally within their panels.
-
-Cost and token figures are **model usage attributed across a turn's tool calls**,
-not execution fees or tool-result size. Times are owning-turn timestamps, not tool
-start/end times. Status and duration are not inferred. Aggregate-only sources retain
-the rankings and breakdowns without inventing a call ledger. No arguments, tool
-results or raw content keys enter the live extras or static report; opening a call
-does not add a raw web trace reader. Static HTML includes this explorer only when
-exported with `--include-details`.
-
-### Running the server
-
-`opentab web` serves the browser on `http://localhost:8321` (`--port` changes the
-port) and opens it in your default browser. `opentab web --headless` serves without
-launching a browser. Stop either with `Ctrl-C`.
-
-Opening a session fetches its **Turns** timeline, **Tools** attribution and
-**Context** details on demand. Context charts measured request sizes and, where
-available, an estimated composition of what filled the window. Tabs appear only
-when that session supplies the relevant data; a live server cannot invent detail
-that a harness or an older fleet export did not retain.
-
-The **Turns** overview charts total cost per prompt, using the same consecutive
-prompt groups as the table, without a context curve. Opening a prompt shows
-per-call cost and context charts for just that prompt, with independent scales
-and the same session-global turn numbers as its drill table. If context is not
-recorded, only cost is shown. `$` updates costs at both levels; compaction and
-cache markers in the overview and the full-session **Context** tab are unchanged.
-
-Prompt details also show a colored token breakdown with exact category counts for
-that consecutive prompt run. Expand a turn's token count for its individual
-breakdown; `Tab` and `Enter` work on these native disclosures. `$` preserves their
-expansion and keyboard focus, and a Tools call jump opens the owning turn's breakdown.
-These are answering-turn usage counts, not typed prompt size. One-hour cache writes
-are a subset, and separate reasoning can be zero when included in output. Recorded
-totals stay independent of category sums, with differences shown explicitly. The
-detail projection adds only numeric counts to these breakdowns; `--include-details`
-embeds that same projection without adding raw-content access.
-
-The page's refresh button re-reads local data; it does not automatically re-pull
-remote machines. A pulled machine's own refresh button requests a new summary.
-See [fleet refresh](machines.md#refresh-and-offline-history) for the distinction.
+Static reports, demo mode, executions on other machines and missing local records say
+that the prompt isn't available. After a server reload or machine refresh, refresh the
+browser tab before loading more prompts.
 
 ## Security
 
-The server binds to **localhost only** by default and has no authentication.
-Anyone who can reach it can read session titles, project paths, spend and, through
-live Turns and explicitly opened Subagent executions, full recorded user prompts.
-Raw turn traces and authored notes are not served.
-If you need access from another machine, use a private VPN such as Tailscale and
-restrict who can reach the port (`--bind` warns beyond localhost), never a public
-interface. Reachable clients can also request reloads and saved-machine refreshes.
+The server listens on **localhost only** by default and has **no login**. Anyone who
+can reach it can read session titles, project paths and spend, and full recorded user
+prompts through live Turns and subagent executions. They can also trigger reloads and
+saved-machine refreshes. Raw turn traces and notes are never served.
 
-A static HTML file contains its data, not just a link to it. Treat the file itself
-as sensitive even though it has no live endpoints. See [Privacy](privacy.md).
+To reach it from another machine, use a private VPN such as Tailscale and restrict who
+can reach the port; never expose a public interface. `--bind` warns when you listen
+beyond localhost.
 
-## Themes
+A static HTML file contains the data itself. Treat the file as sensitive even though it
+has no server behind it. See [Privacy](privacy.md).
 
-The web page and the TUI share one theme source: `C` opens the same picker in both,
-the bundled palettes (Catppuccin Mocha/Latte, Tokyo Night/Day, Gruvbox, Nord,
-Dracula, Rosé Pine, …) render identically, and the page remembers the viewer's
-choice in `localStorage`.
+## Themes and release notes
 
-What's New is manual in static and live reports. It starts at the installed release,
-does not infer that the viewer upgraded, stores no unread marker in the browser, and
-restores focus to the control that opened it when closed.
+`C` opens the same theme picker as the terminal app, and the bundled palettes
+(Catppuccin, Tokyo Night, Gruvbox, Nord, Dracula, Rosé Pine and more) look the same in
+both. The page remembers the choice in the browser.
 
-## Contributing to the browser
+`W` shows the bundled release notes, starting at the installed version, offline. It
+never checks for updates or keeps an unread marker.
 
-`web/report.py` adapts a headless App into data; `web/page.py` embeds that data and renders
-it in the browser. Keep these boundaries when adding a field or interaction:
+## Good to know
 
-- **Explicit payload fields.** Whitelist what the page needs rather than dumping
-  store rows or App state. Notes, raw traces and their local content keys do not
-  belong in either the initial payload or session extras.
-- **Two cost snapshots.** Preserve recorded (`real`) and API-equivalent (`api`)
-  values; `$` swaps fields in the browser. The session-only `w` comparison uses
-  per-model token splits and list rates, not another global cost mode.
-- **Text stays text.** `render_html()` escapes the title and every `<` in embedded JSON,
-  inserting the payload last. Browser helpers create text nodes for user content.
-  Preserve those boundaries rather than interpolating prompts into HTML.
-- **Release content stays shared.** Both frontends read the validated bundled resource
-  described in [`whats-new.md`](whats-new.md); the browser must not fetch or persist it.
-- **Sequential store access.** HTTP requests are handled sequentially, not by a
-  thread-per-request server. SQLite-backed stores share connections; parallelizing
-  handlers would change their access assumptions.
-- **Capabilities and mutations.** Static pages make no session-detail requests;
-  live extras honor per-session capabilities. Reload (`/api/reload`) and remote
-  refresh (`/api/refresh`) are POST-only and require `Content-Type: application/json`.
-  Cross-site fetches and supplied Origins that differ from the request's HTTP origin
-  are rejected before mutations; no cross-origin preflight is granted.
-  Refresh accepts one nonempty machine name,
-  never an arbitrary URL or shell command from the browser, and demo blocks it.
-- **Execution prompts are opt-in.** Only `GET /api/node-prompt?session=<id>&node=<index>&snapshot=<nonce>`
-  calls `App.read_node_prompt`, never payload building, session extras or prefetch.
-  The live page adds a transient `meta.nodeSnapshot` nonce, retained only until page
-  invalidation. The endpoint requires the current nonce and one unique workflow,
-  then resolves the ordinal against the same memoized `session_node_rows` sequence
-  used for the payload. Responses contain `text` (a string or null), with safe error
-  text when needed, and are not cacheable. Demo is rejected before any reader call;
-  existing Host protection applies. Neither raw node IDs nor received prompt text
-  enter static/fleet payloads.
+- Tables scroll sideways on small screens; detail text wraps.
+- A report built for one harness says so in the Harnesses sidebar.
 
-Check static and live views together, including a session with no optional detail.
+For how the browser is built, see [Web browser boundaries](architecture.md#web-browser-boundaries) and
+[CONTRIBUTING.md](../CONTRIBUTING.md).

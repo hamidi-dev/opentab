@@ -1,250 +1,193 @@
-# Privacy — what it touches
+# Privacy
 
-Local by default, no telemetry, no OpenTab account — OpenTab opens every harness file
-**read-only**, so it doesn't modify any of them. Your tools already keep the ledger;
-OpenTab is just the reader.
+OpenTab runs locally, with no account and no telemetry. It reads your tools' records
+read-only and writes only its own files. This page lists exactly what it reads, writes
+and connects to.
 
-## Everything it reads
+## In one minute
 
-Your tools' own records, read-only:
+- **Reads** your coding tools' records, read-only. It never changes them.
+- **Writes** only its own files: preferences, notes, caches and exports you ask for.
+- **Connects** to nothing unless you ask, such as a price refresh, a pull from another
+  machine or a remote turn read.
+- **Shares** nothing on its own. A web report, export or MCP client only gets what you
+  hand it, and those contain real titles, paths and spend.
+- **Demo mode** (`--demo`) disguises titles, paths, prompts and spend for screenshots.
+  It is selective, not a guarantee of anonymity.
 
-- OpenCode's SQLite database
-- the JSONL transcripts of Claude Code / Codex / pi-agent / omp / OpenClaw / zaly
-- Hermes' SQLite database and rotating agent logs
-- the Copilot CLI's OpenTelemetry export, session metadata database and saved session events
-- VS Code's Copilot Chat session store
-- Gemini CLI's chat records and project mappings, and Antigravity's conversation records
-- a CSV/JSONL of logged API requests (`--csv`/`--jsonl`)
+## What it reads
 
-Discovery and diagnostics also inspect settings such as transcript retention. See
-[Sources](sources.md) for paths and overrides; these files are never changed.
+| What | Why |
+|------|-----|
+| Each harness's records: databases, transcripts, logs, exports | Usage, sessions and traces. Paths per harness: [Data harnesses](sources.md) |
+| Harness settings such as transcript retention | Warnings and `opentab doctor` |
+| pi's and zaly's `auth.json`, OpenClaw's `openclaw.json`, omp's `agent.db` | To tell subscription routes ($0) from metered ones (real spend) |
+| Project `.git` files | To fold git worktrees into their main repository. Turn off with `--no-worktrees` |
 
-To tell a **subscription** route from a **metered** one — the difference between $0 and
-real spend — it also reads how each provider is logged in, from pi's `auth.json`, zaly's
-`auth.json`, OpenClaw's `openclaw.json`, and omp's `agent.db`. The JSON files are parsed
-as whole documents, but only provider names and login types (`oauth` vs API key) are
-used. Credentials are not used to authenticate, retained in usage data, displayed or
-exported. For omp, the SQL query selects only provider and credential-type columns,
-not the column containing secrets.
+From the login files OpenTab uses only provider names and login types (OAuth or API
+key). The JSON files are parsed whole, but credentials are never used, kept, shown or
+exported. For omp the query selects only the provider and credential-type columns.
+No `git` process is started.
 
-To fold git worktrees into their main repo it also reads project `.git` files (no
-`git` process is spawned; disable with `--no-worktrees`).
+## What it writes
 
-## Everything it writes
+Only files under OpenTab's own directories. Each honors an **absolute** `XDG_*_HOME`
+override; relative values are ignored.
 
-Nothing near your tools' data — only its own files, split across the standard XDG
-base directories (each honors an **absolute** `XDG_*_HOME` override; relative values
-are ignored, and the defaults are shown):
+| Directory (default) | Files | When |
+|---------------------|-------|------|
+| Config `~/.config/opentab/` | `keymap.conf`, `remotes.json` (saved machines), optional `launcher` hook | When you set them up |
+| State `~/.local/state/opentab/` | `state.json`: last harness, sorts, diff layout, bookmarks, ignores, pins, and which notices you've seen (search intro, last announced version, the star request's launch count up to 3, reminder date, dismissal) | On exit; off with `--no-state` |
+| State `…/debug/` | A JSONL debug log | Only with `--debug` or `--debug-log FILE` |
+| Data `~/.local/share/opentab/` | `notes.json`: your session notes | On every note edit |
+| Cache `~/.cache/opentab/cache/` | A warm-start summary per harness | After parsing changed files; off with `--no-cache` or `--demo` |
+| Cache `~/.cache/opentab/` | `prices.json` | Only on an explicit price refresh |
+| Cache `…/remotes/` | Summaries pulled from other machines | When you pull |
+| Cache `…/conversations/index.sqlite3` | Plaintext conversation text for search | Only when you confirm Build or Update |
+| Where you choose | `opentab-*.csv` (`e`), `opentab web --html FILE`, `opentab export FILE` | Only when you ask |
 
-- **Config** — `~/.config/opentab/`: `keymap.conf` (your key bindings), `remotes.json`
-  (the saved machine list for `--pull`/`--remote`), and an optional `launcher` hook.
-- **State** — `~/.local/state/opentab/state.json`: a small preferences file (your last
-  harness, sort, diff layout, bookmarks, ignores, pins, search introduction acknowledgement,
-   last announced OpenTab version, and the star request's launch count (capped at
-   three), reminder date and permanent dismissal;
-  disable with `--no-state`),
-  plus the `state.json.lock` sidecar used to coordinate writers.
-- **Explicit debug logs** — only with `--debug` or `--debug-log FILE`: a new JSONL
-  file under `~/.local/state/opentab/debug/`, or the requested new destination.
-  Logs contain runtime versions, timing/count/cache-decision metadata and run-local
-  hashed source/session identifiers, not source paths, SQL, prompts, tool output,
-  titles, notes or credentials. Files are created owner-only on POSIX and stop
-  growing at approximately 20 MiB each; remove old logs manually. Explicit logging
-  works with `--demo`/`--no-state` without enabling preference writes.
-- **Data** — `~/.local/share/opentab/notes.json`: your session notes, saved on every
-  edit, plus the `notes.json.lock` sidecar used to coordinate writers.
-- **Cache** — `~/.cache/opentab/`: `cache/` (a warm-start rollup, one JSON per backend,
-  rewritten after a parse when that backend's files change — off under
-  `--demo`/`--no-cache`). Changed file fingerprints trigger rebuilding, not a stale
-  preview; [fingerprint limitations](caching.md#when-a-splice-must-fall-back) still
-  apply to rewritten history. OpenCode v2 also keeps message identifiers, revisions
-  and scalar accounting fields in an indexed `.json.usage.sqlite3` sidecar here to
-  avoid rereading unchanged JSON. This is OpenTab's own database; harness databases
-  remain read-only. No message text or tool output is retained. See its
-  [revision assumptions](caching.md#opencode-reuse-unchanged-message-accounting).
-  This directory also holds `prices.json` (the optional
-  model-price cache, written **only** on an explicit refresh) and `remotes/`
-  (summaries pulled from other machines). Local rollups and prices can be regenerated; deleting pulled
-  summaries removes offline history until you pull or copy them again.
-- Only when you ask: an `opentab-*.csv` export (on `e`, in the current directory),
-  an HTML report (`opentab web --html FILE`; `--include-details` also embeds retained
-  user prompts, turn usage, tool attribution and context metrics, and is written
-  owner-only), or a machine summary
-  (`opentab export FILE`; stdout when no file is supplied).
-- Only on explicit conversation indexing: `conversations/index.sqlite3` under the
-  cache directory, containing plaintext user/assistant text, titles and source
-  identifiers. This separate opt-in index never enters normal rollup caches, web
-  or fleet payloads. It uses owner-only POSIX paths and no automatic secret
-  redaction; index only permitted projects. Startup and opening search do not create
-  it. TUI Build/Update requires confirmation.
-  [Conversation search](conversation-search.md) describes refresh, exclusions,
-  source checks and clearing. Clear removes active indexed content but is not a
-  secure-erasure or backup-deletion guarantee.
+`state.json` and `notes.json` each have a `.lock` file beside them while being written.
 
-Upgrading from a version that kept everything under `~/.config/opentab/`? The first run
-attempts to relocate state, notes and caches to their new homes. Migration is
-best-effort, not a guarantee that the old directory will be emptied: state and notes
-readers can fall back to an intact legacy file if migration fails. Existing files at
-the new locations take precedence. Legacy `requests.csv` / `requests.jsonl` logs are
-not moved and remain discoverable when no counterpart exists in the data directory.
+### Debug logs
+
+Debug logs hold versions, timings, counts and cache decisions, with hashed source and
+session identifiers. They contain no source paths, SQL, prompts, tool output, titles,
+notes or credentials. Each file is owner-only on POSIX and stops growing near 20 MiB;
+delete old ones yourself. Logging works with `--demo` and `--no-state`.
+
+### Caches
+
+- The warm-start cache holds usage numbers, never message text or tool output. A
+  changed source file is re-read, not shown stale; see
+  [caching limits](caching.md#when-a-splice-must-fall-back).
+- OpenCode v2 also gets a small usage database in the cache folder so unchanged
+  messages aren't re-read. It holds identifiers and token numbers only; see
+  [its assumptions](caching.md#opencode-reuse-unchanged-message-accounting).
+- Local caches and prices can be rebuilt. Deleting pulled summaries removes that
+  machine's offline history until you pull again.
+
+### Exports and the search index
+
+- `opentab web --html FILE --include-details` also embeds your prompts, turn usage,
+  tool attribution and context metrics, and is written owner-only.
+- The conversation index stores **plaintext** user and assistant text, owner-only, with
+  no secret redaction; index only projects you're allowed to. It never goes into
+  caches, web reports or remote summaries. Clearing it is not secure erasure. See
+  [Conversation search](conversation-search.md).
+
+### Upgrading from an older layout
+
+Versions that kept everything in `~/.config/opentab/` are moved on first run, best
+effort. If moving fails, OpenTab keeps reading the old state and notes files. Files
+already at the new location win. Old `requests.csv` / `requests.jsonl` logs stay where
+they are and are still found.
 
 ### Notes are authored data
 
-`n` edits a session note; saving an empty note removes that note. Notes are disabled
-under `--demo` and `--no-state`. Each edit re-reads the file, merges just that session's
-change, and atomically replaces the file rather than waiting until quit. The stable
-`notes.json.lock` sidecar protects the whole read-modify-write on systems supporting
-advisory locks; locking is best-effort elsewhere, including native Windows.
+Press `n` to edit a session note; saving it empty removes it. Notes are off under
+`--demo` and `--no-state`.
 
-An unreadable or malformed notes file is **not treated as an empty notebook**:
-OpenTab reports the problem and refuses to overwrite it. Unknown entries in the
-`notes` map and unknown top-level metadata survive edits. A newer-format file stays
-readable but cannot be edited by an older OpenTab; upgrade to edit it. Missing
-session IDs are never garbage-collected, even
-after transcripts rotate away. Back up `notes.json`; unlike a rollup cache, it cannot
-be rebuilt from harness records.
+- Each edit saves immediately, changing only that session's note.
+- If `notes.json` is unreadable or malformed, OpenTab reports it and **refuses to
+  overwrite it**.
+- Entries OpenTab doesn't recognize survive edits. A file from a newer OpenTab is
+  readable but not editable until you upgrade.
+- Notes for sessions whose records are gone are kept.
+- Locking is best-effort on systems without advisory locks, including native Windows.
+
+Back up `notes.json`: unlike the caches, it can't be rebuilt.
 
 ## Network
 
-No outbound requests by default. Network activity is explicitly requested:
+No outbound requests by default. What's New is bundled and offline, and the star
+request is local; OpenTab never checks whether you starred it.
 
-Release highlights are bundled with OpenTab and perform no update check. Opening
-**What's New** is offline; only its explicit full-release link opens GitHub.
-The optional star request is also entirely local; only choosing `o` opens the
-repository in your browser. OpenTab never checks whether you have starred it.
+| You do | OpenTab connects to |
+|--------|---------------------|
+| `--refresh-models`, or `r` in the `P` overlay | models.dev, for list prices ([Refreshing rates](pricing.md#refreshing-rates)) |
+| `opentab pull`, fleet refresh | Your machines over SSH or HTTP(S) ([Multiple machines](machines.md)) |
+| Resume a remote session | That machine over SSH |
+| Open a remote turn, or request its content via the CLI or MCP | That machine over SSH, for that turn only ([Remote turns](machines.md#read-a-remote-turn)) |
+| Open a GitHub link (What's New, `o` on the star request) | Your browser opens github.com |
+| `opentab web` | Starts a local server. `--bind` beyond localhost exposes it to other machines |
+| `opentab mcp` | No listener; talks to the MCP client over stdin/stdout. What the client sends on is up to it |
 
-- Price refresh (`--refresh-models`, or `r` in the `P` overlay) fetches models.dev
-  list prices into the local cache. Otherwise the bundled snapshot suffices. See
-  [Pricing](pricing.md#refreshing-rates).
-- `opentab pull` and fleet refresh fetch summaries over SSH or HTTP(S). Resuming a
-  remote session can also invoke SSH. See [Multiple machines](machines.md).
-- Opening a supported remote turn in the TUI, or explicitly requesting its keyed
-  content through the gated CLI/MCP API, reads that turn over SSH. Browsing cached
-  summaries and listing content keys do not connect. Only managed cached summaries
-  with saved SSH connections qualify; URL entries and arbitrary imports do not.
-  See [Remote turns](machines.md#read-a-remote-turn) for setup, cancellation and limits.
-- `opentab web` starts a local HTTP server; browser requests load the report and
-  session details. Binding beyond localhost exposes that service to other machines.
-- `opentab mcp` starts no listener. It exchanges local usage data with the parent MCP
-  client over stdin/stdout; what that client sends elsewhere is outside OpenTab's control.
+Browsing cached summaries never connects. Remote turn reads work only for saved SSH
+connections, not URL entries or imported files.
 
 ## External programs
 
-Only for the action you request:
+Only for the action you choose. These are programs you pick, not sandboxed: configure
+only commands you trust.
 
-- `o` invokes the platform file opener for a project directory.
-- `L` invokes tmux, Herdr's CLI, or your [launcher hook](keys.md#custom-launchers)
-  (`~/.config/opentab/launcher`); its copy target invokes a clipboard tool.
-  Session launch/copy and directory opening are disabled in demo mode.
-- `y` copies the selected root session's retained user/assistant text to the system
-  clipboard via the same clipboard tools. It reads local sources only on request,
-  without creating an index or a transcript file. Tools, thinking and attachments
-  are excluded. Disabled in demo; `Ctrl-P` does not anonymize this explicit copy.
-- `K` opens `keymap.conf` using `$VISUAL` or `$EDITOR`, falling back to `vi`, and
-  reloads bindings on return. This is a configuration edit, not a session launch.
-- `d` in Changes invokes the user-configured `OPENTAB_DIFF_PAGER`, passing the
-  selected recorded patch over stdin. OpenTab creates no patch file; the chosen
-  program is trusted, not sandboxed, and may retain or forward that content.
-- SSH pulls run the saved remote export command, including a custom `cmd` if set.
-- SSH trace reads run the remote OpenTab CLI using the saved `trace_cmd` argv
-  prefix, the export `cmd` with its export tail stripped, or `opentab` when neither
-  is configured. A derived prefix runs through the remote shell exactly as the pull
-  command it came from does; the arguments OpenTab appends are always quoted.
-- `opentab web` asks the default browser to open the report; `web --headless` does not.
+| Action | Runs |
+|--------|------|
+| `o` | Your platform's file opener on a project folder |
+| `L` | tmux, Herdr's CLI or your [launcher hook](configuration.md#custom-launchers); copy uses a clipboard tool |
+| `y` | A clipboard tool, with the session's user and assistant text (no tools, thinking or attachments). `Ctrl-P` doesn't hide this explicit copy |
+| `K` | `$VISUAL`, `$EDITOR` or `vi` on `keymap.conf` |
+| `d` in Changes | Your `OPENTAB_DIFF_PAGER`, with the patch on stdin. It may keep or forward what it receives |
+| `opentab pull` over SSH | The saved remote export command, including a custom `cmd` |
+| Remote turn reads | The remote OpenTab, via the saved `trace_cmd`, the export `cmd`, or `opentab`. Arguments OpenTab adds are always quoted |
+| `opentab web` | Your default browser (not with `--headless`) |
 
-Launcher hooks, editors and custom remote commands are programs you choose, not
-sandboxed OpenTab operations. Configure only commands you trust.
+Launch, copy and folder opening are off in demo mode.
 
 ## Programmatic output
 
-JSON commands and MCP tools can expose the same titles, project paths, dates, usage,
-spend, and authored notes visible in the interactive application. They are local by
-default, not anonymous. Qualified session keys also contain encoded machine, harness,
-and native session identity; encoding is routing, not encryption.
+JSON commands and MCP tools show the same titles, project paths, dates, usage, spend
+and notes as the app. They are local, not anonymous. Session keys encode the machine,
+harness and session ID; that encoding is routing, not encryption.
 
-Full prompts and content keys are omitted by default. Reading them, or the reasoning,
-commands, arguments, and results behind a content key, requires starting the command
-or MCP server with `--allow-raw-content` and explicitly requesting those fields. MCP
-raw trace reads require a second `confirm_raw: true` argument. See
-[Programmatic access](programmatic.md#raw-content).
+| Content | How to get it |
+|---------|---------------|
+| Titles, paths, usage, spend, notes | Always |
+| Full prompts, content keys, reasoning, commands, tool results | Start with `--allow-raw-content` and request the fields; MCP trace reads also need `confirm_raw: true` ([Raw content](programmatic.md#raw-content)) |
+| Conversation text (OpenCode, Claude Code, Codex, Hermes, Copilot, pi, omp) | `--allow-raw-content`, plus `confirm_raw: true` for MCP. Root session by default; a child needs its exact ID ([Conversation reads](programmatic.md#reading-conversation-records)) |
 
-The separate `sessions conversation` / `opentab_get_session_conversation` API reads
-bounded user/assistant **text only** from one selected local OpenCode, Claude Code,
-Codex, Hermes, Copilot, pi or omp execution. It requires raw-content opt-in and, for MCP,
-`confirm_raw: true` before lazy service creation. Demo is rejected, including when
-enabled after service construction. Permission and input validation precede
-conversation reads; checking the advertised capability does not fetch raw text.
-
-The default scope is the root only. Child reads require an explicit exact ID from
-`executions`, still addressed through a root present in the session catalog. This is
-record reading, not search or active-branch reconstruction: original retained text
-occurrences can include discarded branches and repeated prompts. Zero-usage text in
-accessible sessions is not filtered out. Remote summaries cannot supply conversation
-windows and no SSH fallback exists. The API adds no raw records, anchors, cursors,
-or conversation cache to rollup, web, or fleet data. Output remains sensitive and
-clients may save or forward it. See [conversation reads](programmatic.md#reading-conversation-records).
-
-Opening TUI search authorizes local user/assistant text reads without a raw-content
-flag. Index writes require separate confirmation and ignore date filters. Search
-has no network fallback and excludes demo/remote catalogs. Its text stays out of
-rollup caches, web/fleet payloads and ordinary exports. CLI/MCP gates are unchanged.
-
-The local OpenCode/Copilot **Changes** tab reads retained paths and requested patches in
-the background. Its in-memory cache survives tab and session
-navigation until exit, reload, harness changes, or demo; memory use grows with the
-records visited. Nothing is added to disk caches. Demo clears that cache and
-disables the tab before new path or source-content reads. This TUI-only view does
-not add source contents to web, fleet, CSV, CLI or MCP output, and does not change
-their existing raw-content gates; see
-[Changes controls and semantics](keys.md#session-changes).
-
-Remote reads fetch only the requested turn, after checking its snapshot identity
-against the live timeline; there is no ordinal fallback. The TUI retains one remote
-turn's preview and full content in memory until you leave, step, reload, or change
-harness. Collapsing and expanding reuse that turn. No raw trace is cached on disk
-or added to web/fleet exports. The SSH timeline and content requests share a
-30-second deadline and have bounded response sizes; failure messages exclude remote
-stderr and payloads. CLI/MCP clients can of course retain the responses they request.
+- Conversation reads return retained text as recorded, including discarded branches
+  and repeated prompts. They don't work on remote summaries or in demo mode.
+- Opening `Ctrl-F` search in the TUI allows local text reads without a flag. Building
+  the index needs its own confirmation. Search never uses the network and skips demo
+  and remote data.
+- The [Changes](changes.md) tab keeps paths and patches in memory until you quit,
+  reload or switch harness. Nothing goes to disk, web, CSV, CLI or MCP output.
+- A remote turn read fetches only that turn, checks it still matches, and keeps it in
+  memory until you move on. It times out after 30 seconds, and errors don't include
+  remote output.
+- Whatever a CLI or MCP client receives, it can save or forward.
 
 ## Demo mode
 
-`opentab --demo` selectively disguises your real data for demonstrations; it is
-**not a fully private or synthetic dataset**. With all categories selected, session
-titles and project paths become deterministic, plausible fakes, and unpriced usage
-gets a synthetic price derived from its real token counts. These transformations
-happen in memory, never in the source records. Demo splits into four
-independent scopes — `titles` (session/prompt/model/machine names), `paths` (project
-directories), `turns` (the expandable full prompt text) and `spend` (dollars and token
-magnitudes) — so `--demo titles,turns,spend` (or unchecking **Paths** in the `D` picker)
-keeps your real project paths. Only selected categories are transformed. With
-`spend` enabled, a hidden per-process factor scales costs and token counts rather
-than showing their real magnitudes.
+`opentab --demo` disguises your real data in memory for demonstrations. It is **not a
+fully private or synthetic dataset**: the shape of your data, including dates and how
+sessions relate, stays real. A `DEMO — synthetic` header marks the mode.
 
-The *shape* of your data stays real, including activity dates and relationships
-between sessions; unselected categories stay real too. A `DEMO — synthetic` header
-identifies the mode. Real notes and raw turn traces are unavailable, session
-launch/copy and directory opening are disabled, and demo preferences are not saved.
-Inspect any screenshot or exported file before sharing it: demo is not a promise
-that every identifying field has been removed.
+| Scope | Disguises |
+|-------|-----------|
+| `titles` | Session, prompt, model and machine names |
+| `paths` | Project folders |
+| `turns` | Full prompt text in Turns |
+| `spend` | Dollars and token counts, scaled by a hidden factor; unpriced usage gets a made-up price |
 
-`Ctrl-P` hides your prompts without entering demo. It swaps the root thread's Turns
-prompt text for the same stable fakes. Prompts an agent wrote to its subagents stay
-real, as do titles, paths, spend, turn traces and conversation search. It is a
-display veil, not a separate store: nothing is re-read or saved, and it resets on
-the next launch.
+All four are on by default. Pick some with `--demo titles,turns,spend`, or untick them
+in the `D` picker. In demo, notes and turn traces are hidden, launch, copy and folder
+opening are off, and preferences aren't saved. Check every screenshot or file before
+you share it.
+
+`Ctrl-P` hides your prompts without demo: the root session's Turns prompts become the
+same stable fakes. Subagent prompts, titles, paths, spend, traces and search stay real.
+It resets on the next launch.
 
 ## The served browser
 
-`opentab web` binds to localhost by default. Reports include session titles,
-project paths and spend; live session details and fleet JSON can also contain
-**full user prompts**. Raw turn traces (assistant narration, reasoning and tool
-arguments/results) and authored notes are absent from web and fleet payloads.
-This does not make those payloads anonymous. TUI CSV exports can include notes.
-`--bind` warns beyond localhost; see [the web browser](web.md#security).
+`opentab web` listens on localhost by default and warns when `--bind` goes beyond it
+([Security](web.md#security)).
 
-Opening a Subagents execution in the TUI or live browser can additionally read its
-first recorded child user prompt. This read is separate from usage/prefetch, hidden
-in demo, and retained only for the selected execution in memory. These received
-prompts are not added to static HTML, fleet summaries, rollup caches or programmatic
-node output. Anonymous remote nodes cannot fetch them over SSH. The live browser
-binds each request to its current page snapshot to reject stale execution indices.
+- Reports include titles, project paths and spend. Live session details and fleet data
+  can include **full user prompts**.
+- Turn traces (narration, reasoning, tool arguments and results) and notes are never in
+  web or fleet data. TUI CSV exports can include notes.
+- Opening a subagent in the TUI or live browser can read its first prompt. It stays in
+  memory for that subagent only, is hidden in demo, and never goes into HTML, fleet
+  summaries, caches or programmatic output.

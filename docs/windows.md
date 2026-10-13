@@ -1,62 +1,56 @@
 # Windows & WSL
 
-OpenTab uses Python's `curses`, which native Windows Python doesn't bundle. Two ways
-to run it:
+OpenTab runs on native Windows and inside WSL. The terminal app needs Python's
+`curses`, which native Windows Python doesn't include; installing OpenTab adds it.
 
 ## Native Windows (cmd / PowerShell)
-
-Just install and run — `opentab-ai` declares `windows-curses` as a Windows-only
-dependency, so pipx pulls in the curses shim for you:
 
 ```sh
 pipx install opentab-ai
 opentab
 ```
 
-`windows-curses` is just an OS-level provider for the stdlib `curses` module — the
-lone runtime dependency, and only on Windows. Confirmed working against the
-**OpenCode** harness; the file-based backends read plain JSON and should behave the
-same, but are less exercised on native Windows. The `o` key opens the selected
-directory in Explorer (via `os.startfile`), so reveal-in-folder works natively too.
-If `curses` is missing, OpenTab prints a short hint (install `windows-curses`)
-instead of crashing.
+On Windows, `opentab-ai` also installs `windows-curses`, its only runtime dependency.
+If `curses` is still missing, OpenTab prints a hint to install `windows-curses`.
 
-On native Windows, `L` then `y` copies a PowerShell 5-compatible resume command,
-not a cmd command. It runs only if changing directory succeeds. POSIX copies
-retain `cd ... && ...`.
-
-The web browser (`opentab --web`) is curses-free entirely, so it works on any
-Windows Python regardless.
+| Feature | On native Windows |
+|---------|-------------------|
+| OpenCode | Tested |
+| Other harnesses | Read plain files and should work, but are less tested |
+| `o` (open folder) | Opens Explorer |
+| `L` then `y` (copy resume command) | Copies a PowerShell 5 command that runs only if changing folder succeeds |
+| `opentab web` | Works with any Windows Python; it doesn't need `curses` |
 
 ## WSL
 
-`curses` is already there, so a plain `opentab` works.
+`curses` is already there, so `opentab` works as is. Harnesses running inside WSL are
+found at their usual paths. Records kept by Windows-side tools need a path through
+`/mnt/c`.
 
 ### Reading the Windows-side OpenCode database
 
-OpenCode itself doesn't have to run inside WSL — even on native Windows it keeps its
-database under your Windows home, at
-`%USERPROFILE%\.local\share\opencode\opencode.db`, which WSL reads through `/mnt/c`:
+OpenCode on native Windows keeps its database at
+`%USERPROFILE%\.local\share\opencode\opencode.db`. Read it from WSL with `--db`:
 
 ```sh
-# from inside WSL, reading the Windows-side OpenCode database
 opentab --db /mnt/c/Users/<you>/.local/share/opencode/opencode.db
 ```
 
-If OpenCode runs inside WSL, the default path
-(`~/.local/share/opencode/opencode.db`) just works. Either way, `--db` points
-OpenTab at any non-standard location.
-
 ### Reading the Windows-side VS Code store
 
-Copilot Chat in VS Code works the same way from WSL: chat sessions are stored by the
-Windows-side VS Code (also for Remote-WSL windows), under the Windows profile. That
-store is *not* scanned by default — reading through `/mnt/c` is slow enough to drag
-down every startup — so opt in by pointing `--vscode-dir` at it, e.g. via an alias:
+VS Code keeps Copilot Chat sessions under your Windows profile, also for Remote-WSL
+windows. OpenTab doesn't scan it from WSL by default, because reading `/mnt/c` slows
+every start. Opt in with `--vscode-dir`, for example through an alias:
 
 ```sh
 alias opentab='opentab --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"'
 ```
 
-Remote-WSL workspaces then resolve back to their in-distro project directories, and
-native Windows workspaces to their `/mnt/c/...` paths.
+The alias covers plain `opentab`. For a subcommand, put the option after the command:
+
+```sh
+command opentab sessions list --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"
+```
+
+Remote-WSL workspaces then map back to their folders inside the distro, and Windows
+workspaces to their `/mnt/c/...` paths.
