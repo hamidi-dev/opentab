@@ -56,6 +56,10 @@ class CachedStore:
         self._fresh_models: list | None = None
         self.served_from_cache: bool | None = None  # set by workflows(); read by --timings
         self.served_incrementally: bool = False  # file splice or numeric-row reuse (--timings)
+        # A loader process parsed this backend and the rows came back through its cache.
+        self.served_by_process: bool = False
+        self._plan_memo: tuple | None = None  # (fingerprint, splice plan) from full_parse_bytes
+        self.rebuild: tuple | None = None  # (builder, args, key) for a loader process
 
     def __getattr__(self, name):
         return getattr(self._store, name)
@@ -297,9 +301,59 @@ class CachedStore:
             )
             return None
 
+    def full_parse_bytes(self) -> int:
+        """Input bytes the next workflows() call would parse in full, else 0.
+
+        Cache hits, splices and accounting reuse are cheap and stay in-process;
+        CombinedStore moves only full parses to a loader process. The splice plan
+        is memoized against this fingerprint so workflows() does not recompute it.
+        """
+        live_fp = self._fingerprint()
+        if self._fresh_wf is not None and self._live_fp == live_fp:
+            return 0
+        disk = self._disk
+        if disk is not None:
+            if disk.get("fingerprint") == live_fp:
+                return 0
+            if getattr(self._store, "restore_accounting_cache", None) is not None and (
+                disk.get("accounting_external") or disk.get("accounting")
+            ):
+                return 0  # changed rows only, against the stored scalar snapshot
+            try:
+                plan = self._splice_plan(live_fp)
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                plan = None
+            self._plan_memo = (live_fp, plan)
+            if plan is not None:
+                return 0
+        total = 0
+        for row in live_fp:
+            if isinstance(row, (list, tuple)) and len(row) == 3 and isinstance(row[1], int):
+                total += row[1]
+        return total
+
+    def load_from_disk(self) -> None:
+        """Adopt the cache another process just wrote; workflows() then checks it as usual."""
+        self._disk = self._read()
+        self._plan_memo = None
+
     @debug.timed("cache.splice")
     def _splice(self, live_fp: list):
         """Return a proven-safe incremental rollup, or ``None`` for a full parse."""
+        memo, self._plan_memo = self._plan_memo, None
+        plan = memo[1] if memo is not None and memo[0] == live_fp else self._splice_plan(live_fp)
+        if plan is None:
+            return None
+        disk = self._disk
+        prov = disk.get("provenance") or {}
+        subset, sorter = self._store.parse_subset, self._store.sort_workflows
+        affected, read = plan
+        with debug.span("cache.parse_subset", source=self._source):
+            sliced = subset(read)
+        return self._finish_splice(disk, prov, sorter, affected, sliced)
+
+    def _splice_plan(self, live_fp: list):
+        """Return ``(affected sessions, files to reread)``, or ``None`` for a full parse."""
         disk = self._disk
         if disk is None:
             return self._reject("splice", "no_disk_cache")
@@ -360,8 +414,9 @@ class CachedStore:
             affected_sessions=len(affected),
             read_files=len(seen_files & set(new_fp)),
         )
-        with debug.span("cache.parse_subset", source=self._source):
-            sliced = subset(sorted(seen_files & set(new_fp)))
+        return affected, sorted(seen_files & set(new_fp))
+
+    def _finish_splice(self, disk, prov, sorter, affected, sliced):
         if sliced is None:
             return self._reject("splice", "backend_refused")
         fresh_wf, fresh_models, fresh_prov = sliced
@@ -387,6 +442,7 @@ class CachedStore:
     @debug.timed("cache.workflows")
     def workflows(self) -> list:
         # Reload must observe changes, so fingerprint every call.
+        self.served_by_process = False  # CombinedStore sets it after a loader process
         live_fp = self._fingerprint()
         if self._fresh_wf is not None and self._live_fp == live_fp:
             self.served_from_cache = False

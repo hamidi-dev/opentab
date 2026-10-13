@@ -1,11 +1,13 @@
 """CombinedStore: merge several backends into one view."""
 from __future__ import annotations
 
+import time
 from functools import cached_property
 
 from opentab import progress
 from opentab.accounting.models import Workflow
 from opentab.demo import DEMO_ALL
+from opentab.stores import loader
 
 
 def _gather(calls: list) -> list:
@@ -20,16 +22,33 @@ def _gather(calls: list) -> list:
         return list(ex.map(lambda c: c(), calls))
 
 
-def _tracked_workflows(store):
+def _tracked_workflows(store, offload: bool = False, timings: list | None = None, i: int = 0):
     # One startup-progress row per backend; a no-op once the TUI owns the terminal.
     def call():
+        t0 = time.perf_counter()
         with progress.task(getattr(store, "source_name", "") or "?") as row:
+            by_process = offload and loader.warm(store, row)
             rows = store.workflows()
+            if by_process:
+                store.served_by_process = True
             if row is not None:
                 row.note = progress.note(store)
-            return rows
+        if timings is not None:
+            timings[i] = (time.perf_counter() - t0) * 1000.0
+        return rows
 
     return call
+
+
+def load_workflows(stores: list, timings: list | None = None) -> list[list[Workflow]]:
+    """Every store's workflows, in input order; cold backends parse in processes.
+
+    ``timings``, when given, receives each store's wall-clock load in ms.
+    """
+    offload = loader.heavy(stores)
+    if timings is not None:
+        timings[:] = [0.0] * len(stores)
+    return _gather([_tracked_workflows(s, i in offload, timings, i) for i, s in enumerate(stores)])
 
 
 class CombinedStore:
@@ -78,9 +97,7 @@ class CombinedStore:
         out: list[Workflow] = []
         owner: dict[str, object] = {}
         owner_by_workflow: dict[int, object] = {}
-        for store, workflows in zip(
-            self.stores, _gather([_tracked_workflows(s) for s in self.stores])
-        ):
+        for store, workflows in zip(self.stores, load_workflows(self.stores)):
             for w in workflows:
                 owner[w.id] = store
                 owner_by_workflow[id(w)] = store

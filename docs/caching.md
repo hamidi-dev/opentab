@@ -232,8 +232,36 @@ Rows are per thread: `CombinedStore` opens one per backend worker, and
 which gives every file backend a real bar. OpenCode reports message rows against
 a `count(*)` (taken only while a bar is drawing). A backend with neither shows a
 spinner. With no board started, reports are no-ops, so drill-in reads never touch
-the terminal. On a cold start OpenCode's bar barely moves while Claude Code parses:
-both workers compete for the GIL. That is real contention, not a display fault.
+the terminal. A backend parsing in a loader process (below) forwards its done/total
+over the pipe, so its bar moves like a local one.
+
+## Cold backends parse in loader processes
+
+`CombinedStore`'s threads overlap only GIL-releasing I/O. Backend parsing is Python
+bytecode, so two cold parses on threads take about as long as both in sequence,
+and an SQLite-chatty OpenCode thread starves behind a CPU-bound Claude Code one
+(each per-row call yields the GIL for a whole 5 ms switch interval).
+
+`stores/loader.py` therefore asks each cache-wrapped leaf for
+`CachedStore.full_parse_bytes()`: the input bytes of a parse that no cache hit,
+file splice or OpenCode accounting reuse can avoid. When two or more leaves need
+at least 32 MiB of full parsing, every one except the largest runs in its own
+interpreter (`sys.executable -c`, not `multiprocessing`, whose spawn re-runs an
+unguarded `__main__` of an API caller). The child rebuilds the leaf from the
+picklable `rebuild` recipe set by `sources._wrap_cache`, runs `workflows()` and
+`model_breakdown()`, and so writes the ordinary warm-start cache. The parent then
+adopts it with `load_from_disk()` and continues as a warm start: a source that
+changed meanwhile is spliced or reparsed by the normal fingerprint rules, and
+drill-in state never crosses the process boundary. The largest leaf stays in the
+parent, which keeps its model scan deferred and avoids the cache round trip.
+
+A child failure of any kind (spawn, pickling, a backend error, a killed process)
+falls back to the in-process parse. Demo and `--no-cache` have no cache to hand
+rows back through and keep threads; `OPENTAB_LOADER_PROCESSES=0` disables loader
+processes. Debug events `loader.process`, `loader.spawn_failed` and
+`loader.child_failed` record the parent's view; the child writes no debug log.
+`--timings` loads the same way, so per-backend times overlap and are labelled
+`parsed (process)` for a child parse.
 
 ## Lazy session reads
 

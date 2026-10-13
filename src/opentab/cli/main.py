@@ -58,6 +58,7 @@ from opentab.stores.claude import (
     claude_projects_dir,
     claude_retention,
 )
+from opentab.stores.combined import load_workflows
 from opentab.stores.gemini import (
     GEMINI_RETENTION_DEFAULT_DAYS,
     GEMINI_RETENTION_WARNING_ID,
@@ -1134,9 +1135,14 @@ def timings_command(args: argparse.Namespace) -> int:
     (store, _loading), build_ms = timed(lambda: sources.make_store(args, source_key))
 
     # Retain parsed rows for the fleet breakdown rather than scanning again.
-    # [label, files, ms, cached, sub, workflows, model_rows, incremental]
+    # [label, files, ms, cached, sub, workflows, model_rows, incremental, process]
     backends: list[list] = []
-    for sub in getattr(store, "stores", None) or [store]:
+    subs = getattr(store, "stores", None) or [store]
+    # Load as the app does: concurrently, cold backends in loader processes. Per-backend
+    # times are then overlapping wall-clock spans, not shares of the total.
+    load_ms: list = []
+    loaded = load_workflows(subs, timings=load_ms)
+    for sub, wf, wf_ms in zip(subs, loaded, load_ms):
         label = getattr(sub, "source_name", type(sub).__name__)
         files = None
         files_fn = getattr(sub, "_files", None)
@@ -1145,12 +1151,14 @@ def timings_command(args: argparse.Namespace) -> int:
                 files = len(files_fn())
             except OSError:
                 files = None
-        wf, wf_ms = timed(sub.workflows)
         mb, mb_ms = timed(sub.model_breakdown)
         cached = getattr(sub, "served_from_cache", None)
+        process = bool(getattr(sub, "served_by_process", False))
+        if process:
+            cached = False  # its parse ran in a loader process, then came through the cache
         # Incremental splices are distinct from cache hits and full parses.
         inc = bool(getattr(sub, "served_incrementally", False))
-        backends.append([label, files, wf_ms + mb_ms, cached, sub, wf, mb, inc])
+        backends.append([label, files, wf_ms + mb_ms, cached, sub, wf, mb, inc, process])
     total_ms = (time.perf_counter() - t_start) * 1000.0
     backends.sort(key=lambda b: b[2], reverse=True)
 
@@ -1179,9 +1187,11 @@ def timings_command(args: argparse.Namespace) -> int:
     print(f"  build store     {fmt_ms(build_ms)}")
     print()
     print(f"  {'backend'.ljust(lbl)}  {'files':>5}  {'time':>10}")
-    for label, files, ms, cached, _sub, _wf, _mb, inc in backends:
+    for label, files, ms, cached, _sub, _wf, _mb, inc, process in backends:
         fcell = str(files) if files is not None else "—"
         status = {True: "cached", False: "incremental" if inc else "parsed"}.get(cached, "")
+        if process:
+            status = "parsed (process)"
         bar = cost_bar(ms, peak, 12)
         print(f"  {label.ljust(lbl)}  {fcell:>5}  {fmt_ms(ms)}  {bar} {status}".rstrip())
     print()

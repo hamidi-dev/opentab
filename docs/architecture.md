@@ -33,7 +33,7 @@ package and installed command are both `opentab`.
 | `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `accounting/models.py` | Workflow, qualified session identity and summary records |
 | `accounting/tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
-| `stores/` | Harness readers, combined views, portable summaries and warm caches; `copilot_events.py` supplies session-bound Copilot execution metadata and lazy event details; `copilot_changes.py` reads recorded file-tool patches |
+| `stores/` | Harness readers, combined views, portable summaries and warm caches; `loader.py` parses cold backends in separate processes; `copilot_events.py` supplies session-bound Copilot execution metadata and lazy event details; `copilot_changes.py` reads recorded file-tool patches |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |
 | `tui/renderer.py`, `tui/components/` | Screen composition and painting; reusable stateless layouts |
