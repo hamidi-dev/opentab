@@ -1,31 +1,26 @@
 # Programmatic access
 
-OpenTab exposes the same accounting model through a JSON command line, a Python
-service, and a dependency-free MCP server. All three read the configured harness
-records through the normal store interface; none writes to those records.
+OpenTab's numbers are available to scripts and agents through a JSON command line, a
+Python service and an MCP server. All three read the same records as the TUI and
+never write to your harnesses' data.
+
+```sh
+opentab usage summary --range 30d --group-by project
+opentab mcp
+```
 
 ## JSON command line
 
-Resource commands write exactly one JSON document to stdout. Diagnostics belong
-on stderr, and a domain or input error exits nonzero. Every response carries a
-string `schema_version` and either `data` or `error`:
+Each command prints one JSON document to stdout. Diagnostics go to stderr, and errors
+exit nonzero. Every response has a `schema_version` and either `data` or `error`:
 
 ```json
 {"schema_version":"1","ok":true,"data":{"sessions":[]}}
 ```
 
-Start with `opentab --help` for commands grouped by task, then
-`opentab COMMAND --help` and, for example, `opentab sessions list --help`.
-Each help screen is a short task guide: purpose, copyable examples, and common
-options. Use `opentab sessions list --help-all` for the complete reference,
-including extra filters, pagination, source paths, state/cache controls and aliases.
-Those options remain accepted even when omitted from the quick guide.
-Bare `opentab` opens the TUI; use `opentab tui --help-all` for its full option list,
-including compatibility flags. Both help levels work offline and stop before
-opening stores or executing the command. `--pretty` only indents JSON; it does
-not change the result.
-
-Common queries and saved-preference commands:
+`opentab --help` lists commands by task; `opentab COMMAND --help` shows examples and
+common options, and `--help-all` lists every option. Help never opens your data.
+`--pretty` indents the JSON. Bare `opentab` opens the TUI.
 
 ```sh
 opentab usage summary --range 30d --group-by project
@@ -46,121 +41,87 @@ opentab sources list
 opentab doctor --json
 ```
 
-`sessions list` returns an opaque `session_key` beginning with `ot1_`. Use that key
-for later detail and mutation calls: unlike a harness-native ID, it identifies the
-machine and harness as well, so merged stores can route colliding IDs correctly.
-A native ID is accepted only when it resolves to exactly one visible session.
+`sessions list` returns a `session_key` starting with `ot1_`. Use it for every later
+call: unlike a harness's own ID, it also names the machine and harness, so it never
+collides. A native ID works only when it matches exactly one session.
 
-For `models list`, `--search` matches model names by case-insensitive substring,
-both for used models and with `--catalog`. It does not search session text. Other
-session filters, such as `--range` and `--project`, still scope used-model usage.
-Catalog mode has no session catalog to filter: with `--catalog`, only `--search`,
-`--limit`, `--offset`, `--no-state`, and `--pretty` apply. Session and source
-selections that would change the request are rejected before OpenTab discovers or
-opens a store; explicitly supplying a default-valued no-op remains compatible.
-For `sessions list` and `usage summary`, `--search` fuzzy-matches session titles,
-projects, IDs, and notes instead.
+### Choosing sessions
 
-Programmatic commands expose only options they use. Store-backed commands accept
-the relevant harness paths, cache, remote-summary, and state controls; session
-query options appear only on `sessions list`, `usage summary`, and used-model
-listing. `sources list` accepts source-discovery paths but not cache or state flags,
-while preference-only commands avoid source discovery. UI/web options such as
-`--theme`, `--port`, `--bind`, `--demo`, and `--no-worktrees` are rejected.
+| Option | Effect |
+|--------|--------|
+| `--range 30d`, `--range 2026-09-01..2026-09-07` | Sessions started in that range; a single date means *since* that date |
+| `--days N`, `--since`, `--until` | Older forms; `--since`/`--until` win over `--days`, which wins over `--range` |
+| `--harness NAME` | Which harnesses to load |
+| `--from-harness NAME` | Filter the loaded sessions; never loads more |
+| `--project PATH`, `--machine NAME`, `--model NAME` | Filter whole sessions |
+| `--search TEXT` | Fuzzy match on titles, projects, IDs and notes (not conversation text) |
+| `--bookmarked` | Only bookmarked sessions |
+| `--include-ignored` | Include sessions and projects you ignored |
+| `--limit`, `--offset` | Paging for `sessions list` (default 100 from 0) |
+| `--sort`, `--reverse` | `sessions list` order: `cost` (default), `tokens`, `date`, `last_activity` descending; `title`, `project` ascending |
+| `--no-state` | Ignore saved notes, bookmarks, ignores and pins; edits are rejected |
 
-Session query dates preserve the established precedence: `--since` or `--until`
-override `--days`, which overrides `--range`. This permits one-sided explicit date
-bounds while keeping existing `--days` scripts working. Detail and mutation
-commands do not accept date options because they address one resource directly.
-The default range is all time. `--range 2026-09-01` means **since** September 1;
-use `--range 2026-09-01..2026-09-07` for a bounded interval. These are root-session
-start dates with whole-session usage, as explained below.
+The default range is all time. Detail and edit commands take no dates, because they
+address one session. TUI and web options (`--theme`, `--port`, `--bind`, `--demo`,
+`--no-worktrees`) are rejected. Source path options are in [Sources](sources.md).
 
-`sessions list` returns at most 100 sessions by default, starting at offset 0.
-The default sort is descending API-equivalent cost. Tokens, root start date and
-last activity also sort descending; title and project sort alphabetically
-ascending. `--reverse` reverses that direction. Saved session/project ignores
-hide sessions unless `--include-ignored` or `--no-state` is used. `--harness`
-chooses which sources to load; `--from-harness` only filters that loaded catalog.
-It never loads another harness or fetches remote data. Detailed path and environment
-overrides are in [Sources](sources.md).
+For `models list`, `--search` matches model names. With `--catalog` it browses the
+price list without opening sessions, and only `--search`, `--limit`, `--offset`,
+`--no-state` and `--pretty` apply.
 
-Recorded spend and API-equivalent costs are separate fields. API-equivalent cost
-fully revalues `github-copilot` usage at the loaded models.dev Copilot route rates;
-other providers preserve recorded dollars and add list-rate estimates for the
-unpriced portion. It is not a subscription bill. `unpriced_tokens` means
-tokens without attributed recorded dollars, **not** tokens lacking a known model
-rate. Unknown models use fallback rates; recognized local providers price to zero.
-See [Pricing](pricing.md). The JSON API never applies the TUI's session-only what-if
-rate globally; model comparison is an explicit `models compare` operation.
+### Dates select whole sessions
 
-Copilot GPT-5.6+ requests with zero recorded cache writes estimate their uncached
-input as writes. This affects estimated costs and model comparisons, not original
-token fields or `recorded_cost_usd`. Model, Turn and Tool `estimate` metadata names
-the basis, price-source snapshot and `approximation_reasons` (`cache_write_inferred`
-or `copilot_rate_fallback`). Sessions expose `price_source` and aggregated
-`estimate_reasons`. Full root/model splits and proportional tool attribution use
-the same calculation; see [Copilot estimates](pricing.md#copilot-list-price-estimates).
+A range selects sessions by the day their **root session started**, and each one
+counts its whole usage, including subagents and activity after the range ends. A
+session started August 30 and resumed September 2 counts entirely on August 30, and
+a September-only query leaves it out. Day, month and year groups work the same way.
 
-An aggregated Node or Tool row from an older backend can mix metered and unpriced
-calls without retaining their token split. In that case `api_equivalent_cost_usd`
-is `null` and `api_equivalent_cost_complete` is `false`, rather than silently
-reporting only the recorded portion. Session and model rollups retain exact splits.
-Node labels can also name only the dominant model. Root nodes use exact per-model
-splits where available; other nodes return an incomplete result when their usage
-cannot be attributed to one known model, rather than pricing a model mix at one rate.
+Every filter selects whole sessions. Filtering by model keeps the other models those
+sessions used.
+
+### Costs in the output
+
+| Field | Meaning |
+|-------|---------|
+| `recorded_cost_usd` | Dollars the harness recorded |
+| `api_equivalent_cost_usd` | Usage priced at API list rates; not a subscription bill ([Pricing](pricing.md)) |
+| `unpriced_tokens` | Tokens with no recorded dollars attached (not "unknown model") |
+| `api_equivalent_cost_complete` | `false` when a row mixes priced and unpriced calls it can't split; the cost is then `null` |
+| `price_source`, `estimate_reasons` | Which price snapshot was used, and why a value is estimated |
+
+GitHub Copilot usage is fully repriced at Copilot route rates; other harnesses keep
+recorded dollars and add estimates for the unpriced part. Unknown models use fallback
+rates, local providers price at zero. Copilot GPT-5.6+ requests with no recorded
+cache writes count their uncached input as writes (`cache_write_inferred`); see
+[Copilot estimates](pricing.md#copilot-list-price-estimates). The TUI's compare-model rate
+is never applied here; use `models compare` instead.
 
 ### Reading a usage summary
 
-CLI and MCP summaries retain `range`, `totals`, `group_by`, and `groups`, and include
-three explanatory objects so callers do not need the source checkout:
+`usage summary` returns `range`, `totals`, `group_by` and `groups`, plus three objects
+that explain them:
 
 | Object | Meaning |
 |--------|---------|
-| `date_scope` | Resolved inclusive `since`/`until` bounds (`null` means unbounded), selection basis, usage basis, and date convention |
-| `accounting` | Definitions of cost fields, token categories, reconciliation, and whole-session filtering |
-| `scope` | Selected source, requested session filters, matching machines/harnesses, and effective state/ignore policy |
+| `date_scope` | The resolved `since`/`until` (`null` means open-ended) and how dates were applied |
+| `accounting` | What each cost field and token category means |
+| `scope` | The source, filters, matching machines and harnesses, and whether saved ignores applied |
 
-**Ranges select sessions by their root start date, not calls occurring within the
-range.** Each selected session contributes its whole recorded usage, including
-tracked descendants and activity after the range ends. Day/month/year groups also
-use the root start date. A session started August 30 and resumed September 2 stays
-in the August 30 bucket, including the September activity; it is excluded by a
-September-only query. Dates are used as supplied by stores, without a service-level
-timezone conversion. Relative bounds are resolved once per request; a single date
-means *since* that date, not just that day.
+Totals and groups share five token fields that add up: `input_tokens` (uncached),
+`output_tokens`, `reasoning_tokens`, `cache_read_tokens` and `cache_write_tokens`.
+`cache_write_1h_tokens` is part of the cache writes, not a sixth category. See
+[Token conventions](backends.md#token-conventions).
 
-All filters select whole sessions. In particular, filtering by `model` retains
-other models used by those sessions. `scope.machines` and `scope.harnesses` are
-sorted identities present **after filtering**, not a list of all installed or
-configured sources. Empty results have empty identity lists. Harness/machine
-filters do not load extra sources or pull remote data. Saved project and session
-ignores apply when `saved_ignores_applied` is true; `include_ignored` or `--no-state`
-bypasses them. Summaries include all matching sessions and groups: MCP `limit` and
-`offset` are accepted but ignored, and groups always sort by API-equivalent cost,
-then tokens, descending. The CLI does not accept ineffective summary
-`--sort`/`--reverse` options.
-
-Totals and every group expose the same normalized token fields as session model
-usage: `input_tokens` (uncached), `output_tokens`, `reasoning_tokens`,
-`cache_read_tokens`, and `cache_write_tokens`. These five categories are additive;
-`cache_write_1h_tokens` is a **subset** of cache writes, not a sixth category.
-Repeated context and cache reads count toward usage, so `tokens` does not mean
-newly generated text. Reasoning already included in a source's output is not added
-again. See [Token conventions](backends.md#token-conventions).
-
-`token_breakdown_complete` indicates whether the normalized model categories
-reconcile with reported totals. Legacy uncached input may be inferred from the
-remaining token count. Missing or inconsistent model rows leave the original
-`tokens` total intact and set this flag to false; zero category counts in that case
-do not imply zero usage. True means reconciliation, not proof that every source
-record was retained. Model/provider groups describe available model rows, so their
-categories may reconcile even when the overall session totals do not.
+- `token_breakdown_complete` is `false` when the categories don't add up to the
+  reported total; zeros then don't mean zero usage.
+- `scope.machines` and `scope.harnesses` list what matched **after** filtering.
+- Summaries are never paged: MCP `limit`/`offset` are ignored. Groups always sort by
+  cost, then tokens; the CLI rejects `--sort` and `--reverse` here.
 
 ## Python service
 
-`OpenTabService` is the presentation-independent boundary used by the JSON CLI and
-MCP server. Construct it with any store implementing OpenTab's store contract:
+The CLI and MCP server are built on `OpenTabService`, which you can use directly with
+any OpenTab store:
 
 ```python
 from opentab import OpenTabService, SessionQuery
@@ -170,30 +131,13 @@ page = service.list_sessions(SessionQuery(range="30d", limit=20))
 session = service.get_session(page["sessions"][0]["session_key"])
 ```
 
-The service returns plain dictionaries and raises `ServiceError` with a stable
-`code`, human-readable `message`, and optional `details`. Session extras stay lazy:
-listing sessions does not read turns, traces, or model details for every session.
-
-`--no-state` makes authored notes and preferences invisible and rejects mutations.
-CLI and MCP changes share the TUI's authored files. TUI preference saves merge only
-local set changes, so an already-open TUI does not undo external bookmark, ignore,
-or pin changes when it exits. External preference changes are not live-refreshed
-into that TUI's current view.
-
-Programmatic data access currently rejects `--demo`: demo transformation lives in
-the interactive presentation path, and returning partially transformed detail would
-be less safe than failing explicitly. Use the TUI or web frontend for demo output.
+It returns plain dictionaries and raises `ServiceError` with a stable `code`, a
+`message` and optional `details`. Listing sessions doesn't load their turns or traces.
 
 ## MCP server
 
-Configure your MCP client to launch the newline-delimited JSON-RPC server as a
-stdio process. It has no HTTP listener:
-
-```sh
-opentab mcp
-```
-
-A typical MCP client entry for usage queries and session metadata is:
+`opentab mcp` runs an MCP server over stdio; it opens no network port. Add it to your
+MCP client:
 
 ```json
 {
@@ -206,50 +150,40 @@ A typical MCP client entry for usage queries and session metadata is:
 }
 ```
 
-**Optional: enable conversation retrieval and raw traces.** Add `--allow-raw-content`
-to the server arguments and restart the MCP server:
+That's enough for usage and session questions. To let your agent read conversations,
+search them or read raw traces, add `--allow-raw-content` and restart the server:
 
 ```json
-{
-  "mcpServers": {
-    "opentab": {
-      "command": "opentab",
-      "args": ["mcp", "--allow-raw-content"]
-    }
-  }
-}
+"args": ["mcp", "--allow-raw-content"]
 ```
 
-Without this flag, conversation reads, search, indexing, and raw trace reads are
-disabled; ordinary usage queries still work. Enabling it does not index anything
-automatically. When you explicitly ask your agent to build or refresh the local
-conversation index, it can call `opentab_index_conversations` with
-`confirm_index: true`. This persists sensitive conversation text in plaintext.
-Conversation search and reads require `confirm_raw: true`; returned text can enter
-the agent's model context. See [conversation search](conversation-search.md) for
-setup, supported sources, and refresh behavior.
+| Tool | Does |
+|------|------|
+| `opentab_usage_summary` | Totals and groups, like `usage summary` |
+| `opentab_list_sessions`, `opentab_get_session` | Find sessions; one session's totals, note and models |
+| `opentab_get_session_nodes`, `_turns`, `_tools`, `_context` | A session's subagent tree, turns, tool costs and context growth |
+| `opentab_get_session_content` | One turn's raw content (needs the flag and `confirm_raw: true`) |
+| `opentab_get_session_conversation` | Conversation text (needs the flag and `confirm_raw: true`) |
+| `opentab_search_conversations`, `opentab_index_conversations`, `opentab_conversation_index_status` | [Conversation search](conversation-search.md) |
+| `opentab_list_models`, `opentab_compare_model` | Used models, the price catalog, and a session-only comparison |
+| `opentab_get_note`, `opentab_set_note` | Read or write a session note |
+| `opentab_list_preferences`, `opentab_update_preference` | Bookmarks, ignores and pinned models |
+| `opentab_list_sources`, `opentab_reload` | Present harnesses; reload changed records |
 
-The server advertises tools for summaries, session discovery and detail, model
-prices and comparisons, notes, bookmarks/ignores/pins, source discovery, reload,
-and conversation reads, search, indexing, and index status.
-Tool inputs reject unknown fields, wrong JSON types, unsupported enum values, and
-out-of-range pagination before they reach a store. Domain failures are successful
-JSON-RPC responses with `isError: true`, allowing the client to inspect the stable
-OpenTab error code without losing the MCP session.
+Enabling the flag indexes nothing by itself. Building the search index needs
+`confirm_index: true` and stores conversation text as plaintext. Anything the server
+returns can enter your agent's context.
 
-The server supports the established MCP initialize flow and the newer discovery
-metadata flow. It remains alive after malformed input and never writes protocol
-diagnostics to stdout.
+Bad input (unknown fields, wrong types, out-of-range paging) is rejected before your
+data is read. OpenTab errors come back as tool results with `isError: true`, so the
+session keeps going.
 
 ## Raw content
 
-Titles, directories, dates, token counts, costs, and authored notes are sensitive
-even though they are structured. Treat captured JSON and MCP responses as local
-data, just like the interactive views.
-
-Full prompts, content keys, reasoning, commands, tool arguments, and tool results
-have an additional gate. They are unavailable unless the individual operation asks
-for them and the process was explicitly started with `--allow-raw-content`:
+Titles, folders, dates, costs and notes are already sensitive; treat captured JSON as
+private. Full prompts, reasoning, commands, tool arguments and tool output are gated
+further: the process must start with `--allow-raw-content` **and** each request must
+ask for them.
 
 ```sh
 opentab sessions turns SESSION_KEY --include-prompts --allow-raw-content
@@ -258,20 +192,17 @@ opentab sessions content SESSION_KEY CONTENT_KEY --allow-raw-content
 opentab mcp --allow-raw-content
 ```
 
-The MCP raw-content tool additionally requires `confirm_raw: true`. Permission is
-checked before reading raw content, including before any remote trace transport.
-`--include-content-keys` (MCP: `include_content_keys: true`) lists opaque keys without
-fetching traces, even when raw-content permission is enabled. Requesting full
-prompts is separate from requesting keys.
+`--include-content-keys` (MCP `include_content_keys: true`) lists a key per turn
+without reading any content; `sessions content` reads one. The MCP content tool also
+needs `confirm_raw: true`. Permission is checked before anything is read, including
+before any remote connection.
 
 ### Reading conversation records
 
-`sessions conversation` is a public **record-reading API, not conversation search**.
-It reads retained user/assistant text from local OpenCode, Claude Code, Codex,
-Hermes, Copilot, pi, and omp records, independently of usage-bearing turns. Zero-usage
-messages inside an accessible session are preserved. Tools, reasoning, and
-attachments are not part of this text-only view; use the separately gated
-turn-content API for raw traces.
+`sessions conversation` reads the user and assistant text of one session, from local
+OpenCode, Claude Code, Codex, Hermes, Copilot, pi and omp records. It reads records in
+order; to find something, use [conversation search](conversation-search.md). Tools,
+reasoning and attachments are not included; use the turn content above for those.
 
 ```sh
 opentab sessions conversation SESSION_KEY --allow-raw-content
@@ -281,139 +212,85 @@ opentab sessions conversation SESSION_KEY --allow-raw-content --anchor ANCHOR --
 opentab sessions conversation SESSION_KEY --allow-raw-content --execution-id CHILD_ID
 ```
 
-The qualified **root must already be present in the selected session catalog**.
-There is no separate conversation-only catalog; sessions absent from usage
-discovery cannot be addressed through this API or conversation search. Unique
-native root IDs also work, but qualified keys avoid machine/harness collisions.
-Even a fully qualified key is rejected if it has duplicate catalog entries.
+| Option | Default | Effect |
+|--------|---------|--------|
+| `--limit` | 20 | Records per window, 1–100 |
+| `--max-chars` | 20000 | Text per window, 1–120,000 characters |
+| `--anchor` | none | Start at a record from an earlier response |
+| `--before` | 0 | Also return up to 99 records before the anchor |
+| `--cursor` | none | Continue from `next_cursor` |
+| `--tail` | off | Read the last window |
+| `--execution-id` | root | Read one subagent, by an ID from `executions` |
 
-Default scope is **only the root execution**, not a merged descendant conversation.
-Use precise child IDs from the response's `executions` list as `--execution-id`;
-keep the catalog root as `SESSION_KEY`. Do not substitute an agent name, a sibling
-ID, or a child ID as the root selector. Each read returns only the selected
-execution's records. These are **retained original occurrences, not active-branch
-reconstruction**: replayed prompts, resumed rollouts, and discarded branches may
-remain as separate occurrences. Consult `ordering`, `origin`, source locators, and
-`limitations` rather than assuming a normalized transcript or complete retention.
+`--anchor`, `--cursor` and `--tail` can't be combined. Python takes the same options
+(`service.session_conversation(key, limit=20, max_chars=20000)`), and MCP's
+`opentab_get_session_conversation` uses the same names plus `session` and
+`confirm_raw: true`.
 
-| Option | Default | Bounds / behavior |
-|--------|---------|-------------------|
-| `limit` | 20 | 1..100 records |
-| `max_chars` | 20000 | 1..120000 text characters |
-| `before` | 0 | 0..99 records before an anchor; nonzero requires `anchor` |
-| `anchor` | absent | Nonempty returned record anchor, at most 1024 characters |
-| `cursor` | absent | Opaque `next_cursor`, at most 8192 characters |
-| `tail` | false | Select the last window |
-| `execution_id` | root | Nonempty exact execution ID from `executions` |
+By default you get only the root session, not its subagents. Pass a subagent's ID from
+`executions` as `--execution-id` and keep the root's `SESSION_KEY`. The session must
+appear in `sessions list`; there is no separate conversation catalog.
 
-`anchor`, `cursor`, and `tail=true` are mutually exclusive. Windows return bounded
-structured `records`, execution metadata, and `next_cursor` for continuation.
-Keep anchors/cursors opaque and tied to the same qualified root and execution;
-changed source snapshots can invalidate continuation. The text budget is not a
-byte cap on the entire JSON envelope. Python callers use the same options:
+**Reading the response.** Records come as they were stored, not as a cleaned-up
+transcript: replayed prompts, resumed runs and abandoned branches can all appear.
 
-```python
-service = OpenTabService(store, args, allow_raw_content=True)
-result = service.session_conversation(session_key, limit=20, max_chars=20000)
-```
+| Field | Meaning |
+|-------|---------|
+| `records[].id` | This occurrence; use it as an anchor (native IDs can be `ambiguous_anchor`) |
+| `message_id`, `record_id` | The harness's own IDs, where available |
+| `parts[]` | Ordered text parts with `text_offset`, `text_total_chars` and `truncated` |
+| `record_complete` | This response holds the whole record |
+| `has_more`, `next_cursor` | More records follow |
+| `has_earlier` | The window starts after the beginning |
+| `history_completeness` | Always `unknown`: deleted history is never reconstructed |
+| `limitations` | What was skipped or uncertain |
 
-MCP exposes `opentab_get_session_conversation` with these same option names,
-`session`, and required `confirm_raw: true`. The server must also have been started
-with `--allow-raw-content`. Confirmation is checked before lazy service creation;
-the service checks permission before resolution and validates options before a
-conversation reader runs. Demo is rejected even if enabled after construction.
-Shared reader/window errors retain their stable code and message as `ServiceError`,
-CLI error envelopes, or MCP tool errors.
+A long message continues on the next page with the same part ID; join parts by ID and
+offset. Anchors and cursors belong to one session and subagent, and can stop working
+when the source changes. Session detail reports
+`capabilities.conversation_supported`, and `capabilities.conversation` when reading is
+enabled.
 
-Session detail reports `capabilities.conversation_supported` independently of raw
-permission, and `capabilities.conversation` only when supported and enabled.
-Capability checks do not read conversation text or guarantee retained source
-availability. This API is **local only**: remote summaries do not support it and
-never trigger SSH conversation reads. Conversation records, anchors, and cursors
-are not added to rollup caches, web reports, or fleet exports. OpenTab does not
-persist content merely by reading a conversation; CLI/MCP clients can retain their
-requested output. The separate [conversation search index](conversation-search.md)
-persists text only through an explicit indexing operation. Its `conversations
-index/search/status/clear` commands and MCP tools do not change the metadata-only
-meaning of `sessions list --search`.
+**Limits.** Each read stays within 256 MiB of source text. OpenCode messages over
+8 MiB, and JSONL lines over 8 MiB, are skipped and reported in `limitations`; an
+oversized tool-output line can make a whole JSONL session unavailable
+(`conversation_too_large`). Damaged lines are reported, not repaired.
 
-**Reading the response:** `records[].id` identifies a source occurrence, while
-`message_id` and `record_id` preserve native IDs where available. An exact native
-message/record ID can also be an anchor, but duplicate occurrences produce
-`ambiguous_anchor`; use the source-qualified returned `id` instead. Each record
-retains its role, raw timestamp, parent/execution IDs and ordered text `parts`.
+**Per harness.** Hermes excludes archived sessions and their subagents; on older Hermes
+databases without message IDs, anchors can change after the database is rewritten. pi
+and omp need the session header within the first 64 KiB of the file.
 
-Large messages continue across pages rather than disappearing behind a fixed
-first-80-message limit. Each part reports `text_offset`, `text_total_chars` and
-`truncated`; a continued part keeps its ID. Reassemble by record/part identity and
-offset, not by appending whole rendered messages. `record_complete` means that
-this response contains the entire text-only record. `has_more` / `next_cursor`
-describe forward continuation; `has_earlier` says the window starts after the
-beginning. `history_completeness` remains `unknown`, even at the end of a page
-sequence: missing/deleted history and omitted nontext are not reconstructed.
-
-Reads are fresh and bounded at source as well as output. SQLite readers permit up
-to 256 MiB of selected text. OpenCode additionally omits individual raw message
-or legacy part cells over 8 MiB before extraction; the response reports
-`skipped_messages`/`skipped_parts` and corresponding `limitations`. Remaining text
-still reads normally; a small answer embedded in an oversized message is omitted.
-JSONL readers permit up to 256 MiB of selected file
-data and 8 MiB per physical line. An oversized **excluded tool-result line** can
-therefore make a JSONL source unavailable with `conversation_too_large`. JSONL parse errors
-are surfaced as a skipped-record limitation, not repaired or silently considered
-complete. Budgets and strict parsing bound failure cases; they are not an archive
-or a promise to read every damaged/oversized transcript. Unflagged wrapper-like
-text remains verbatim; explicit synthetic flags are excluded where recorded.
-
-Hermes reads `messages` in its own fresh read-only transaction, independently of
-the rotating usage logs. It selects only user/assistant content, orders by timestamp
-then message ID, and converts Hermes' Unix-second timestamps to milliseconds.
-Reasoning and tool columns are excluded. On schemas without message IDs, returned
-anchors use SQLite rowids and disclose that database rewrites can change them. Its
-execution tree includes exact zero-usage descendants, but excludes archived sessions
-and every descendant reachable only through an archived parent.
-
-Pi and omp discover identity from fresh JSONL session headers, requiring metadata
-within the first 64 KiB. A UUID-named file must agree with its header ID. Omp's
-nickname-named children use the native header ID and directory parentage; conversation
-ownership is never spliced from accounting usage. Missing, ambiguous, conflicting or
-cyclic identity fails closed. Text-only user/assistant multipart content is preserved,
-including zero-usage messages. Physical resumed/replayed occurrences are not deduped;
-source line anchors remain distinct, and ordering is filename/path then physical line,
-not a reconstructed active branch.
+Conversation reads are local only and are never cached, exported or added to the web
+report. Only the [search index](conversation-search.md) stores conversation text, and
+only when you build it.
 
 ### Remote content
 
-Load the managed fleet with `--source remote` to address its sessions through the
-same qualified session keys. For example, after pulling a machine:
+Load pulled machines with `--harness remote` to use their sessions with the same keys:
 
 ```sh
-opentab sessions list --source remote
-opentab sessions turns SESSION_KEY --source remote --include-content-keys --allow-raw-content
-opentab sessions content SESSION_KEY CONTENT_KEY --source remote --allow-raw-content
-opentab mcp --source remote --allow-raw-content
+opentab sessions list --harness remote
+opentab sessions turns SESSION_KEY --harness remote --include-content-keys --allow-raw-content
+opentab sessions content SESSION_KEY CONTENT_KEY --harness remote --allow-raw-content
+opentab mcp --harness remote --allow-raw-content
 ```
 
-Listing sessions, capabilities and turn keys stays offline. Only the keyed content
-call connects over SSH, routed to the exact owning store. There is no remote bulk
-content read: `RemoteStore.turn_content(id)` without a key returns an empty mapping.
-Raw-content permission does not make URL entries or arbitrary snapshot imports
-trace-capable. The summary must be loaded through the managed default cache
-directory and associated with a saved SSH entry and compatible remote OpenTab CLI.
-The trace command is derived from the export `cmd` where that is a plain OpenTab
-invocation, and configured as an explicit `trace_cmd` argv prefix where it is not;
-see [remote setup](machines.md#saved-connections).
+Listing sessions and content keys stays offline. Only reading one keyed turn connects
+over SSH, to that session's machine; there is no bulk read. It needs the same setup as
+[reading a remote turn](machines.md#read-a-remote-turn) in the TUI:
+a pulled summary, a [saved SSH connection](machines.md#saved-connections) and a
+recent OpenTab on the remote.
 
-Remote content keys identify a frozen snapshot, not a remote row ordinal. OpenTab
-compares the selected turn's identity and accounting fields against the live remote
-timeline and requests its unique live key. Stale or ambiguous matches fail; refresh
-the summary and obtain new keys rather than retrying with guessed indices. The
-timeline lookup and content read share a 30-second deadline, with per-response caps
-of 16 MiB stdout and 64 KiB stderr, 100,000 timeline rows and 10,000 content events.
-CLI/MCP transport failures use an `operation_failed` envelope with a safe message,
-not remote stderr or response payloads.
+A content key belongs to the pulled snapshot. If the remote turn has changed since,
+the read fails; pull again for new keys rather than retrying. Each read gets 30
+seconds and capped output, and failures return `operation_failed` without the remote's
+output. Nothing fetched is cached on disk.
 
-Remote reads have no raw-content disk cache. The TUI separately retains only one
-selected remote turn's preview and full content until navigation or reload. Raw
-traces never enter rollup caches; traces and content keys never enter web payloads
-or fleet exports. Callers remain responsible for any CLI/MCP output they capture.
+## Good to know
+
+- Programmatic commands reject `--demo`; use the TUI or web report for demo output.
+- CLI, MCP and the TUI share your notes and preferences. A running TUI keeps changes
+  made elsewhere when it saves, but doesn't show them until you restart it.
+- Ranges use the dates stores record, without timezone conversion.
+- Reasoning already counted in output isn't added twice. Cache reads count as usage,
+  so `tokens` is not "new text generated".

@@ -1,150 +1,136 @@
 # Troubleshooting
 
-Start with **`opentab doctor`** — one block covering this copy of OpenTab (version, how it
-was installed, its Python interpreter and linked SQLite library version, and whether
-the `opentab` on your `PATH` is even the one that answered),
-every harness backend (found, or not found and why, with the fix), the terminal's colour
-and glyph capabilities including any multiplexer in the way, the price catalog, and
-OpenTab's own files.
+Start with `opentab doctor`. It checks this OpenTab install, every harness, your
+terminal and OpenTab's own files, and tells you what to fix.
 
-It **reports and never repairs**: nothing is created, migrated, warmed or fetched
-unless you explicitly request a diagnostic log with `--debug`.
-Availability checks can inspect record contents, such as VS Code's token-usage
-markers, but the report does not display prompts or session content. Home paths
-fold to `~` and pulled machines are counted rather than named. Review paths and
-configuration hints before posting publicly; `opentab doctor --full` reveals full
-paths and machine names for local investigation, not a transcript dump. The exit
-code is `1` only when something is genuinely broken (a `WARN` never moves it).
+```sh
+opentab doctor          # paths shortened, safe to paste
+opentab doctor --full   # full paths and machine names, for local use
+```
 
-Anything it tells you to set is written in your own shell's syntax — `export FOO=bar`,
-`set -gx FOO bar`, or `$env:FOO = "bar"` — so the hint is a line you can run.
+- It only reports; it never changes or creates anything (unless you add `--debug`).
+- It shows no prompts or session content. Home paths become `~` and pulled machines
+  are counted, not named. Still review it before posting publicly.
+- Fixes come in your shell's syntax (`export FOO=bar`, `set -gx FOO bar` or
+  `$env:FOO = "bar"`), ready to run.
+- It exits with `1` only when something is broken; a `WARN` doesn't change that.
+- It also reports the version, install method, Python, SQLite, and whether the
+  `opentab` on your `PATH` is the one that answered.
 
 ## Slow startup, reloads or session opening
 
+**Cause**: usually a cache miss or a large source. A debug log shows which.
+
+**Fix**: run with a debug log, then follow it from another terminal with `tail -f`:
+
 ```sh
-opentab --debug --timings   # startup/cache decisions only
-opentab --debug             # include navigation and r/reload in the TUI
-opentab web --debug         # include live browser session reads
+opentab --debug --timings   # startup and cache decisions
+opentab --debug             # also navigation and reload (r) in the TUI
+opentab web --debug         # also live browser session reads
 ```
 
-The log path is printed at startup. Follow it from another terminal with
-`tail -f FILE`, or choose a new destination with `--debug-log FILE` (implies
-`--debug`). Logs show cache-hit/miss reasons, reused/decoded accounting counts,
-phase durations and peak process RSS. A start without its matching end identifies
-the phase still running. Logs exclude source content and use hashed source/session
-identifiers. See [Debugging a slow run](caching.md#debugging-a-slow-run) for event
-fields, limits and measurement boundaries.
+OpenTab prints the log path at startup; `--debug-log FILE` picks one. The log shows
+cache hits and misses with reasons, phase durations and peak memory. A phase that
+starts but never ends is the one still running. See
+[Debugging a slow run](caching.md#debugging-a-slow-run).
 
 ## Every theme looks the same
 
-The tell: `C` cycles through the themes and **nothing on screen changes**. (Other apps
-re-colouring fine is not evidence — they use truecolor escapes, which take a different
-path.)
+**Cause**: pressing `C` cycles themes but nothing changes. OpenTab sets exact colors by
+redefining palette slots, and some terminals accept that but ignore it. Other apps
+recoloring fine is no evidence; they use a different method.
 
-OpenTab hits its themes' exact colours by redefining palette slots (`init_color`). Most
-terminals honour that; a few accept the call and quietly ignore it, and there is nothing
-readable back that distinguishes the two — a terminal can advertise the capability, accept
-every write, and discard it.
-
-Known hosts are detected and switched over automatically, so there is nothing to set:
-currently [herdr](https://herdr.dev), which re-emits each pane's cells and forwards a
-palette *index* rather than the colour behind it. Anywhere else:
+**Fix**: tell OpenTab to use the nearest standard colors instead. Set it once in that
+terminal's profile:
 
 ```sh
-export OPENTAB_NO_INIT_COLOR=1   # nearest standard 256-colour instead (matched in CIE Lab, so hues survive)
-export OPENTAB_NO_INIT_COLOR=0   # force the exact colours back on, e.g. once your terminal is fixed
+export OPENTAB_NO_INIT_COLOR=1   # nearest 256-color match, hues kept
+export OPENTAB_NO_INIT_COLOR=0   # force exact colors back on
 ```
 
-It's an environment variable rather than a CLI flag on purpose: it describes the
-*terminal*, not the run — set it once in that terminal's profile.
-
-A multiplexer is the prime suspect whenever colour or glyphs come out wrong, since it
-consumes OpenTab's escapes and re-emits its own; `opentab doctor` names the one it can see
-and warns when several are nested.
+Known cases such as [herdr](https://herdr.dev) are detected automatically. A
+multiplexer is the usual suspect when colors or glyphs look wrong; `opentab doctor`
+names the one it sees and warns when several are nested.
 
 ## Boxes and frames render as garbage
 
-OpenTab asks the locale whether the screen can encode its box-drawing glyphs and falls back
-to a locale-independent ASCII/ACS frame when it can't. If frames still look wrong, your
-locale is claiming UTF-8 while the terminal isn't — check `LANG` / `LC_ALL`; `opentab
-doctor` reports what it detected.
+**Cause**: your locale claims UTF-8 but the terminal isn't using it. OpenTab already
+falls back to plain ASCII frames when the locale can't encode its box characters.
+
+**Fix**: check `LANG` and `LC_ALL`. `opentab doctor` shows what it detected.
 
 ## A tool I use isn't showing up
 
-`opentab doctor` separates the cases that look identical from outside — a harness that
-isn't installed, one installed but with nothing recorded, one whose export is opt-in
-(GitHub Copilot's OTEL export), one pointed a level too deep by a `--*-dir` flag, and VS
-Code sessions that exist but recorded no tokens. It also reports a **remembered `H`
-choice** pinning you to a single harness, which nothing in the UI announces.
+**Cause**: one of several cases that look the same from outside: the harness isn't
+installed, has nothing recorded, needs an opt-in export (GitHub Copilot), or a
+`--*-dir` flag points one level too deep. VS Code chats may exist but have no tokens.
+A remembered `H` choice can also pin you to one harness without saying so.
 
-Per-harness paths, flags and env vars: [sources.md](sources.md).
+A first run with no history at all exits with "No supported AI usage history was
+found" and the locations it checked.
+
+**Fix**: run `opentab doctor`; it names the case. Press `H` to switch harness. Paths,
+flags and setup per harness: [Data harnesses](sources.md).
 
 ## Sessions show tokens but `$0.00`
 
-That's not a bug — it's usage recorded without a per-token price, normal on subscription
-and credit plans. Press **`$`** to reprice those tokens at API list rates, and **`P`** to
-see the rates behind the estimate. See [pricing.md](pricing.md).
+**Cause**: not a bug. The usage was recorded without a price, which is normal on
+subscription and credit plans.
+
+**Fix**: press `$` to price those tokens at API list rates, and `P` to see the rates.
+See [Pricing](pricing.md).
 
 ## `opentab pull` can't reach a machine
 
-For SSH pulls, test login with the same target first. OpenTab uses non-interactive
-batch mode, so a connection that needs a password prompt will fail. SSH targets
-can include a port:
+**Cause**: OpenTab runs SSH in batch mode, so a login that asks for a password fails.
+Over HTTP(S), the URL must return `opentab export` JSON, not the `opentab web` page.
+
+**Fix**: test the same SSH login by hand first. Give a port inline, or use a `Host`
+block in `~/.ssh/config` (port, key, `ProxyJump` all apply) and pull by its alias:
 
 ```sh
-opentab pull box=ssh://user@host:2222      # a nonstandard port, inline
+opentab pull box=ssh://user@host:2222
 ```
 
-or give the box a `Host` block in `~/.ssh/config` (`Port`, `IdentityFile`, `ProxyJump`,
-a bastion — all of it applies) and pull it by that alias. If `opentab` isn't on the
-remote's non-interactive `PATH`, set that machine's `cmd` in `remotes.json` — `cmd` is
-the command run **on the far side**, so it cannot carry local `ssh` flags.
-
-For HTTP(S), the URL must return JSON produced by `opentab export`, not the
-`opentab web` home page. See [saved connections and URL pulls](machines.md).
+If `opentab` isn't on the remote's non-interactive `PATH`, set that machine's `cmd` in
+`remotes.json`. `cmd` runs on the far side, so it can't carry local `ssh` flags. See
+[Multiple machines](machines.md).
 
 ## Moving a machine's spend across by hand
 
-When SSH from here isn't possible at all, export on the far side and open the file here.
-There is no `import` verb — the file *is* the machine:
+**Cause**: SSH from here isn't possible.
+
+**Fix**: export on that machine, copy the file over, and open it here:
 
 ```sh
-opentab export --label workstation box.json  # there: then transfer the file here
-opentab remote box.json                      # here: merge it with local history
+opentab export --label workstation box.json  # there
+opentab remote box.json                      # here: merged with local history
 ```
 
-`opentab remote` also takes several files or a directory. To keep a summary for later,
-drop it in the pull directory (`~/.cache/opentab/remotes/`, or `$XDG_CACHE_HOME/opentab/
-remotes`) — create it first, OpenTab only makes it when pulling — and a bare `opentab
-remote` finds it from then on.
+`opentab remote` also takes several files or a folder. To keep a summary, put it in
+`~/.cache/opentab/remotes/` (or `$XDG_CACHE_HOME/opentab/remotes`; create the folder
+first). A bare `opentab remote` then finds it.
 
-Two things to know:
-
-- **The machine's name comes from the export, not the filename.** If both boxes have the
-  same hostname, the imported sessions merge into your local machine — re-export the
-  other one with `opentab export --label NAME`. OpenTab says so on startup when it spots
-  the collision.
-- **A summary that won't parse is skipped**, not fatal, so a truncated copy shows as
-  "this machine only". OpenTab names the file it skipped; re-copy it if you see that.
+- **The machine's name comes from the export, not the file name.** Two boxes with the
+  same hostname merge into one; re-export with `--label NAME`. OpenTab warns at startup.
+- **A summary that won't parse is skipped**, and OpenTab names the file. Copy it again.
 
 ## Notes cannot be saved
 
-An unreadable or malformed `notes.json` blocks edits deliberately: OpenTab will
-not replace your authored notes with an empty file. `opentab doctor` reports the
-same readability check without moving or changing the file. Back it up, then
-check permissions and JSON structure (a top-level object with a `notes` object).
-Restore or repair it before retrying; deleting the cache cannot recover notes.
-Notes are also intentionally disabled under `--demo` and `--no-state`.
-See [note storage](privacy.md#notes-are-authored-data).
+**Cause**: `notes.json` is unreadable or malformed. OpenTab refuses to replace your
+notes with an empty file. Notes are also off under `--demo` and `--no-state`.
+
+**Fix**: back up the file, then check its permissions and that it's a JSON object with
+a `notes` object inside. `opentab doctor` runs the same check without touching it.
+Deleting the cache can't recover notes. See
+[Notes are authored data](privacy.md#notes-are-authored-data).
 
 ## Browser session tabs are missing
 
-`opentab web --html FILE` omits Turns, Tools and Context by default. Add
-`--include-details` to embed them for offline use, or use `opentab web` /
-`opentab web --headless` for live details. In either mode, tabs depend on the
-selected session's retained data; older fleet summaries may
-have only rollups. Re-export on the source machine if its records still exist.
-Raw turn traces and notes are available in the TUI and gated CLI/MCP API, not
-browser tabs. [Remote traces](machines.md#read-a-remote-turn) require an explicit
-SSH read; ordinary fleet snapshots do not contain them.
-See [the live browser](web.md#served-live).
+**Cause**: `opentab web --html FILE` leaves out Turns, Tools and Context by default.
+Older fleet summaries may hold only totals.
+
+**Fix**: add `--include-details`, or use the live `opentab web` (or `--headless`).
+Re-export on the source machine if its records still exist. Turn traces and notes are
+TUI and CLI/MCP only, never in the browser. See
+[the live browser](web.md#served-live) and [remote turns](machines.md#read-a-remote-turn).

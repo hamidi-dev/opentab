@@ -10,8 +10,13 @@ conventions keep it that way.
   `curses`). Don't add another; ruff and hatchling are dev/build tooling and fine.
 - **Read-only on harness data.** OpenTab never writes to the sources it reads (the
   OpenCode database, transcripts, auth files, etc.). Its own files and explicit
-  exports are listed in [Privacy](docs/privacy.md#everything-it-writes).
+  exports are listed in [Privacy](docs/privacy.md#what-it-writes).
 - **Python 3.9+.** Don't reach for newer syntax (`target-version = py39`).
+- **Both frontends.** Cost arithmetic and shared features exist in the TUI and the
+  browser; change and check both ([Pricing and the rate catalog](docs/backends.md#pricing-and-the-rate-catalog),
+  [Web browser boundaries](docs/architecture.md#web-browser-boundaries)).
+- **Generated price catalog.** Never hand-edit `src/opentab/data/models.json`; run
+  `python3 scripts/update_prices.py` and review its diff with the pricing tests.
 
 See [`docs/architecture.md`](docs/architecture.md) for the architecture, layering rules, and the backend contract before making larger changes.
 
