@@ -133,6 +133,10 @@ class OpenTabService:
 
         with diagnostics.span("service.source.resolve"):
             source_key = sources.resolve_source(args, {})
+        try:
+            sources.require_history(args, source_key)
+        except SystemExit as exc:
+            raise ServiceError("no_history", str(exc)) from None
         diagnostics.progress("service.source.selected", harness=source_key)
         with diagnostics.span("service.store.build", harness=source_key):
             store, _loading = sources.make_store(args, source_key)

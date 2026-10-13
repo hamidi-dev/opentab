@@ -409,3 +409,56 @@ def test_the_collision_line_needs_a_live_machine_to_merge_into():
     warn = ot.sources._fleet_warning
     assert warn(_FakeRemote(["laptop"]), "/r", "laptop", live=True) != ""
     assert warn(_FakeRemote(["laptop"]), "/r", "laptop", live=False) == ""
+
+
+def _no_history_args(tmp, extra=()):
+    args = _parse([*extra])
+    for slot in (
+        "db",
+        "claude_dir",
+        "codex_dir",
+        "hermes_db",
+        "csv",
+        "jsonl",
+        "pi_dir",
+        "omp_dir",
+        "openclaw_dir",
+        "zaly_dir",
+        "gemini_dir",
+        "antigravity_dir",
+        "copilot_dir",
+        "vscode_dir",
+    ):
+        if hasattr(args, slot):
+            setattr(args, slot, os.path.join(tmp, "absent", slot))
+    return args
+
+
+def test_empty_machine_gets_a_friendly_no_history_message():
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("COPILOT_OTEL_FILE_EXPORTER_PATH", None)
+        args = _no_history_args(tmp)
+        key = ot.sources.resolve_source(args, {})
+        assert key == "opencode"
+        try:
+            ot.sources.require_history(args, key)
+        except SystemExit as exc:
+            text = str(exc)
+        else:
+            raise AssertionError("expected SystemExit")
+    assert "No supported AI usage history was found" in text
+    assert "Claude Code" in text and "Codex" in text
+    assert "opentab doctor" in text and "--harness" in text
+    assert "database not found" not in text
+
+
+def test_explicit_harness_keeps_its_own_error_and_present_history_passes():
+    with tempfile.TemporaryDirectory() as tmp:
+        args = _no_history_args(tmp, ["--harness", "opencode"])
+        ot.sources.require_history(args, "opencode")  # explicit choice: no override
+        auto = _no_history_args(tmp)
+        auto.csv = os.path.join(tmp, "r.csv")
+        _write_csv(auto.csv, ["a"], [])
+        key = ot.sources.resolve_source(auto, {})
+        ot.sources.require_history(auto, key)
+        assert key == "csv"
