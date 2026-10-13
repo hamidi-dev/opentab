@@ -1057,6 +1057,8 @@ def test_web_subcommand_maps_onto_serve_and_web_fields():
     assert named.include_details is False
     detailed = _parse(["web", "--html", "r.html", "--include-details"])
     assert detailed.include_details is True and detailed.html == "r.html"
+    split = _parse(["web", "--html", "r.html", "--details-dir", "details"])
+    assert split.details_dir == "details" and named.details_dir is None
 
 
 def test_web_subcommand_takes_the_shared_globals_after_the_verb():
@@ -1071,6 +1073,8 @@ def test_static_web_rejects_server_options_before_any_access():
     for argv in (
         ["web", "--include-details"],
         ["web", "--headless", "--include-details"],
+        ["web", "--details-dir", "details"],
+        ["web", "--html", "r.html", "--include-details", "--details-dir", "details"],
         ["web", "--html", "report.html", "--port", "9000"],
         ["web", "--html", "report.html", "--po", "9000"],
         ["web", "--html", "report.html", "--bi", "localhost"],

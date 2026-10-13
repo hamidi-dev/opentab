@@ -2,7 +2,8 @@
 
 Each cost travels as recorded and API-equivalent values, so `$` remains a
 client-side field swap. Static exports omit session extras unless explicitly
-requested with --include-details; live reports fetch them on drill-in. Data
+requested: --include-details embeds them, --details-dir writes one file per session
+for the page to fetch on drill-in, as live reports fetch them from the server. Data
 sources stay read-only; only an explicitly requested HTML report is written.
 """
 
@@ -15,7 +16,7 @@ import sys
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, unquote
+from urllib.parse import parse_qs, quote, unquote
 
 from opentab import __version__
 from opentab import diagnostics as debug
@@ -508,15 +509,46 @@ def _write_owner_only(path: str, text: str) -> None:
         fh.write(text)
 
 
+DETAIL_FILE_PREFIX = "opentab-session-"
+
+
+def _write_detail_files(app: App, payload: dict, html_path: str, details_dir: str) -> int:
+    """Write each exported session's extras beside the report and name them in the payload.
+
+    Files carry recorded prompts, so they are owner-only like an embedded report. Stale
+    files from an earlier, larger export are removed by their reserved prefix only, never
+    anything else the directory holds.
+    """
+    folder = os.path.expanduser(details_dir)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    files = {}
+    for index, w in enumerate(payload["workflows"]):
+        name = f"{DETAIL_FILE_PREFIX}{index}.json"
+        extras = session_extras(app, w["id"])
+        _write_owner_only(os.path.join(folder, name), json.dumps(extras, separators=(",", ":")))
+        files[w["id"]] = name
+    written = set(files.values())
+    for name in os.listdir(folder):
+        if name.startswith(DETAIL_FILE_PREFIX) and name.endswith(".json") and name not in written:
+            os.remove(os.path.join(folder, name))
+    rel = os.path.relpath(os.path.abspath(folder), os.path.dirname(os.path.abspath(html_path)))
+    payload["detailFiles"] = files
+    payload["meta"]["detailsDir"] = "/".join(quote(part) for part in rel.split(os.sep)) + "/"
+    return len(files)
+
+
 def html_command(app: App, args: argparse.Namespace) -> int:
     payload = build_payload(app)
+    path = os.path.expanduser(args.html or DEFAULT_REPORT)
+    detail_files = None
+    if getattr(args, "details_dir", None):
+        detail_files = _write_detail_files(app, payload, path, args.details_dir)
     if getattr(args, "include_details", False):
         # Reuse the live projection: prompts and numeric detail, never raw traces.
         # Iterate exactly the exported catalog, honoring hidden-session policy.
         payload["sessionExtras"] = {
             w["id"]: session_extras(app, w["id"]) for w in payload["workflows"]
         }
-    path = os.path.expanduser(args.html or DEFAULT_REPORT)
     text = render_html(payload)
     if "sessionExtras" in payload:
         _write_owner_only(path, text)
@@ -528,6 +560,11 @@ def html_command(app: App, args: argparse.Namespace) -> int:
         f"OpenTab browser: {path} ({len(text) // 1024} kB, "
         f"{len(payload['workflows'])} sessions, {meta['range']}, {meta['source']})"
     )
+    if detail_files is not None:
+        print(
+            f"Session details: {detail_files} files in {args.details_dir}; "
+            "open the report over HTTP so it can load them"
+        )
     return 0
 
 
