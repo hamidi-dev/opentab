@@ -1442,6 +1442,12 @@ assert.equal(turnCostContextStrip([]), null);
 turns = [make('zero', 0, 0, {tokens:0, tok:[0,0,0,0,0,0]})]; TURN_DRILL = 0; render();
 assert.ok(view.textContent.includes('Uncached input0Model output0Reasoning0Cache read0Cache write0'));
 assert.ok(!view.textContent.includes('Categories sum to'));
+// Split tool shares are fractional and drift from the recorded total by far under a token.
+const shares = [7684.833333333333, 2000.1, 0, 3308360.666666667, 0, 0];
+turns = [make('split', 0, 0, {tokens:shares.reduce((a, b) => a + b) + 1e-8, tok:shares})]; render();
+assert.ok(view.textContent.includes('Uncached input7,685Model output2,000Reasoning0Cache read3,308,361'));
+assert.ok(view.textContent.includes('Category sum3,318,046Recorded total3,318,046'));
+assert.ok(!view.textContent.includes('Categories sum to'));
 turns = [make('old', 0, 0, {tok:undefined})]; render();
 assert.ok(view.textContent.includes('Token categories unavailable.'));
 TURN_DRILL = null; turns = []; render();

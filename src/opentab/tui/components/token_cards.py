@@ -30,12 +30,9 @@ def _wrapped(lines: Iterable[str], width: int) -> list[StyledLine]:
 
 
 def exact_token_count(value: float) -> str:
-    value = value or 0
-    if isinstance(value, int):
-        return f"{value:,}"
-    if float(value).is_integer():
-        return f"{int(value):,}"
-    return f"{float(value):,.6f}".rstrip("0").rstrip(".")
+    # Tool attribution splits a request's usage evenly among its calls, so shares can be
+    # fractional; the card shows whole tokens and keeps the arithmetic exact underneath.
+    return f"{round(value or 0):,}"
 
 
 def token_breakdown_card(
@@ -98,8 +95,9 @@ def token_breakdown_card(
         )
     rows.append(StyledLine(f"Category sum: {exact_token_count(category_total)}"))
     rows.append(StyledLine(f"Recorded total: {exact_token_count(recorded_total)}"))
-    delta = recorded_total - category_total
-    if abs(delta) > 1e-9:
+    # Compare as displayed: floating-point split shares drift by far less than a token.
+    delta = round(recorded_total) - round(category_total)
+    if delta:
         direction = "higher" if delta > 0 else "lower"
         rows.extend(
             _wrapped(
