@@ -53,6 +53,7 @@ def test_copilot_changes_worker_renders_retained_child_patch_without_working_tre
             ]:
                 stream.write(json.dumps(event) + "\n")
         app = _app(store)
+        app.change_side_by_side = False  # asserts Unified rows
         try:
             _load_files(app)
             data = app.changes_data()
@@ -335,6 +336,7 @@ def test_changes_demo_gate_hides_tab_before_any_backend_call():
 def test_changes_sanitize_paths_and_use_native_diff_roles_without_rich_numbers():
     store = ChangeStore([workflow("root", "2026-09-19 10:00:00")])
     app = _app(store)
+    app.change_side_by_side = False  # asserts Unified rows
     app.renderer.detail_changes(app.current_session())
     _finish_read(app)
     lines = app.renderer.detail_changes(app.current_session())
@@ -579,6 +581,7 @@ def test_changes_real_store_renders_completed_patch_without_snapshot_summaries()
         store = ot.Store(db, type("Args", (), {"demo": False})())
         try:
             app = _app(store)
+            app.change_side_by_side = False  # asserts Unified rows
             app.renderer.detail_changes(app.current_session())
             _finish_read(app)
             assert len(app.changes_data()["files"]) == 1
@@ -896,6 +899,8 @@ def test_changes_syntax_and_word_emphasis_are_independent_of_diff_background():
 def test_changes_layout_toggle_preserves_occurrence_anchor_and_never_rereads():
     store = ChangeStore([workflow("root", "2026-09-19 10:00:00")])
     app = _app(store)
+    assert app.change_side_by_side  # the default layout
+    app.change_side_by_side = False
     app.handle_key(None, ord("v"))
     assert not app.change_side_by_side  # only active inside a file
     _load_files(app)

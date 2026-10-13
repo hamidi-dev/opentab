@@ -424,7 +424,7 @@ class App:
         self._change_file_cursor = 0
         self._change_follow = False
         self._change_drill = False
-        self.change_side_by_side = False
+        self.change_side_by_side = True  # narrow panes still fall back to Unified
         self._change_scroll_anchor = None
         self._change_edit_cursor = 0
         self._change_list_scroll = 0
