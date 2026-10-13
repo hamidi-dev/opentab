@@ -51,6 +51,29 @@ def test_token_breakdown_formats_exact_totals_mismatch_and_style_metadata():
     assert len(lines[0].text) == 60 and [span.slot for span in lines[0].spans] == [0, 1, 2, 3, 4]
 
 
+def test_token_breakdown_rounds_split_shares_without_a_false_mismatch():
+    # A request with three tool calls splits its usage three ways; floating-point sums
+    # then drift from the recorded total by far less than a token.
+    shares = (7_684.833333333333, 2_000.1, 0.0, 3_308_360.666666667, 0.0)
+    card = token_breakdown_card(
+        title="# Tool",
+        inner_width=60,
+        note_width=64,
+        input_tokens=shares[0],
+        output_tokens=shares[1],
+        reasoning_tokens=shares[2],
+        cache_read_tokens=shares[3],
+        cache_write_tokens=shares[4],
+        recorded_total=sum(shares) + 1e-8,
+        colored=False,
+    )
+    text = "\n".join(line.text for group in card.groups for line in group)
+    assert "7,685" in text and "3,308,361" in text and "2,000 " in text
+    assert ".83" not in text and ".66" not in text and "2,000.1" not in text
+    assert "Category sum: 3,318,046" in text and "Recorded total: 3,318,046" in text
+    assert "Mismatch" not in text
+
+
 def test_token_economics_sorts_by_spend_and_returns_unboxed_sections():
     card = token_economics_card(
         categories=(

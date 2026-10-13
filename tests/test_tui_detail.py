@@ -2920,7 +2920,8 @@ def test_tools_explorer_cached_paint_metadata_stays_scoped_and_fractional_covera
     aggregate[0]["tokens_total"] = 302 * 2 / 3
     app._tool_by_session["s1"] = aggregate
     joined = "\n".join(renderer.detail_tools(app.current_session(), 100))
-    assert "tokens complete:" in joined and "Recorded total: 201.333333" in joined
+    # The card rounds for display only; coverage still compares the exact thirds.
+    assert "tokens complete:" in joined and "Recorded total: 201 " in joined
 
 
 def test_subagent_nodes_memoized_per_session():

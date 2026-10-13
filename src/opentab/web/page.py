@@ -1022,7 +1022,8 @@ function tokenBreakdown(tok, recordedTotal, { outputLabel = 'Model output', shar
     h('tr', null, h('td', null, 'Category sum'), h('td', { class: 'r' }, exactTok(total))),
     h('tr', null, h('td', null, 'Recorded total'), h('td', { class: 'r' }, exactTok(recordedTotal)))));
   const recorded = Number(recordedTotal) || 0;
-  const mismatch = Math.abs(total - recorded) > 1e-9
+  // Compare as displayed: floating-point split shares drift by far less than a token.
+  const mismatch = Math.round(total) !== Math.round(recorded)
     ? h('div', { class: 'token-mismatch' }, 'Categories sum to ' + exactTok(total)
         + '; recorded total is ' + exactTok(recorded) + '.') : null;
   return h('div', { class: 'token-breakdown' }, band, h('div', { class: 'scroll' }, grid), mismatch);
@@ -2037,7 +2038,8 @@ function turnDrillPane(turns, groups, n) {
       h('tbody', null, rows))));
 }
 
-const exactTok = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+// Tool shares can be fractional (a request's usage split among its calls); show whole tokens.
+const exactTok = v => Math.round(Number(v || 0)).toLocaleString('en-US');
 function toolAgg(toolRows, keyFn, nameKey) {
   const agg = new Map();
   for (const r of toolRows) {
