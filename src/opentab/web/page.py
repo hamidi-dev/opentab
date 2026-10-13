@@ -2822,7 +2822,10 @@ function renderSessionOverview(root, sc) {
   if (econ) root.appendChild(econ);
   if (EXTRAS.id === sc.id && EXTRAS.loading)
     root.appendChild(h('div', { class: 'hint' }, 'loading turns & tools…'));
-  if (!META.serve && !Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id))
+  if (EXTRAS.id === sc.id && EXTRAS.failed)
+    root.appendChild(h('div', { class: 'hint' }, 'Turns, Tools and Context could not be loaded from ' + META.detailsDir + '. Opened from disk? Serve the report folder over HTTP, e.g. python3 -m http.server.'));
+  else if (!META.serve && !Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id)
+      && !Object.prototype.hasOwnProperty.call(DATA.detailFiles || {}, sc.id))
     root.appendChild(h('div', { class: 'hint' }, 'For Turns, Tools and Context, export with opentab web --html report.html --include-details or run opentab web.'));
 }
 function renderDetail(sc, ws) {
@@ -2962,14 +2965,21 @@ function ensureExtras(sc) {
   const request = ++EXTRAS_REQUEST, session = sc.id;
   TURN_DRILL = null;
   abandonToolNavigation();
-  if (!META.serve) {
+  // A static report either embeds a session's extras or, written with --details-dir,
+  // names one small file per session next to it, fetched like the live endpoint.
+  const file = !META.serve && Object.prototype.hasOwnProperty.call(DATA.detailFiles || {}, sc.id)
+    ? META.detailsDir + DATA.detailFiles[sc.id] : null;
+  if (!META.serve && !file) {
     const x = Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id)
       ? DATA.sessionExtras[sc.id] : {};
     EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
     return;
   }
   EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
-  fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
+  fetch(file || '/api/session/' + encodeURIComponent(sc.id)).then(r => {
+    if (file && !r.ok) throw new Error(r.status + ' ' + r.statusText);  // a missing file
+    return r.json();
+  }).then(x => {
     const current = curScope();
     if (request !== EXTRAS_REQUEST || current.kind !== 's' || current.id !== session || EXTRAS.id !== session) return;
     EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
@@ -2978,7 +2988,7 @@ function ensureExtras(sc) {
     const current = curScope();
     if (request !== EXTRAS_REQUEST || current.kind !== 's' || current.id !== session || EXTRAS.id !== session) return;
     console.error('session extras failed:', err);
-    EXTRAS = { id: sc.id, loading: false, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
+    EXTRAS = { id: sc.id, loading: false, failed: !!file, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
     render(false);
   });
 }

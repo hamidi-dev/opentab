@@ -674,6 +674,104 @@ def test_web_detailed_html_is_owner_only_even_when_replacing_a_shared_report():
             assert '"sessionExtras"' in fh.read()
 
 
+def test_web_details_dir_writes_one_owner_only_file_per_session_beside_the_report():
+    args = cli.parse_args(["web", "--html", "--no-state"])
+    app = ot.App(
+        ToolsExplorerFakeStore(
+            [workflow("w1", "2026-05-01 10:00:00"), workflow("w2", "2026-05-02 10:00:00")]
+        ),
+        args,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        args.html = os.path.join(tmp, "site", "report.html")
+        os.makedirs(os.path.dirname(args.html))
+        args.details_dir = os.path.join(tmp, "site", "session details")
+        os.makedirs(args.details_dir)
+        stale = os.path.join(args.details_dir, report.DETAIL_FILE_PREFIX + "7.json")
+        unrelated = os.path.join(args.details_dir, "notes.json")
+        for name in (stale, unrelated):
+            with open(name, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+        report.html_command(app, args)
+        with open(args.html, encoding="utf-8") as fh:
+            text = fh.read()
+        payload = json.loads(re.search(r'id="opentab-data">(.*?)</script>', text, re.S)[1])
+        files = payload["detailFiles"]
+        assert set(files) == {"w1", "w2"} and "sessionExtras" not in payload
+        assert payload["meta"]["detailsDir"] == "session%20details/"
+        for session, name in files.items():
+            path = os.path.join(args.details_dir, name)
+            with open(path, encoding="utf-8") as fh:
+                assert json.load(fh) == report.session_extras(app, session)
+            if os.name != "nt":
+                assert os.stat(path).st_mode & 0o777 == 0o600  # recorded prompts inside
+        assert not os.path.exists(stale)  # only the reserved prefix is ever removed
+        assert os.path.exists(unrelated)
+        assert "never-ship-this" not in text
+
+
+def test_web_details_dir_report_fetches_a_session_file_on_drill_in():
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript details-dir check: Node.js is not installed (required in CI)")
+        return
+    args = cli.parse_args(["web", "--html", "--no-state"])
+    app = ot.App(
+        ToolsExplorerFakeStore(
+            [workflow("w1", "2026-05-01 10:00:00"), workflow("w2", "2026-05-02 10:00:00")]
+        ),
+        args,
+    )
+    payload = ot.build_payload(app)
+    payload["detailFiles"] = {"w1": "opentab-session-0.json", "w2": "opentab-session-1.json"}
+    payload["meta"]["detailsDir"] = "details/"
+    extras = report.session_extras(app, "w1")
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    result = subprocess.run(
+        [node, "-"],
+        input=_WEB_DOM_JS
+        + "\ndocument.getElementById('opentab-data').textContent = "
+        + json.dumps(json.dumps(payload))
+        + ";\n"
+        + "global.requestAnimationFrame = () => 1; global.cancelAnimationFrame = () => {};\n"
+        + "const EXTRAS_W1 = "
+        + json.dumps(extras)
+        + ";\n"
+        + shipped
+        + r"""
+function render() {
+  const sc = curScope(); ensureExtras(sc);
+  const tabs = tabsFor(sc); if (!tabs.includes(TAB)) TAB = tabs[0];
+  renderTabs(sc, tabs); renderDetail(sc, scopeWorkflows(sc));
+}
+const view = document.getElementById('view');
+const tick = () => new Promise(r => setTimeout(r, 0));
+(async () => {
+  location.hash = '#/s/w1'; render();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'details/opentab-session-0.json');
+  assert.ok(!view.textContent.includes('--include-details'));
+  requests[0].resolve({ok: true, json: async () => EXTRAS_W1}); await tick(); await tick();
+  assert.deepEqual(tabsFor(curScope()), ['Overview','Subagents','Turns','Tools','Context']);
+  TAB = 'Turns'; render();
+  assert.ok(view.textContent.includes('do the thing'));
+  assert.equal(requests.length, 1);  // re-rendering the same session never refetches
+  location.hash = '#/s/w2'; resetScopeState(); render();
+  assert.equal(requests[1].url, 'details/opentab-session-1.json');
+  requests[1].resolve({ok: false, status: 404, statusText: 'Not Found'}); await tick(); await tick();
+  assert.deepEqual(tabsFor(curScope()), ['Overview','Subagents']);
+  assert.ok(view.textContent.includes('could not be loaded from details/'));
+  assert.ok(view.textContent.includes('python3 -m http.server'));
+})().catch(e => { console.error(e); process.exit(1); });
+""",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_web_daily_trend_charts_only_active_days():
     page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-07-01 10:00:00")])))
     # The Daily tab charts only up to the last day with spend, not the full calendar

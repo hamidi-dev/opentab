@@ -599,6 +599,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "includes recorded user prompts and makes the offline file larger",
     )
     web.add_argument(
+        "--details-dir",
+        default=None,
+        metavar="DIR",
+        help="with --html, write each session's Turns, Tools and Context to DIR as one small "
+        "file per session, loaded when you open the session; serve the report over HTTP "
+        "(e.g. python3 -m http.server). Includes recorded user prompts",
+    )
+    web.add_argument(
         "--headless",
         action="store_true",
         help="serve but do NOT open a browser (Ctrl-C stops it); the bare `opentab web` "
@@ -1037,7 +1045,11 @@ def _validate_web_args(parser: argparse.ArgumentParser, args: argparse.Namespace
     if getattr(args, "html", None) is None:
         if getattr(args, "include_details", False):
             parser.error("web: --include-details requires --html")
+        if getattr(args, "details_dir", None):
+            parser.error("web: --details-dir requires --html")
         return
+    if getattr(args, "include_details", False) and getattr(args, "details_dir", None):
+        parser.error("web: use --include-details or --details-dir, not both")
     explicit_server_flags = []
     if getattr(args, "web_port", None) is not None:
         explicit_server_flags.append("--port")
