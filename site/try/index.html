@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Try OpenTab</title>
 <meta name="description" content="The real OpenTab terminal app, running in your browser on a synthetic year of coding-agent history.">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="icon" href="../favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
 <link rel="canonical" href="https://opentab.hamidi.dev/try/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="OpenTab">
@@ -26,6 +29,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 body { display: flex; flex-direction: column; }
 header { display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-bottom: 1px solid #2a2e42; font-size: 13px; flex-wrap: wrap; }
 header b { color: var(--ink); }
+header .logo { display: block; margin-right: -6px; }
 header .chip { background: var(--accent); color: var(--bg); padding: 0 6px; border-radius: 3px; font-weight: 700; }
 header .hint { color: var(--dim); }
 header .hint kbd { color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font: inherit; }
@@ -54,7 +58,7 @@ header nav a:hover { color: var(--ink); }
 </head>
 <body>
 <header>
-  <b>OpenTab</b><span class="chip">live</span>
+  <img class="logo" src="../favicon.svg" alt="" width="18" height="18"><b>OpenTab</b><span class="chip">live</span>
   <span class="hint">The real app, running in your browser. <kbd>?</kbd> help · <kbd>Enter</kbd> in · <kbd>Esc</kbd> out · mouse works · synthetic data</span>
   <nav><a href="../">Home</a><a href="../docs/">Docs</a><a href="https://github.com/hamidi-dev/opentab">GitHub</a></nav>
 </header>
