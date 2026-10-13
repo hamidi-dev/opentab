@@ -498,11 +498,11 @@ def test_the_whatif_chip_only_shows_where_a_target_would_change_something():
     app.view = "zoom"
     assert not whatif.shown(app)
     app.view = "session"
-    assert whatif.shown(app) and whatif.chip_segments(app) == [("w model", False)]
+    assert whatif.shown(app) and whatif.chip_segments(app) == [("w compare", False)]
     # Armed, it stays reachable wherever you wander -- the lit chip is how you clear it.
     app.view = "browse"
     app.whatif_model = "anthropic/claude-opus-4-5"
-    assert whatif.shown(app) and whatif.chip_segments(app) == [("w model", True)]
+    assert whatif.shown(app) and whatif.chip_segments(app) == [("w compare", True)]
 
 
 def test_a_composite_chip_falls_back_to_its_plain_label():

@@ -197,7 +197,7 @@ def execution_table_layout(
     whatif_prices = whatif_prices or {}
     columns = [("cost", "Cost", 9), ("tokens", "Tokens", 9)]
     if target:
-        columns.insert(1, ("whatif", "What-if", 9))
+        columns.insert(1, ("whatif", "Compared", 9))
     if width >= 90:
         columns = [("date", "Started", 16), ("depth", "D", 3), ("agent", "Agent", 12)] + columns
     if width >= 120:
@@ -238,7 +238,7 @@ def execution_table_layout(
             + " "
             + shorten(str(row.get("title") or "(untitled)"), title_width)
         )
-    title = f"# Session Tree · what-if {target}" if target else "# Subagent Executions"
+    title = f"# Session Tree · compare {target}" if target else "# Subagent Executions"
     total = None
     if len(rows) > 1 and not target:
         values = {
@@ -563,7 +563,7 @@ def whatif_footer_layout(
     if abs(column - total) > 0.01:
         direction = "more" if column > total else "less"
         lines.append(
-            "! This session's node totals disagree with its message totals, so the What-if "
+            "! This session's node totals disagree with its message totals, so the Compared "
             f"column adds up to slightly {direction} than the TOTAL. The TOTAL is the exact one."
         )
     return SubagentLayout(
