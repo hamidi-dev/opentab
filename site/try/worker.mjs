@@ -5,7 +5,7 @@
 import { loadPyodide } from "./vendor/pyodide/pyodide.mjs";
 
 const HOME = "/tmp/opentab-demo";
-let ctrl, ring, sleeper;
+let ctrl, ring, sleeper, pyodide;
 const decoder = new TextDecoder();
 
 // ctrl: [0] write index, [1] read index, [2] rows, [3] cols, [4] wake counter
@@ -30,6 +30,8 @@ const otterm = {
   size: () => [Atomics.load(ctrl, 2) || 24, Atomics.load(ctrl, 3) || 80],
   sleep: ms => { if (ms > 0) Atomics.wait(sleeper, 0, 0, ms); },
   clipboard: text => postMessage({ type: "copy", data: String(text) }),
+  // otboot's stdlib fallback: the modules /try/ leaves out of its first download.
+  fetch_to: (url, path) => pyodide.FS.writeFile(path, fetchSync(new URL(url, import.meta.url).href)),
 };
 
 const status = (text, pct) => postMessage({ type: "status", text, pct });
@@ -72,23 +74,41 @@ function mountLazy(py, files, version) {
   });
 }
 
-async function fetchBytes(url, label, base, span) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  const total = +res.headers.get("x-ot-size") || +res.headers.get("content-length") || 0;
-  const reader = res.body.getReader();
-  const parts = [];
+// Downloads several files at once under one progress label. Sizes come from build.json:
+// compressed responses carry no Content-Length, and the reader counts decoded bytes.
+async function fetchAll(urls, sizes, label, base, span) {
+  const total = sizes.reduce((a, b) => a + b, 0);
   let got = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value); got += value.length;
-    if (total) status(`${label} ${(got / 1048576).toFixed(1)} MB`, base + span * Math.min(1, got / total));
-  }
-  const out = new Uint8Array(got);
-  let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
-  return out;
+  return Promise.all(urls.map(async url => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const parts = [];
+    let own = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value); own += value.length; got += value.length;
+      if (total) status(`${label} ${(got / 1048576).toFixed(1)} MB`, base + span * Math.min(1, got / total));
+    }
+    const out = new Uint8Array(own);
+    let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  }));
 }
+
+// Pyodide fetches its wasm and stdlib itself, without progress. Downloading them first
+// moves the progress bar through the largest part of the wait; this hands Pyodide the bytes.
+const preloaded = new Map();
+const networkFetch = self.fetch.bind(self);
+self.fetch = (input, init) => {
+  const url = input instanceof Request ? input.url : String(input);
+  const bytes = preloaded.get(url);
+  if (!bytes) return networkFetch(input, init);
+  preloaded.delete(url);
+  const type = url.endsWith(".wasm") ? "application/wasm" : "application/zip";
+  return Promise.resolve(new Response(bytes, { headers: { "Content-Type": type } }));
+};
 
 onmessage = async (e) => {
   if (e.data.type !== "init") return;
@@ -96,16 +116,23 @@ onmessage = async (e) => {
   ring = new Uint8Array(e.data.ring);
   sleeper = new Int32Array(new SharedArrayBuffer(4));
   try {
-    status("Starting Python", 2);
-    const py = await loadPyodide({ indexURL: new URL("./vendor/pyodide/", import.meta.url).href, env: { HOME } });
+    const build = await (await fetch("./build.json", { cache: "no-store" })).json();
+    const indexURL = new URL("./vendor/pyodide/", import.meta.url).href;
+    const wasmURL = indexURL + "pyodide.asm.wasm";
+    const stdLibURL = new URL(`./stdlib/core.zip?v=${build.stdlib}`, import.meta.url).href;
+    status("Downloading Python", 2);
+    const [wasm, stdlib] = await fetchAll([wasmURL, stdLibURL], [build.sizes.wasm, build.sizes.stdlib], "Downloading Python", 2, 38);
+    preloaded.set(wasmURL, wasm);
+    preloaded.set(stdLibURL, stdlib);
+    status("Starting Python", 42);
+    const py = pyodide = await loadPyodide({ indexURL, stdLibURL, env: { HOME } });
     py.setStdout({ batched: s => postMessage({ type: "log", data: s }) });
     py.setStderr({ batched: s => postMessage({ type: "log", data: s }) });
     py.registerJsModule("otterm", otterm);
 
-    const build = await (await fetch("./build.json", { cache: "no-store" })).json();
-    const app = await fetchBytes(`./app.tar.gz?v=${build.app}`, "Downloading OpenTab", 20, 10);
+    const [app] = await fetchAll([`./app.tar.gz?v=${build.app}`], [build.sizes.app], "Downloading OpenTab", 46, 6);
     py.unpackArchive(app, "gztar", { extractDir: "/app" });
-    const data = await fetchBytes(`./data/home.tar.gz?v=${build.data}`, "Downloading a synthetic year of agent history", 30, 50);
+    const [data] = await fetchAll([`./data/home.tar.gz?v=${build.data}`], [build.sizes.data], "Downloading a synthetic year of agent history", 52, 30);
     status("Unpacking history", 82);
     py.unpackArchive(data, "gztar", { extractDir: HOME });
     const lazy = await (await fetch(`./data/lazy/manifest.json?v=${build.lazy}`)).json();
@@ -125,6 +152,7 @@ os.environ.update({
 os.chdir(home)
 import otboot
 otboot.rebind_unpacked_sources(home + "/.cache/opentab/cache")
+otboot.install_stdlib_fallback(${JSON.stringify(`./stdlib/rest.zip?v=${build.rest}`)})
 `);
     postMessage({ type: "ready" });
     const run = py.globals.get("otboot").main;
@@ -138,12 +166,14 @@ otboot.rebind_unpacked_sources(home + "/.cache/opentab/cache")
         otterm.write(`\x1b[0m\x1b[2J\x1b[H\x1b[?25h\r\n\x1b[31m  OpenTab stopped with an error:\x1b[0m\r\n\r\n${String(err.message || err).split("\n").slice(-12).join("\r\n")}\r\n`);
       }
       postMessage({ type: "exited", code, ms: performance.now() - t0 });
+      // The stdlib line is how site/try/stdlib-core.txt is refreshed (see build-try.sh).
       if (e.data.debug) py.runPython(`
-import json
+import json, sys
 for line in open("/tmp/opentab-debug.jsonl"):
     ev = json.loads(line)
     if any(k in json.dumps(ev) for k in ("cache", "reject", "startup", "first_paint", "phase")):
         print(json.dumps(ev)[:300])
+print("stdlib " + json.dumps(sorted(n for n, m in list(sys.modules.items()) if str(getattr(m, "__file__", "")).startswith("/lib/python"))))
 `);
       if (!crashed) otterm.write("\x1b[0m\x1b[2J\x1b[H\r\n  OpenTab closed.\r\n");
       otterm.write("\r\n  Press any key to open it again.\r\n");

@@ -15,7 +15,7 @@ if [[ "${1:-}" == "--build" ]]; then "$site/tools/build.sh"; "$site/tools/build-
 
 missing=()
 for f in report.html report-details/opentab-session-0.json docs/changelog.json media/tui.mp4 media/tui-poster.png \
-         try/build.json try/app.tar.gz try/data/home.tar.gz; do
+         try/build.json try/app.tar.gz try/data/home.tar.gz try/stdlib/core.zip; do
   [[ -f "$site/$f" ]] || missing+=("$f")
 done
 if (( ${#missing[@]} )); then
@@ -26,7 +26,9 @@ fi
 rm -rf "$dist"
 mkdir -p "$dist"
 # -L dereferences docs/md, docs/README.md and media/*.png into real files.
+# The whole Pyodide stdlib stays behind: build-try.sh ships it split into try/stdlib/.
 rsync -aL --exclude=.DS_Store --exclude=__pycache__ --exclude=/tools/ --exclude=/dist/ --exclude=/README.md \
+  --exclude=/try/vendor/pyodide/python_stdlib.zip --exclude=/try/stdlib-core.txt \
   "$site/" "$dist/"
 
 # Everything published is public: files saved owner-only (screenshots, detail exports)

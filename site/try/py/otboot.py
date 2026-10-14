@@ -197,6 +197,40 @@ def rebind_unpacked_sources(cache_dir):
                 json.dump(payload, fh, separators=(",", ":"))
 
 
+class _StdlibRest:
+    """Imports the standard-library modules /try/ leaves out of its first download.
+
+    tools/build-try.sh splits Pyodide's stdlib into the modules OpenTab was seen to import
+    (core.zip, loaded at startup) and everything else (rest.zip, with its module names in
+    _otstdlib_rest). The first import of a left-out module fetches rest.zip once; after that
+    the module and its submodules import from it like any other zip on sys.path.
+    """
+
+    def __init__(self, names, url, path):
+        self.names, self.url, self.path = names, url, path
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in self.names:
+            return None
+        import zipimport
+
+        if not os.path.exists(self.path):
+            print(f"stdlib: fetching the rest for {fullname}")
+            otterm.fetch_to(self.url, self.path)
+        # A package split across both zips (encodings) finds its left-out submodules here.
+        parent = fullname.rpartition(".")[0]
+        where = os.path.join(self.path, *parent.split(".")) if parent else self.path
+        return zipimport.zipimporter(where).find_spec(fullname)
+
+
+def install_stdlib_fallback(url):
+    try:
+        from _otstdlib_rest import NAMES
+    except ImportError:  # the whole stdlib shipped (no split in this build)
+        return
+    sys.meta_path.append(_StdlibRest(NAMES, url, "/lib/python-rest.zip"))
+
+
 def main(argv):
     import opentab.util
 
