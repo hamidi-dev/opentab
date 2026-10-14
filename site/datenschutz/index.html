@@ -52,6 +52,9 @@ code { font: 13.5px var(--mono); background: var(--ink-2); border: 1px solid var
 hr { border: 0; border-top: 1px solid var(--line); margin: 56px 0 8px; }
 address { font-style: normal; margin: 0 0 14px; }
 .stand { margin-top: 32px; color: var(--dim); font-size: 14px; }
+.foot { border-top: 1px solid var(--line); padding: 22px 16px 40px; font: 13px var(--mono); }
+.foot .wrap { width: min(760px, 100%); margin: 0 auto; display: flex; gap: 20px; }
+.foot a { color: var(--dim); }
 </style>
 <script>
 try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-docs-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
@@ -83,7 +86,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
 <h2>1. Verantwortlicher</h2>
 <address>
 Mohamed Hamidi<br>
-<!-- Anschrift folgt mit dem Impressum. -->
+[ANSCHRIFT FEHLT]<br>
 E-Mail: <a href="mailto:mohamed@hamidi.dev">mohamed@hamidi.dev</a>
 </address>
 <p>Ein Datenschutzbeauftragter ist nicht benannt und gesetzlich nicht vorgeschrieben.</p>
@@ -142,6 +145,7 @@ E-Mail: <a href="mailto:mohamed@hamidi.dev">mohamed@hamidi.dev</a>
 <h2>1. Controller</h2>
 <address>
 Mohamed Hamidi<br>
+[ANSCHRIFT FEHLT]<br>
 Email: <a href="mailto:mohamed@hamidi.dev">mohamed@hamidi.dev</a>
 </address>
 <p>No data protection officer has been appointed; none is legally required.</p>
@@ -182,5 +186,6 @@ Email: <a href="mailto:mohamed@hamidi.dev">mohamed@hamidi.dev</a>
 <p class="stand">Last updated: October 2026</p>
 </section>
 </main>
+<footer class="foot"><div class="wrap"><a href="../">Home</a><a href="../impressum/">Impressum</a></div></footer>
 </body>
 </html>
