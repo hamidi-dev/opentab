@@ -21,6 +21,13 @@ done
 "$site/tools/dist.sh" ${build[@]+"${build[@]}"}
 # _headers must reach Pages: it carries the isolation the in-browser app depends on.
 [[ -f "$site/dist/_headers" ]] || { echo "publish: dist/_headers is missing" >&2; exit 2; }
+# The Impressum and privacy notice need a postal address; never publish the placeholder.
+if [[ "$branch" == main ]] && grep -rlq "ANSCHRIFT FEHLT" "$site/dist" --include='*.html'; then
+  echo "publish: the address is still a placeholder in:" >&2
+  grep -rl "ANSCHRIFT FEHLT" "$site/dist" --include='*.html' | sed "s|$site/dist/|  site/|" >&2
+  echo "publish: fill it in, or use --preview" >&2
+  exit 2
+fi
 # From site/: wrangler reads wrangler.toml (the D1 binding) and bundles functions/ (/hit).
 cd "$site"
 npx --yes "$wrangler" pages deploy dist --project-name opentab --branch "$branch" --commit-dirty=true
