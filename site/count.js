@@ -6,7 +6,8 @@
   const hit = new URL("hit", script.src).href;
   const page = script.dataset.page;
   self.otCount = event => {
-    if (navigator.webdriver) return;
+    // Automated browsers and visitors asking not to be tracked (GPC, DNT) are skipped.
+    if (navigator.webdriver || navigator.globalPrivacyControl || navigator.doNotTrack === "1") return;
     let ref = "";
     try { ref = new URL(document.referrer).host; } catch {}
     // Referrer-Policy: same-origin, so a link inside the site carries its referrer and an
