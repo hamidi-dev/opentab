@@ -28,6 +28,7 @@ mkdir -p "$dist"
 # -L dereferences docs/md, docs/README.md and media/*.png into real files.
 # The whole Pyodide stdlib stays behind: build-try.sh ships it split into try/stdlib/.
 rsync -aL --exclude=.DS_Store --exclude=__pycache__ --exclude=/tools/ --exclude=/dist/ --exclude=/README.md \
+  --exclude=/functions/ --exclude=/wrangler.toml --exclude=/.wrangler/ \
   --exclude=/try/vendor/pyodide/python_stdlib.zip --exclude=/try/stdlib-core.txt \
   "$site/" "$dist/"
 

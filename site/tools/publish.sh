@@ -21,5 +21,6 @@ done
 "$site/tools/dist.sh" ${build[@]+"${build[@]}"}
 # _headers must reach Pages: it carries the isolation the in-browser app depends on.
 [[ -f "$site/dist/_headers" ]] || { echo "publish: dist/_headers is missing" >&2; exit 2; }
-npx --yes "$wrangler" pages deploy "$site/dist" --project-name opentab --branch "$branch" \
-  --commit-dirty=true
+# From site/: wrangler reads wrangler.toml (the D1 binding) and bundles functions/ (/hit).
+cd "$site"
+npx --yes "$wrangler" pages deploy dist --project-name opentab --branch "$branch" --commit-dirty=true
