@@ -551,6 +551,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
   </div>
 </footer>
 
+<script src="count.js" data-page="home" defer></script>
 <script type="module" src="hero-story.mjs"></script>
 <script type="module" src="landing.mjs"></script>
 <script>
@@ -641,6 +642,7 @@ start.addEventListener("focus", warm);
 start.addEventListener("click", () => {
   if (!self.crossOriginIsolated) { location.href = "try/"; return; }
   mountApp();
+  if (!started) self.otCount?.("start");
   started = true;
   show("tui");
 });

@@ -5,12 +5,13 @@
 # Pages serves /report.html as /report (pretty URLs), so both carry the report's rule.
 # Each path gets exactly one CSP: Pages merges every matching rule, and two CSPs would
 # both be enforced. Every CSP is same-origin only: fonts and libraries are self-hosted
-# (tools/vendor.sh), so a visit contacts no third party.
+# (tools/vendor.sh), so a visit contacts no third party. Referrer-Policy same-origin sends
+# no referrer off-site; inside the site count.js uses it to tell a new visit from a click.
 
 # X-Robots-Tag keeps search engines out until launch day; remove it then.
 /*
   X-Robots-Tag: noindex
-  Referrer-Policy: no-referrer
+  Referrer-Policy: same-origin
   X-Content-Type-Options: nosniff
   X-Frame-Options: SAMEORIGIN
 
