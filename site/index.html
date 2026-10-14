@@ -256,20 +256,30 @@ button.story-session { cursor: pointer; }
 .screen [hidden] { display: none; }
 /* The live app stays mounted while the browser tab shows, so it never restarts. */
 .screen .app.away { visibility: hidden; }
+/* The clip is a teaser: dim it and put the real app's start button in the middle, like a video's play button. */
 .launch {
-  position: absolute; inset: auto 0 0; display: grid; justify-items: center; gap: 12px;
-  background: linear-gradient(to top, #16161e 0%, #16161ee6 45%, transparent);
-  text-align: center; padding: 72px 24px 34px;
+  position: absolute; inset: 0; display: grid; place-content: center;
+  background: #16161e99;
+  text-align: center; padding: 24px;
+}
+.launch-card {
+  display: grid; justify-items: center; gap: 16px; padding: 30px 34px 26px; border-radius: 22px;
+  background: #16161e; border: 1px solid #2a2f52; box-shadow: 0 30px 80px -20px #000;
 }
 .launch button {
-  all: unset; cursor: pointer; padding: 14px 26px; border-radius: 12px;
-  background: var(--lav); color: var(--ink); font: 700 18px var(--display);
-  box-shadow: 0 18px 50px -12px color-mix(in oklab, var(--lav) 70%, transparent);
-  transition: transform .15s;
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 14px;
+  padding: 18px 30px 18px 22px; border-radius: 999px;
+  background: #fff; color: #16161e; font: 700 21px var(--display);
+  box-shadow: 0 0 0 6px color-mix(in oklab, var(--lav) 35%, transparent), 0 24px 60px -12px #000;
+  transition: transform .15s, box-shadow .15s;
 }
-.launch button:hover { transform: translateY(-2px); }
+.launch button .play {
+  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
+  background: var(--spectrum); color: #fff; font-size: 13px; padding-left: 2px; box-sizing: border-box;
+}
+.launch button:hover { transform: scale(1.04); box-shadow: 0 0 0 9px color-mix(in oklab, var(--lav) 45%, transparent), 0 24px 60px -12px #000; }
 .launch button:focus-visible { outline: 2px solid var(--text); outline-offset: 4px; }
-.launch p { margin: 0; font: 13px var(--mono); color: #e6e8f7; text-shadow: 0 1px 8px #000; max-width: 46ch; }
+.launch p { margin: 0; font: 13px/1.6 var(--mono); color: #a9aed0; max-width: 44ch; }
 .launch p a { color: var(--lav); }
 .window .bar .full { color: var(--dim); text-decoration: none; }
 .window .bar .full:hover { color: var(--text); }
@@ -426,7 +436,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
   <div class="wrap stage" id="stage">
     <div class="demo-intro">
       <h2>Now investigate it yourself.</h2>
-      <p class="sub">The real OpenTab, with a year of synthetic history. Pick a session and follow the work behind the numbers.</p>
+      <p class="sub">Run the real OpenTab right here, nothing to install, with a year of synthetic history. Pick a session and follow the work behind the numbers.</p>
     </div>
     <div class="glow" aria-hidden="true"></div>
     <div class="window">
@@ -443,8 +453,10 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
         <div data-pane="tui">
           <video src="media/tui.mp4" poster="media/tui-poster.png" muted loop playsinline preload="none"></video>
           <div class="launch" data-launch>
-            <button type="button" data-start>Start the real app</button>
-            <p data-launch-note>Runs locally in this tab. Uses synthetic history. Python runtime and demo download once; conversations load on demand.</p>
+            <div class="launch-card">
+              <button type="button" data-start><span class="play" aria-hidden="true">▶</span>Start the real app</button>
+              <p data-launch-note>Runs locally in this tab. Uses synthetic history. Python runtime and demo download once; conversations load on demand.</p>
+            </div>
           </div>
         </div>
         <iframe data-pane="web" src="report.html" title="Interactive OpenTab report with synthetic data" loading="lazy" hidden></iframe>
@@ -502,7 +514,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
   <ul class="tool-list">
     <li>OpenCode</li><li>Claude Code</li><li>Codex CLI</li><li>Hermes Agent</li>
     <li>GitHub Copilot CLI</li><li>Copilot Chat in VS Code</li><li>pi-agent</li><li>omp</li>
-    <li>OpenClaw</li><li>zaly</li><li>Gemini CLI</li><li>Antigravity</li><li>CSV / JSONL logs</li>
+    <li>OpenClaw</li><li>zaly</li><li>Gemini CLI</li><li>Antigravity</li>
   </ul>
   <p class="sub"><a href="docs/#/sources">See which details each harness provides →</a></p>
 </section>
@@ -511,8 +523,8 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
   <h2>Fits your workflow.</h2>
   <div class="workflow">
     <article><h3>Terminal &amp; browser</h3><p>Investigate where you work: keyboard-driven in the terminal, or in a browser served on localhost.</p><div class="command"><code>opentab</code><button class="copy" type="button" aria-label="Copy terminal command">copy</button></div><div class="command"><code>opentab web</code><button class="copy" type="button" aria-label="Copy browser command">copy</button></div></article>
-    <article><h3>Share a report</h3><p>Export a self-contained HTML report to open offline or share. Optional <code>--demo</code> scrambling lets you disguise selected fields; dates and the shape of the data stay real.</p><div class="command"><code>opentab --html report.html</code><button class="copy" type="button" aria-label="Copy report export command">copy</button></div><a href="docs/#/privacy">What an export contains →</a></article>
     <article><h3>Across machines</h3><p>Bring your laptop and workstation into one view over SSH. Pull usage summaries; fetch individual remote turns when you open them. No background agent needed.</p><div class="command"><code>opentab pull laptop workstation</code><button class="copy" type="button" aria-label="Copy machine pull command">copy</button></div><a href="docs/#/machines">Connect your machines →</a></article>
+    <article><h3>Share a report</h3><p>Export a self-contained HTML report to open offline or share. Optional <code>--demo</code> scrambling lets you disguise selected fields; dates and the shape of the data stay real.</p><div class="command"><code>opentab --html report.html</code><button class="copy" type="button" aria-label="Copy report export command">copy</button></div><a href="docs/#/privacy">What an export contains →</a></article>
     <article><h3>Local &amp; read-only</h3><p>No account. No telemetry. Your tools’ databases and transcripts stay unchanged. OpenTab stores its own notes, preferences and caches separately.</p><a href="docs/#/privacy">Read the privacy boundaries →</a></article>
   </div>
 </section>

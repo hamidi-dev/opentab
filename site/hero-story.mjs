@@ -63,7 +63,7 @@ async function init() {
   const overview = panels[0];
   overview.append(el("p", "story-label", `${date(selectedDate)} · ${data.daySessions.length} sessions`));
   const headline = el("div", "story-headline");
-  headline.append(el("span", "story-number", money(day.cost)), el("small", "", "recorded + estimated"));
+  headline.append(el("span", "story-number", money(day.cost)), el("small", "", "day total · recorded + estimated"));
   overview.append(headline);
   const heatmap = el("div", "story-heatmap");
   heatmap.setAttribute("role", "img");
