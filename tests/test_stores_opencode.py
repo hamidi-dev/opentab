@@ -64,6 +64,29 @@ def test_opencode_preserves_request_context_billing_and_subagent_buckets():
             store.conn.close()
 
 
+def test_opencode_session_model_breakdown_looks_messages_up_by_session():
+    # Opening one session must not scan every message: on a large database that is the
+    # whole file, and the in-browser app would download all of it.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "plan.db")
+        _write_opencode_db_with_turns(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("create index message_session_idx on message(session_id)")
+            conn.commit()
+        store = ot.Store(db, type("Args", (), {"demo": False})())
+        try:
+            seen = []
+            store.conn.set_trace_callback(seen.append)
+            store.model_breakdown("s1")
+            store.conn.set_trace_callback(None)
+            sql = next(text for text in seen if " msg as " in text)
+            plan = [row[-1] for row in store.conn.execute("explain query plan " + sql)]
+            assert "SEARCH m USING INDEX message_session_idx (session_id=?)" in plan
+            assert "SCAN m" not in plan
+        finally:
+            store.conn.close()
+
+
 @contextmanager
 def _conversation_db(*, legacy=False, constrained=True, revisions=False, directory=None):
     with tempfile.TemporaryDirectory() as tmp:
