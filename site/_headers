@@ -4,7 +4,8 @@
 # page frames /try/ in its hero, so it and every document it frames are isolated too.
 # Pages serves /report.html as /report (pretty URLs), so both carry the report's rule.
 # Each path gets exactly one CSP: Pages merges every matching rule, and two CSPs would
-# both be enforced.
+# both be enforced. Every CSP is same-origin only: fonts and libraries are self-hosted
+# (tools/vendor.sh), so a visit contacts no third party.
 
 # X-Robots-Tag keeps search engines out until launch day; remove it then.
 /*
@@ -16,7 +17,7 @@
 /
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
-  Content-Security-Policy: default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self'; frame-src 'self'; connect-src 'self'
+  Content-Security-Policy: default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; media-src 'self'; frame-src 'self'; connect-src 'self'
 
 /report
   Cross-Origin-Embedder-Policy: require-corp
@@ -29,7 +30,7 @@
   Content-Security-Policy: default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'
 
 /docs/*
-  Content-Security-Policy: default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self'
+  Content-Security-Policy: default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'
 
 /try/*
   Cross-Origin-Opener-Policy: same-origin
