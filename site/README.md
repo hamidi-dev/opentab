@@ -58,8 +58,10 @@ a visit's first page, the referring site's host. A visit is a page reached from
 outside the site; `Referrer-Policy: same-origin` keeps the referrer on internal
 links and sends none off-site. No IP, user agent or per-visitor row is stored.
 
-`datenschutz/` is the privacy notice (German, English below). It describes the hosting, the
-counter, every `localStorage` key and the in-browser app, so update it with any change to them.
+`impressum/` (§ 5 DDG) and `datenschutz/` (the privacy notice) are German with English below,
+linked from every footer. The privacy notice describes the hosting, the counter, every
+`localStorage` key and the in-browser app, so update it with any change to them.
+`publish.sh` refuses production while either still carries the address placeholder.
 
 The builds read the showcase generator and media renders under `dev/`, which is not
 in the repository. `try/py/` adapts OpenTab to the browser without changing it: a
