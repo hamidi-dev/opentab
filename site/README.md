@@ -16,7 +16,7 @@ require-corp`); without them the page explains that it cannot start.
 | Script | Does (generated files are gitignored) |
 |---|---|
 | `tools/build.sh` | `report.html` plus `report-details/` (one file per session, fetched on open) from the synthetic showcase, `docs/changelog.json` from GitHub Releases (needs `gh`), the hero clip |
-| `tools/build-try.sh` | `try/app.tar.gz` (OpenTab plus the browser shim) and `try/data/home.tar.gz` (the showcase history, cache prewarmed); cache-covered transcripts go to `try/data/lazy/` and load when a session is opened |
+| `tools/build-try.sh` | `try/app.tar.gz` (OpenTab plus the browser shim) and `try/data/home.tar.gz` (the showcase history, cache prewarmed); cache-covered transcripts and the OpenCode database (in 256 KB chunks) go to `try/data/lazy/` and load when a session is opened |
 | `tools/vendor.sh` | `try/vendor/`: Pyodide and xterm.js, pinned by version and SHA-256 |
 | `tools/dist.sh` | `dist/`: the publishable tree, symlinks dereferenced, privacy checks applied |
 | `tools/publish.sh` | Uploads `dist/` to Cloudflare Pages (opentab.hamidi.dev); `--build` regenerates first, `--preview` uses a preview URL |

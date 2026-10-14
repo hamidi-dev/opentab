@@ -44,26 +44,29 @@ function fetchSync(url) {
   return new Uint8Array(xhr.response);
 }
 
-// Transcripts the warm cache covers arrive as lazy files: stat sees their real size and
-// mtime (so the cache still hits), and the bytes are fetched on the first read, when a
-// session is opened. Emscripten's own lazy file would issue a HEAD per stat instead.
+// Files the warm cache covers arrive as lazy files: stat sees their real size and mtime
+// (so the cache still hits), and the bytes are fetched on the first read, when a session
+// is opened. Emscripten's own lazy file would issue a HEAD per stat instead. A transcript
+// is one file; a database (chunk > 0) is split so a query fetches only the pages it reads.
 function mountLazy(py, files, version) {
-  files.forEach(([rel, size, mtime], n) => {
+  files.forEach(([rel, size, mtime, chunk = 0], n) => {
     const path = `${HOME}/${rel}`, slash = path.lastIndexOf("/");
     py.FS.mkdirTree(path.slice(0, slash));
-    const url = new URL(`./data/lazy/${n}.json?v=${version}`, import.meta.url).href;
-    const node = py.FS.createLazyFile(path.slice(0, slash), path.slice(slash + 1), url, true, false);
+    const part = i => new URL(chunk ? `./data/lazy/${n}-${i}.json?v=${version}` : `./data/lazy/${n}.json?v=${version}`, import.meta.url).href;
+    const node = py.FS.createLazyFile(path.slice(0, slash), path.slice(slash + 1), part(0), true, false);
     const lazy = node.contents;
+    const span = chunk || Math.max(size, 1);
     lazy._length = size;
-    lazy._chunkSize = Math.max(size, 1);
+    lazy._chunkSize = span;
     lazy.lengthKnown = true;
-    lazy.setDataGetter(() => {
-      if (!lazy.chunks[0]) {
-        const bytes = fetchSync(url);
-        if (bytes.length !== size) throw new Error(`${rel}: expected ${size} bytes, got ${bytes.length}`);
-        lazy.chunks[0] = bytes;
+    lazy.setDataGetter(i => {
+      if (!lazy.chunks[i]) {
+        const bytes = fetchSync(part(i));
+        const want = Math.min(span, size - i * span);
+        if (bytes.length !== want) throw new Error(`${rel}: expected ${want} bytes, got ${bytes.length}`);
+        lazy.chunks[i] = bytes;
       }
-      return lazy.chunks[0];
+      return lazy.chunks[i];
     });
     py.FS.utime(path, mtime * 1000, mtime * 1000);
   });
@@ -121,6 +124,7 @@ os.environ.update({
 })
 os.chdir(home)
 import otboot
+otboot.rebind_unpacked_sources(home + "/.cache/opentab/cache")
 `);
     postMessage({ type: "ready" });
     const run = py.globals.get("otboot").main;
