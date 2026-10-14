@@ -3,7 +3,9 @@
 Fingerprint hits serve workflows, model rows, and recorded-cost state without parsing.
 On a miss, backends with provenance support reparse a proven-safe changed component;
 otherwise they fall back to a full parse. Session-detail methods always delegate.
-The cache is disabled for demo mode and ``--no-cache``.
+The cache is disabled for demo mode. Under ``--no-cache`` the wrapper is a plain
+delegate that persists nothing; it only adopts a private handoff file a loader
+process wrote for this run (see ``stores/loader.py``).
 """
 from __future__ import annotations
 
@@ -40,15 +42,24 @@ def cache_path(cache_id: str) -> str:
 
 
 class CachedStore:
-    def __init__(self, store, cache_id: str, args: argparse.Namespace):
+    def __init__(
+        self,
+        store,
+        cache_id: str,
+        args: argparse.Namespace,
+        persistent: bool = True,
+        path: str | None = None,
+    ):
         self._store = store  # set FIRST so __getattr__ never recurses on a missing attr
         self._args = args
+        self._cache_id = cache_id
         self._source = cache_id.split("|", 1)[0]
-        self._path = cache_path(cache_id)
-        self._disk = self._read()  # the on-disk cache, or None
-        loader = getattr(store, "set_accounting_cache_loader", None)
-        if loader is not None:
-            loader(self._accounting_payload)
+        # --no-cache: no path, so a plain delegate until load_from_disk() adopts a handoff.
+        self.persistent = persistent
+        self._path = path or (cache_path(cache_id) if persistent else None)
+        self._disk = self._read() if self._path else None  # the on-disk cache, or None
+        if self._path:
+            self._install_accounting_loader()
         self._live_fp: list | None = None  # fingerprint of the current workflows() call
         self._fresh_wf: list | None = None  # asdict rows from the last parse (for the write)
         self._fresh_prov: dict | None = None  # provenance to write beside them
@@ -63,6 +74,15 @@ class CachedStore:
 
     def __getattr__(self, name):
         return getattr(self._store, name)
+
+    def _install_accounting_loader(self) -> None:
+        loader = getattr(self._store, "set_accounting_cache_loader", None)
+        if loader is not None:
+            loader(self._accounting_payload)
+
+    def writing_to(self, path: str) -> CachedStore:
+        """A persistent wrapper over the same backend that writes ``path`` (a loader child)."""
+        return CachedStore(self._store, self._cache_id, self._args, path=path)
 
     def _debug(self, event: str, **fields) -> None:
         if debug.enabled():
@@ -205,7 +225,7 @@ class CachedStore:
             payload["model_token"] = model_token
         getter = getattr(self._store, "accounting_cache", None)
         try:
-            os.makedirs(cache_dir(), exist_ok=True)
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
             if getter is not None:
                 accounting = getter()
                 if accounting is not None:
@@ -332,8 +352,21 @@ class CachedStore:
                 total += row[1]
         return total
 
-    def load_from_disk(self) -> None:
-        """Adopt the cache another process just wrote; workflows() then checks it as usual."""
+    def load_from_disk(self, path: str | None = None) -> None:
+        """Adopt the cache another process just wrote; workflows() then checks it as usual.
+
+        A non-persistent wrapper passes the private handoff ``path``; the one it
+        replaces is deleted, since nothing reads it once the new one is adopted.
+        """
+        if path is not None and path != self._path:
+            old, self._path = self._path, path
+            if old is not None and not self.persistent:
+                for stale in (old, old + ".usage.sqlite3"):
+                    try:
+                        os.unlink(stale)
+                    except OSError:
+                        pass
+            self._install_accounting_loader()
         self._disk = self._read()
         self._plan_memo = None
 
@@ -443,6 +476,11 @@ class CachedStore:
     def workflows(self) -> list:
         # Reload must observe changes, so fingerprint every call.
         self.served_by_process = False  # CombinedStore sets it after a loader process
+        if self._path is None:
+            # --no-cache with nothing handed off: exactly the bare backend.
+            self.served_from_cache = None
+            self.served_incrementally = False
+            return self._store.workflows()
         live_fp = self._fingerprint()
         if self._fresh_wf is not None and self._live_fp == live_fp:
             self.served_from_cache = False
@@ -505,6 +543,8 @@ class CachedStore:
 
     @debug.timed("cache.models")
     def model_breakdown(self) -> list:
+        if self._path is None:
+            return self._store.model_breakdown()
         fp = self._live_fp if self._live_fp is not None else self._fingerprint()
         if (
             self._fresh_wf is None
@@ -534,7 +574,8 @@ class CachedStore:
                 rows = [dict(row) for row in self._store.model_breakdown()]
         # Write only when the workflows AND the breakdown were both parsed fresh under
         # this same fingerprint -- a complete, self-consistent cache.
-        if self._fresh_wf is not None:
+        # A --no-cache wrapper reads its handoff but never writes.
+        if self._fresh_wf is not None and self.persistent:
             prov = self._fresh_prov
             if prov is None:
                 getter = getattr(self._store, "cache_provenance", None)

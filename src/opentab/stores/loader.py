@@ -7,11 +7,18 @@ backends need a full parse, all but the largest run ``workflows()`` and
 then adopts that cache like any warm start, so the parent keeps sole ownership of
 drill-in state and no rows cross the pipe. Progress is forwarded for the startup
 board. Any failure leaves the parent to parse in-process as before.
+
+Under ``--no-cache`` the child writes the same payload to a private temporary file
+instead, which the parent adopts and deletes at exit; the real cache is untouched.
 """
 from __future__ import annotations
 
+import atexit
+import itertools
 import os
+import shutil
 import sys
+import tempfile
 import threading
 
 from opentab import diagnostics as debug
@@ -21,6 +28,10 @@ from opentab import progress
 MIN_PARSE_BYTES = 32 * 1024 * 1024
 # Progress updates the child sends at most this often (the board repaints at 80 ms).
 _PROGRESS_S = 0.08
+
+_handoff_dir: str | None = None
+_handoff_lock = threading.Lock()
+_handoff_ids = itertools.count()
 
 
 def enabled() -> bool:
@@ -57,12 +68,27 @@ def warm(store, task=None) -> bool:
     """Parse ``store`` in a child process; True once its cache is adopted."""
     builder, args, key = store.rebuild
     with debug.span("loader.process", source=key) as info:
-        ok = _run_child(builder, args, key, task)
+        try:
+            handoff = None if getattr(store, "persistent", True) else _handoff_path(key)
+        except OSError as exc:
+            debug.event("loader.spawn_failed", source=key, error_type=type(exc).__name__)
+            return False
+        ok = _run_child(builder, args, key, task, handoff)
         info["ok"] = ok
     if not ok:
         return False
-    store.load_from_disk()
+    store.load_from_disk(handoff)
     return True
+
+
+def _handoff_path(key: str) -> str:
+    """A fresh file in this run's private (0700) handoff directory."""
+    global _handoff_dir
+    with _handoff_lock:
+        if _handoff_dir is None:
+            _handoff_dir = tempfile.mkdtemp(prefix="opentab-load-")
+            atexit.register(shutil.rmtree, _handoff_dir, True)
+        return os.path.join(_handoff_dir, f"{key}-{next(_handoff_ids)}.json")
 
 
 # The child imports nothing of the caller's: multiprocessing's spawn would re-run an
@@ -75,7 +101,7 @@ _BOOT = (
 )
 
 
-def _run_child(builder, args, key: str, task) -> bool:
+def _run_child(builder, args, key: str, task, handoff: str | None = None) -> bool:
     import pickle
     import subprocess
 
@@ -93,7 +119,7 @@ def _run_child(builder, args, key: str, task) -> bool:
         try:
             pickle.dump(list(sys.path), proc.stdin)
             # Track only under a drawn row: progress.active() gates bar-only work.
-            pickle.dump((builder, args, key, task is not None), proc.stdin)
+            pickle.dump((builder, args, key, task is not None, handoff), proc.stdin)
             proc.stdin.close()
         except (OSError, pickle.PicklingError, AttributeError, TypeError) as exc:
             debug.event("loader.spawn_failed", source=key, error_type=type(exc).__name__)
@@ -122,7 +148,7 @@ def _run_child(builder, args, key: str, task) -> bool:
 def _child_main() -> None:
     import pickle
 
-    builder, args, key, tracked = pickle.load(sys.stdin.buffer)
+    builder, args, key, tracked, handoff = pickle.load(sys.stdin.buffer)
     # Messages own the real stdout; anything a backend prints goes to stderr instead.
     conn = os.fdopen(os.dup(1), "wb")
     os.dup2(2, 1)
@@ -153,6 +179,8 @@ def _child_main() -> None:
     pump.start()
     try:
         store = builder(args, key)
+        if handoff is not None:
+            store = store.writing_to(handoff)  # --no-cache: a private file, not the cache
         store.workflows()
         store.model_breakdown()  # completes the cache write the parent will read
         result = ("done",)

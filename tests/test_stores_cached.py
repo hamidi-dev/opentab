@@ -1,9 +1,11 @@
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 
 import opentab as ot
+from opentab.stores.cached import cache_dir
 
 from tests._support import CopilotEstimateStore, copilot_prices, tier_prices, workflow
 
@@ -428,9 +430,17 @@ def test_cached_store_warm_start_and_invalidation():
             c3.model_breakdown()
             assert b3.workflow_calls == 1 and b3.breakdown_calls == 1
 
-            # --no-cache passes the raw backend straight through (no wrapper).
-            raw = ot.sources._wrap_cache(Backend(), "fake", type("A", (), {"no_cache": True})())
-            assert isinstance(raw, Backend)
+            # --no-cache wraps only as a pass-through: every call parses, nothing is written.
+            shutil.rmtree(cache_dir())
+            b4 = Backend()
+            raw = ot.sources._wrap_cache(b4, "fake", type("A", (), {"no_cache": True})())
+            assert raw.persistent is False and raw.rebuild is not None
+            raw.workflows()
+            raw.model_breakdown()
+            raw.workflows()
+            assert b4.workflow_calls == 2 and b4.breakdown_calls == 1
+            assert raw.served_from_cache is None
+            assert not os.path.exists(cache_dir())
         finally:
             if old_xdg is None:
                 os.environ.pop("XDG_CACHE_HOME", None)

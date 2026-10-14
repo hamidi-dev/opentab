@@ -497,18 +497,18 @@ def _wrap_cache(store, key: str, args: argparse.Namespace):
     # Cache leaves independently; never persist per-process demo transforms.
     if key == "all" or getattr(store, "combined", False):
         return store
-    if getattr(args, "demo", False) or getattr(args, "no_cache", False):
-        debug.event(
-            "cache.bypass",
-            source=key,
-            reason="demo" if getattr(args, "demo", False) else "no_cache",
-        )
+    if getattr(args, "demo", False):
+        debug.event("cache.bypass", source=key, reason="demo")
         return store
     if not callable(getattr(store, "cache_inputs", None)):
         debug.event("cache.bypass", source=key, reason="unsupported")
         return store
+    persistent = not getattr(args, "no_cache", False)
+    if not persistent:
+        # Still wrapped, as a pass-through, so a loader process can hand its rows back.
+        debug.event("cache.bypass", source=key, reason="no_cache")
     root = getattr(args, _PATH_SLOT.get(key, ""), "") or ""
-    cached = CachedStore(store, f"{key}|{root}", args)
+    cached = CachedStore(store, f"{key}|{root}", args, persistent=persistent)
     # How a loader process rebuilds this exact leaf; picklable by reference.
     cached.rebuild = (build_leaf, args, key)
     return cached
