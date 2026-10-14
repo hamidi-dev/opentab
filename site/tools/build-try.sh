@@ -40,21 +40,33 @@ sys.path[:0] = [sys.argv[1], sys.argv[2]]
 import otboot
 sys.exit(otboot.main([]))
 PY
+# No bytecode: macOS's Python would cache it under $HOME/Library with the build's paths.
 env -i HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_STATE_HOME="$home/.local/state" \
   XDG_DATA_HOME="$home/.local/share" XDG_CACHE_HOME="$home/.cache" TERM=xterm-256color \
-  LANG=en_US.UTF-8 PATH=/usr/bin:/bin python3 "$work/warm.py" "$try/py" "$repo/src" >/dev/null 2>&1
+  LANG=en_US.UTF-8 PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$work/warm.py" "$try/py" "$repo/src" >/dev/null 2>&1
 rm -rf "$home/.local/state" "$home/.config"   # preferences start fresh in every browser
+# Copilot's cache keys on platform paths and misses in the browser anyway.
+rm -f "$home"/.cache/opentab/cache/copilot-*.json
 find "$home" -name .DS_Store -delete
+if grep -rlqa "/Users/" "$home"; then
+  echo "build-try: /Users/ path after warming the cache:" >&2; grep -rla "/Users/" "$home" | head >&2; exit 2
+fi
 
-# 4. Transcripts the warm cache already covers are only read when a session is opened, so
-#    they leave the archive. Each is served as data/lazy/<n>.json (JSON type, so nginx
-#    gzips it) and recreated in the browser as a lazy file with its real size and mtime.
+# 4. Files the warm cache already covers are only read when a session is opened, so they
+#    leave the archive and are recreated in the browser as lazy files with their real size
+#    and mtime. A transcript is served whole as data/lazy/<n>.json; the OpenCode database
+#    (its cache hits once otboot rebinds the unpacked file's identity) is split into
+#    data/lazy/<n>-<i>.json chunks, so opening a session fetches only the pages it reads.
+#    The .json name gets the chunks compressed in transit; the worker reads raw bytes.
 rm -rf "$try/data/lazy"
 mkdir -p "$try/data/lazy"
 python3 - "$home" "$try/data/lazy" <<'PY'
 import json, os, shutil, sys
 home, out = sys.argv[1:]
 roots = (".claude/projects", ".codex/sessions", ".gemini/tmp", ".pi/agent/sessions")
+databases = (".local/share/opencode/opencode.db",)
+CHUNK = 256 * 1024  # a multiple of SQLite's page size
 files = []
 for root in roots:
     for dirpath, _, names in os.walk(os.path.join(home, root)):
@@ -64,8 +76,22 @@ for root in roots:
             n = len(files)
             shutil.move(path, os.path.join(out, f"{n}.json"))  # the directory stays in the archive
             files.append([os.path.relpath(path, home), st.st_size, int(st.st_mtime)])
+for rel in databases:
+    path = os.path.join(home, rel)
+    if not os.path.exists(path):
+        continue
+    if os.path.exists(path + "-wal"):
+        sys.exit(f"build-try: {rel} has a WAL; checkpoint it before splitting")
+    st = os.stat(path)
+    n = len(files)
+    with open(path, "rb") as fh:
+        for i, data in enumerate(iter(lambda: fh.read(CHUNK), b"")):
+            with open(os.path.join(out, f"{n}-{i}.json"), "wb") as part:
+                part.write(data)
+    os.remove(path)
+    files.append([rel, st.st_size, int(st.st_mtime), CHUNK])
 json.dump(files, open(os.path.join(out, "manifest.json"), "w"), separators=(",", ":"))
-print(f"try: {len(files)} transcripts load lazily ({sum(f[1] for f in files) / 1048576:.0f} MB)")
+print(f"try: {len(files)} files load lazily ({sum(f[1] for f in files) / 1048576:.0f} MB)")
 PY
 
 # 5. Archives.

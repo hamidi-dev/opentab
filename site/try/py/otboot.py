@@ -158,6 +158,45 @@ def _browser_clipboard(text):
     return True
 
 
+def rebind_unpacked_sources(cache_dir):
+    """Point warm caches at this browser's copies of the SQLite sources.
+
+    OpenTab keys a SQLite source by [mtime, device, inode] so that a replaced
+    database is never mistaken for the old one. Unpacking the history gives every
+    file a new device and inode while its bytes and mtime stay the build's, so a
+    fingerprint row whose path, size and mtime still match is moved onto the new
+    identity; anything else is left for OpenTab to reject as usual.
+    """
+    import json
+
+    try:
+        names = os.listdir(cache_dir)
+    except FileNotFoundError:
+        return
+    for name in names:
+        path = os.path.join(cache_dir, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        changed = False
+        for row in payload.get("fingerprint") or [] if isinstance(payload, dict) else []:
+            if not (isinstance(row, list) and len(row) == 3 and isinstance(row[2], list) and len(row[2]) == 3):
+                continue
+            try:
+                info = os.stat(row[0])
+            except (OSError, TypeError):
+                continue
+            if info.st_size == row[1] and info.st_mtime_ns == row[2][0]:
+                if row[2][1:] != [info.st_dev, info.st_ino]:
+                    row[2][1:] = [info.st_dev, info.st_ino]
+                    changed = True
+        if changed:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, separators=(",", ":"))
+
+
 def main(argv):
     import opentab.util
 
