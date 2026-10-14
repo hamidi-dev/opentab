@@ -662,6 +662,11 @@ class Store:
         message_table = "opentab_message_usage" if self.has_v2 else "message"
         role = "m.role" if self.has_v2 else "json_extract(m.data, '$.role')"
         model = "m.model_name" if self.has_v2 else MSG_MODEL_EXPR
+        # For one session, look its messages up by index; the bare join lets the planner
+        # scan the whole message table instead. The timeline query filters the same way.
+        session_filter = (
+            "\n            and m.session_id in (select id from tree)" if workflow_id else ""
+        )
         usage = {
             name: f"m.{name}" if self.has_v2 else f"coalesce(json_extract(m.data, '{path}'), 0)"
             for name, path in (
@@ -698,7 +703,7 @@ class Store:
             {usage['input']} + {usage['cache_read']} + {usage['cache_write']} as context_tokens
           from {message_table} m
           join tree on tree.id = m.session_id
-          where {role} = 'assistant'
+          where {role} = 'assistant'{session_filter}
         ){residual_cte}
         select
           root_id,
