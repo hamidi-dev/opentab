@@ -256,9 +256,11 @@ drill-in state never crosses the process boundary. The largest leaf stays in the
 parent, which keeps its model scan deferred and avoids the cache round trip.
 
 A child failure of any kind (spawn, pickling, a backend error, a killed process)
-falls back to the in-process parse. Demo and `--no-cache` have no cache to hand
-rows back through and keep threads; `OPENTAB_LOADER_PROCESSES=0` disables loader
-processes. Debug events `loader.process`, `loader.spawn_failed` and
+falls back to the in-process parse. Under `--no-cache` the child writes the same
+payload to a file in a private (0700) temporary directory instead; the parent adopts
+it, never writes it back, deletes a handoff it replaces, and removes the directory
+at exit, so the real cache is neither read nor written. Demo has no wrapper and
+keeps threads; `OPENTAB_LOADER_PROCESSES=0` disables loader processes. Debug events `loader.process`, `loader.spawn_failed` and
 `loader.child_failed` record the parent's view; the child writes no debug log.
 `--timings` loads the same way, so per-backend times overlap and are labelled
 `parsed (process)` for a child parse.
@@ -378,7 +380,9 @@ rollup-cache fingerprint and source-parser splicing below.
 `sources.make_store()` wraps eligible leaf stores in `CachedStore`; combined
 views keep each leaf's cache independent. A changed Claude transcript should
 not invalidate an unchanged Codex history. Stores without `cache_inputs()` are
-not wrapped. Demo mode and `--no-cache` bypass this wrapper.
+not wrapped. Demo mode bypasses this wrapper. Under `--no-cache` it is a plain
+pass-through (`persistent=False`) that reads and writes no cache, kept only so a
+loader process can hand rows back.
 
 Rollups live under `$XDG_CACHE_HOME/opentab/cache`, defaulting to
 `~/.cache/opentab/cache`. Filenames combine the source key and a hash of key/root.
