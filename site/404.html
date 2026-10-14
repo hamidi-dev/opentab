@@ -41,6 +41,8 @@ nav a {
 }
 nav a:first-child { border-color: var(--lav); color: var(--lav); }
 nav a:hover, nav a:focus-visible { border-color: var(--lav); }
+footer { margin-top: 40px; font: 13px var(--mono); }
+footer a { color: var(--dim); }
 </style>
 <script>
 try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-docs-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
@@ -57,6 +59,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
     <a href="/docs/">Docs</a>
     <a href="/docs/#/changelog">Changelog</a>
   </nav>
+  <footer><a href="/datenschutz/">Datenschutz</a></footer>
 </main>
 </body>
 </html>

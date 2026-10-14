@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datenschutz · OpenTab</title>
+<meta name="description" content="Datenschutzerklärung für opentab.hamidi.dev / Privacy notice for opentab.hamidi.dev.">
+<link rel="canonical" href="https://opentab.hamidi.dev/datenschutz/">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="icon" href="../favicon-32.png" sizes="32x32" type="image/png">
+<link rel="stylesheet" href="../fonts.css">
+<style>
+:root {
+  --ink: #0d0f1e; --ink-2: #14172b; --line: #2a2f52; --text: #e6e8f7; --dim: #8a90b4; --lav: #b8c0ff;
+  --spectrum: linear-gradient(90deg, #d4910f, #e2582b, #d9579b, #3f8ef0, #1fa774);
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --body: "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --ink: #f6f6fb; --ink-2: #ecedf6; --line: #d3d6ea; --text: #1b1e33; --dim: #5d6286; --lav: #4a55c8;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--ink); color: var(--text); font: 16px/1.65 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 16px; border-bottom: 1px solid var(--line); }
+.top .wrap { width: min(760px, 100%); margin: 0 auto; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.top a { color: var(--text); text-decoration: none; font: 500 14px var(--mono); }
+.top .mark { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; }
+.top nav { display: flex; gap: 16px; }
+.top nav a { color: var(--dim); }
+.top nav a:hover, .top nav a:focus-visible { color: var(--lav); }
+main { width: min(760px, 100%); margin: 0 auto; padding: 40px 16px 72px; }
+.kicker { font: 600 13px var(--mono); color: var(--dim); letter-spacing: .08em; }
+.kicker::after { content: ""; display: block; width: 64px; height: 4px; margin: 14px 0 22px; border-radius: 2px; background: var(--spectrum); }
+h1 { margin: 0 0 12px; font: 700 clamp(30px, 6vw, 42px)/1.1 var(--display); font-variation-settings: "opsz" 72, "wdth" 100; }
+h2 { margin: 40px 0 10px; font: 650 22px/1.25 var(--display); }
+h3 { margin: 26px 0 6px; font: 600 16px/1.35 var(--body); }
+p, ul { margin: 0 0 14px; }
+ul { padding-left: 22px; }
+li { margin: 4px 0; }
+a { color: var(--lav); }
+code { font: 13.5px var(--mono); background: var(--ink-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.lead { color: var(--dim); font-size: 17px; }
+.summary { margin: 26px 0 8px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-2); }
+.summary ul { margin: 0; }
+.lang { font: 500 14px var(--mono); }
+hr { border: 0; border-top: 1px solid var(--line); margin: 56px 0 8px; }
+address { font-style: normal; margin: 0 0 14px; }
+.stand { margin-top: 32px; color: var(--dim); font-size: 14px; }
+</style>
+<script>
+try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-docs-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+</script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="../"><img src="../favicon.svg" alt="" width="20" height="20">OpenTab</a>
+    <nav><a href="../">Home</a><a href="../docs/">Docs</a><a href="#en" lang="en">English</a></nav>
+  </div>
+</header>
+
+<main>
+<div class="kicker">DATENSCHUTZ</div>
+<h1>Datenschutzerklärung</h1>
+<p class="lead">Für die Website opentab.hamidi.dev mit Startseite, Dokumentation und der App im Browser (<code>/try/</code>).</p>
+<p class="lang"><a href="#en" lang="en">English version below ↓</a></p>
+
+<div class="summary">
+  <strong>Kurz gesagt</strong>
+  <ul>
+    <li>Keine Cookies, keine Werbung, keine Tracking-Dienste, keine Inhalte von Dritten (Schriften und Bibliotheken liegen auf dieser Website).</li>
+    <li>Besuche werden anonym gezählt: Seite, Land und verweisende Website als Tagessumme, ohne IP-Adresse und ohne Kennung.</li>
+    <li>Die App im Browser läuft vollständig auf Ihrem Gerät, mit erfundenen Beispieldaten. Was Sie dort tun, wird nicht übertragen.</li>
+  </ul>
+</div>
+
+<h2>1. Verantwortlicher</h2>
+<address>
+Mohamed Hamidi<br>
+<!-- Anschrift folgt mit dem Impressum. -->
+E-Mail: <a href="mailto:mohamed@hamidi.dev">mohamed@hamidi.dev</a>
+</address>
+<p>Ein Datenschutzbeauftragter ist nicht benannt und gesetzlich nicht vorgeschrieben.</p>
+
+<h2>2. Bereitstellung der Website (Hosting)</h2>
+<p>Die Website wird über Cloudflare Pages ausgeliefert, einen Dienst der Cloudflare, Inc., 101 Townsend St., San Francisco, CA 94107, USA. Damit eine Seite überhaupt bei Ihnen ankommt, verarbeitet Cloudflare bei jedem Aufruf technisch notwendige Daten: Ihre IP-Adresse, die aufgerufene Adresse, Datum und Uhrzeit, übertragene Datenmenge sowie die Angaben, die Ihr Browser von sich aus mitsendet (etwa Browsertyp und Sprache). Cloudflare nutzt diese Daten auch, um Angriffe abzuwehren.</p>
+<p>Ich selbst habe auf diese Zugriffsdaten keinen Zugriff, speichere sie nicht und werte sie nicht aus.</p>
+<p>Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; mein berechtigtes Interesse ist eine sichere und zuverlässige Auslieferung der Website. Mit Cloudflare besteht ein Vertrag über die Auftragsverarbeitung nach Art. 28 DSGVO. Eine Verarbeitung in den USA ist möglich; Cloudflare ist nach dem EU-US Data Privacy Framework zertifiziert, für das ein Angemessenheitsbeschluss der EU-Kommission besteht (Art. 45 DSGVO). Mehr dazu in der <a href="https://www.cloudflare.com/privacypolicy/">Datenschutzerklärung von Cloudflare</a>.</p>
+
+<h2>3. Besuchszählung</h2>
+<p>Um zu wissen, wie viele Menschen die Website besuchen und woher sie kommen, sendet jede Seite beim Aufruf eine kurze Meldung an die Adresse <code>/hit</code> dieser Website. Daraus werden ausschließlich Tagessummen gebildet aus:</p>
+<ul>
+  <li>der Seite (Startseite, Dokumentation, App, nicht gefundene Seite),</li>
+  <li>der Art des Aufrufs (erster Seitenaufruf eines Besuchs, weiterer Seitenaufruf, Start der App),</li>
+  <li>dem Land, das Cloudflare aus der IP-Adresse ableitet,</li>
+  <li>beim ersten Seitenaufruf eines Besuchs: dem Namen der verweisenden Website (z.&nbsp;B. <code>github.com</code>), nicht deren vollständige Adresse.</li>
+</ul>
+<p>Die IP-Adresse wird dafür nicht gespeichert, ebenso wenig Browserangaben, Cookies oder sonstige Kennungen. Auf Ihrem Gerät wird für die Zählung nichts gespeichert. Die Tagessummen lassen sich keiner Person zuordnen; sie liegen in einer Datenbank von Cloudflare, die auf die Europäische Union beschränkt ist.</p>
+<p>Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; mein berechtigtes Interesse ist, die Reichweite der Website zu kennen. Sendet Ihr Browser das Signal „Global Privacy Control“ oder „Do Not Track“, wird nicht gezählt. Ebenso nicht, wenn JavaScript deaktiviert ist.</p>
+
+<h2>4. Speicherung im Browser</h2>
+<p>Wenn Sie zwischen hellem und dunklem Design wechseln, merkt sich Ihr Browser diese Wahl im lokalen Speicher (<code>localStorage</code>, Einträge <code>ot-theme</code> und <code>ot-docs-theme</code>). Der eingebettete Beispielbericht speichert dort ebenso sein Design (<code>opentab-theme</code>) und von Ihnen angeheftete Einträge (<code>opentab-pins</code>). Diese Angaben verlassen Ihr Gerät nicht und werden nur gespeichert, wenn Sie die jeweilige Funktion nutzen (§ 25 Abs. 2 Nr. 2 TDDDG). Sie können sie jederzeit in den Einstellungen Ihres Browsers löschen. Cookies werden nicht gesetzt.</p>
+
+<h2>5. Die App im Browser</h2>
+<p>Unter <code>/try/</code> und auf der Startseite läuft OpenTab selbst in Ihrem Browser (Python über WebAssembly). Programm und Beispieldaten werden von dieser Website geladen; alle Berechnungen finden auf Ihrem Gerät statt. Die angezeigten Sitzungen sind erfunden. Eingaben, Suchen und Notizen in der App werden nicht übertragen und beim Schließen des Tabs verworfen. Kopieren Sie etwas, landet es in Ihrer Zwischenablage, sonst nirgends.</p>
+
+<h2>6. Links zu anderen Websites</h2>
+<p>Die Website verlinkt unter anderem auf GitHub und PyPI. Beim bloßen Aufruf dieser Website werden an diese Anbieter keine Daten übertragen. Erst wenn Sie einem Link folgen, gilt die Datenschutzerklärung des jeweiligen Anbieters. Die Website sendet dabei keine Herkunftsangabe (Referrer) mit.</p>
+
+<h2>7. Kontakt per E-Mail</h2>
+<p>Schreiben Sie mir eine E-Mail, verarbeite ich Ihre Adresse und Ihre Nachricht, um sie zu beantworten (Art. 6 Abs. 1 lit. f DSGVO, bei Anfragen zu einem Vertrag lit. b). Ich lösche sie, wenn die Sache erledigt ist und keine gesetzlichen Aufbewahrungspflichten entgegenstehen.</p>
+
+<h2>8. Ihre Rechte</h2>
+<p>Sie haben das Recht auf Auskunft (Art. 15 DSGVO), Berichtigung (Art. 16), Löschung (Art. 17), Einschränkung der Verarbeitung (Art. 18), Datenübertragbarkeit (Art. 20) und Widerspruch gegen Verarbeitungen auf Grundlage von Art. 6 Abs. 1 lit. f (Art. 21). Eine E-Mail an die oben genannte Adresse genügt. Da die Besuchszählung keine Kennung speichert, kann ich ihr keine Einträge zu Ihrer Person zuordnen (Art. 11 DSGVO).</p>
+<p>Sie können sich außerdem bei einer Datenschutz-Aufsichtsbehörde beschweren, insbesondere in dem Mitgliedstaat Ihres Aufenthaltsorts oder Arbeitsplatzes (Art. 77 DSGVO).</p>
+<p>Sie sind nicht verpflichtet, Daten bereitzustellen. Eine automatisierte Entscheidungsfindung oder Profilbildung findet nicht statt.</p>
+
+<p class="stand">Stand: Oktober 2026</p>
+
+<hr>
+
+<section id="en" lang="en">
+<div class="kicker">PRIVACY</div>
+<h1>Privacy notice</h1>
+<p class="lead">For opentab.hamidi.dev: the landing page, the documentation and the in-browser app (<code>/try/</code>). This is a translation; the German version above is authoritative.</p>
+
+<div class="summary">
+  <strong>In short</strong>
+  <ul>
+    <li>No cookies, no ads, no tracking services, no third-party content (fonts and libraries are served from this site).</li>
+    <li>Visits are counted anonymously: page, country and referring site as daily totals, with no IP address and no identifier.</li>
+    <li>The in-browser app runs entirely on your device with made-up sample data. Nothing you do in it is sent anywhere.</li>
+  </ul>
+</div>
+
+<h2>1. Controller</h2>
+<address>
+Mohamed Hamidi<br>
+Email: <a href="mailto:mohamed@hamidi.dev">mohamed@hamidi.dev</a>
+</address>
+<p>No data protection officer has been appointed; none is legally required.</p>
+
+<h2>2. Hosting</h2>
+<p>The site is delivered by Cloudflare Pages, a service of Cloudflare, Inc., 101 Townsend St., San Francisco, CA 94107, USA. To deliver a page, Cloudflare processes technically necessary data with every request: your IP address, the address requested, date and time, the amount of data sent, and what your browser sends on its own (such as browser type and language). Cloudflare also uses this data to fend off attacks.</p>
+<p>I have no access to this request data and do not store or analyse it.</p>
+<p>The legal basis is Art. 6(1)(f) GDPR; my legitimate interest is delivering the site securely and reliably. A data processing agreement under Art. 28 GDPR is in place with Cloudflare. Processing in the USA is possible; Cloudflare is certified under the EU-US Data Privacy Framework, which the European Commission has found adequate (Art. 45 GDPR). See <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.</p>
+
+<h2>3. Visit counting</h2>
+<p>To know how many people visit and where they come from, each page sends a short message to this site's own <code>/hit</code> address when it loads. Only daily totals are kept, made of:</p>
+<ul>
+  <li>the page (home, documentation, app, page not found),</li>
+  <li>the kind of view (first page of a visit, further page, starting the app),</li>
+  <li>the country Cloudflare derives from the IP address,</li>
+  <li>for the first page of a visit: the name of the referring site (e.g. <code>github.com</code>), not its full address.</li>
+</ul>
+<p>The IP address is not stored for this, nor are browser details, cookies or any other identifier. Nothing is stored on your device for counting. The totals cannot be linked to a person; they are kept in a Cloudflare database restricted to the European Union.</p>
+<p>The legal basis is Art. 6(1)(f) GDPR; my legitimate interest is knowing the site's reach. If your browser sends Global Privacy Control or Do Not Track, nothing is counted; nor is it with JavaScript turned off.</p>
+
+<h2>4. Storage in your browser</h2>
+<p>If you switch between the light and dark design, your browser remembers the choice in its local storage (<code>localStorage</code>, entries <code>ot-theme</code> and <code>ot-docs-theme</code>). The embedded sample report keeps its design (<code>opentab-theme</code>) and the entries you pin (<code>opentab-pins</code>) there too. None of this leaves your device, and it is only stored when you use that feature (§ 25(2) no. 2 TDDDG). You can delete it in your browser settings at any time. No cookies are set.</p>
+
+<h2>5. The in-browser app</h2>
+<p>At <code>/try/</code> and on the landing page, OpenTab itself runs in your browser (Python on WebAssembly). The program and sample data are downloaded from this site; all computation happens on your device. The sessions shown are made up. Keystrokes, searches and notes in the app are not transmitted and are discarded when you close the tab. Anything you copy goes to your clipboard and nowhere else.</p>
+
+<h2>6. Links to other sites</h2>
+<p>The site links to GitHub and PyPI, among others. Merely visiting this site sends them no data. Once you follow a link, that provider's privacy policy applies. The site sends no referrer with the link.</p>
+
+<h2>7. Contact by email</h2>
+<p>If you email me, I process your address and message to reply (Art. 6(1)(f) GDPR; for enquiries about a contract, point (b)). I delete them once the matter is settled, unless legal retention duties apply.</p>
+
+<h2>8. Your rights</h2>
+<p>You have the right of access (Art. 15 GDPR), rectification (Art. 16), erasure (Art. 17), restriction of processing (Art. 18), data portability (Art. 20) and to object to processing based on Art. 6(1)(f) (Art. 21). An email to the address above is enough. Because visit counting stores no identifier, I cannot link any of its entries to you (Art. 11 GDPR).</p>
+<p>You may also lodge a complaint with a data protection supervisory authority, in particular in the member state where you live or work (Art. 77 GDPR).</p>
+<p>You are not obliged to provide any data. There is no automated decision-making or profiling.</p>
+
+<p class="stand">Last updated: October 2026</p>
+</section>
+</main>
+</body>
+</html>
