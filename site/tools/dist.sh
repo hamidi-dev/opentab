@@ -26,7 +26,7 @@ fi
 rm -rf "$dist"
 mkdir -p "$dist"
 # -L dereferences docs/md, docs/README.md and media/*.png into real files.
-rsync -aL --exclude=.DS_Store --exclude=/tools/ --exclude=/dist/ --exclude=/README.md \
+rsync -aL --exclude=.DS_Store --exclude=__pycache__ --exclude=/tools/ --exclude=/dist/ --exclude=/README.md \
   "$site/" "$dist/"
 
 # Everything published is public: files saved owner-only (screenshots, detail exports)
@@ -40,4 +40,16 @@ if grep -rlqE "$home_path" "$dist" --include='*.html' --include='*.json'; then
   grep -rlE "$home_path" "$dist" --include='*.html' --include='*.json' >&2
   exit 2
 fi
+# The /try/ archives are compressed, so the scan above can't see into them. Their source
+# mentions /C:/Users/... and /mnt/c/Users/<you>; a real home is /Users/<name>/.
+mac_home='/Users/[A-Za-z0-9._-]+/'
+for archive in "$dist"/try/app.tar.gz "$dist"/try/data/home.tar.gz; do
+  # grep -c reads to the end, so tar never dies of a closed pipe under pipefail.
+  names="$(tar -tzf "$archive" | grep -cE "$mac_home" || true)"
+  bytes="$(tar -xzOf "$archive" | grep -acE "$mac_home" || true)"
+  if (( names + bytes )); then
+    echo "dist: refusing, a /Users/ path is inside ${archive#"$dist"/}" >&2
+    exit 2
+  fi
+done
 echo "dist: $(du -sh "$dist" | cut -f1) in site/dist"
