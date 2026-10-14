@@ -49,14 +49,15 @@ else
   echo "build: gh could not list releases; keeping the existing docs/changelog.json" >&2
 fi
 
-# The hero's preview clip is an untracked marketing render; the screenshots are
+# The hero's preview clip is an untracked render of the synthetic showcase session walk,
+# caption- and card-free (dev/productions/site-hero-2026-10); the screenshots are
 # symlinks into docs/assets.
-clip="$repo/dev/dist/youtube/refresh-highlights"
-if [[ -f "$clip.clean.mp4" && -f "$clip.poster.png" ]]; then
-  cp "$clip.clean.mp4" "$site/media/tui.mp4"
+clip="$repo/dev/dist/site/opentab-tui"
+if [[ -f "$clip.mp4" && -f "$clip.poster.png" ]]; then
+  cp "$clip.mp4" "$site/media/tui.mp4"
   cp "$clip.poster.png" "$site/media/tui-poster.png"
 elif [[ ! -f "$site/media/tui.mp4" ]]; then
-  echo "build: no hero clip; render $clip.clean.mp4 first" >&2; exit 2
+  echo "build: no hero clip; render $clip.mp4 first" >&2; exit 2
 fi
 
 if grep -rq "/Users/" "$site/report.html" "$site/report-details"; then echo "build: /Users/ path leaked into the report" >&2; exit 2; fi

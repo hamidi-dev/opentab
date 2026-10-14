@@ -6,7 +6,9 @@
 # Each path gets exactly one CSP: Pages merges every matching rule, and two CSPs would
 # both be enforced.
 
+# X-Robots-Tag keeps search engines out until launch day; remove it then.
 /*
+  X-Robots-Tag: noindex
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: SAMEORIGIN
