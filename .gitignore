@@ -30,4 +30,5 @@ build/
 /site/try/data/
 /site/try/build.json
 /site/try/stdlib/
+/site/.wrangler/
 .wrangler/

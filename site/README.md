@@ -19,7 +19,8 @@ require-corp`); without them the page explains that it cannot start.
 | `tools/build-try.sh` | `try/app.tar.gz` (OpenTab plus the browser shim) and `try/data/home.tar.gz` (the showcase history, cache prewarmed); cache-covered transcripts and the OpenCode database (in 256 KB chunks) go to `try/data/lazy/` and load when a session is opened. Pyodide's stdlib is split into `try/stdlib/core.zip` (the modules in `try/stdlib-core.txt`) and `rest.zip`, fetched only if a left-out module is imported |
 | `tools/vendor.sh` | `try/vendor/` (Pyodide, xterm.js) and `vendor/` (the fonts, marked), pinned by version and SHA-256 |
 | `tools/dist.sh` | `dist/`: the publishable tree, symlinks dereferenced, privacy checks applied |
-| `tools/publish.sh` | Uploads `dist/` to Cloudflare Pages (opentab.hamidi.dev); `--build` regenerates first, `--preview` uses a preview URL |
+| `tools/publish.sh` | Uploads `dist/` to Cloudflare Pages (opentab.hamidi.dev) with the Function in `functions/`; `--build` regenerates first, `--preview` uses a preview URL |
+| `tools/visitors.sh` | Visits, page views and app starts by day, country, referring site and page (`7` for a week; `30 test` for previews) |
 
 The landing hero uses `media/hero-story.json`, a small checked-in snapshot of one
 synthetic session. `tools/build-story.py` extracts its daily totals, agents, prompt,
@@ -47,6 +48,15 @@ No page contacts a third party: fonts (`fonts.css`) and libraries are self-hoste
 and the docs browser loads this repo's screenshots locally and turns any other
 image into a link. Every CSP in `_headers` is same-origin. `404.html` uses
 root-absolute links because Pages serves it at the missing path.
+
+Visits are counted without cookies or identifiers. `count.js` sends one beacon per
+page view to the site's own `/hit` (skipped in frames and automated browsers);
+`functions/hit.js`, the only Pages Function, adds it to daily totals in the D1
+database `opentab-stats` (EU jurisdiction, schema in `tools/stats.sql`, binding in
+`wrangler.toml`): page, event, the country Cloudflare derives from the IP and, for
+a visit's first page, the referring site's host. A visit is a page reached from
+outside the site; `Referrer-Policy: same-origin` keeps the referrer on internal
+links and sends none off-site. No IP, user agent or per-visitor row is stored.
 
 The builds read the showcase generator and media renders under `dev/`, which is not
 in the repository. `try/py/` adapts OpenTab to the browser without changing it: a

@@ -1,0 +1,11 @@
+# Cloudflare Pages project config, read by tools/publish.sh (which runs wrangler from here).
+# Pages Functions in functions/ get these bindings; the static site needs none.
+name = "opentab"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-10-01"
+
+# Visit counts (tools/stats.sql, tools/visitors.sh), restricted to the EU.
+[[d1_databases]]
+binding = "STATS"
+database_name = "opentab-stats"
+database_id = "5701a982-b856-4a25-9e12-9b8cee217d7d"
