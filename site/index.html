@@ -457,7 +457,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
             </div>
           </div>
         </div>
-        <iframe data-pane="web" src="report.html" title="Interactive OpenTab report with synthetic data" loading="lazy" hidden></iframe>
+        <iframe data-pane="web" data-src="report.html" title="Interactive OpenTab report with synthetic data" hidden></iframe>
       </div>
     </div>
     <p class="hint" data-hint></p>
@@ -584,7 +584,7 @@ const full = document.querySelector("[data-full]");
 const tuiPane = document.querySelector('[data-pane="tui"]');
 const video = tuiPane.querySelector("video");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-let app = null;
+let app = null, started = false;
 const hints = {
   tui: "A preview clip. Start the real app to drive it yourself — synthetic data, same keys as your terminal.",
   app: "This is OpenTab itself, not a recording. Click into it, press <kbd>?</kbd> for keys; the mouse works too.",
@@ -592,14 +592,17 @@ const hints = {
 };
 function show(mode) {
   document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-selected", b.dataset.mode === mode));
-  tuiPane.hidden = mode !== "tui" || !!app;
-  document.querySelector('[data-pane="web"]').hidden = mode !== "web";
-  if (app) app.classList.toggle("away", mode !== "tui");
-  full.hidden = !(app && mode === "tui");
+  tuiPane.hidden = mode !== "tui" || started;
+  const report = document.querySelector('[data-pane="web"]');
+  report.hidden = mode !== "web";
+  // The report is 1.6 MB; most visitors never open this tab, so it loads on first view.
+  if (mode === "web" && !report.getAttribute("src")) report.src = report.dataset.src;
+  if (app) app.classList.toggle("away", mode !== "tui" || !started);
+  full.hidden = !(started && mode === "tui");
   url.textContent = mode === "tui" ? "~ opentab" : "opentab web — localhost";
-  hint.innerHTML = hints[mode === "tui" && app ? "app" : mode];
-  if (mode === "tui" && !app && !reduced) video.play().catch(() => {}); else video.pause();
-  if (mode === "tui" && app) app.focus();
+  hint.innerHTML = hints[mode === "tui" && started ? "app" : mode];
+  if (mode === "tui" && !started && !reduced) video.play().catch(() => {}); else video.pause();
+  if (mode === "tui" && started) app.contentWindow.focus();
 }
 document.querySelectorAll("[data-mode]").forEach(btn => btn.addEventListener("click", () => show(btn.dataset.mode)));
 // The lightweight story links into the same session in the actual report.
@@ -618,15 +621,27 @@ document.querySelectorAll("[data-story-open]").forEach(link => link.addEventList
   document.querySelector("#stage").scrollIntoView({ behavior: reduced ? "instant" : "smooth", block: "start" });
   report.focus({ preventScroll: true });
 }));
-document.querySelector("[data-start]").addEventListener("click", () => {
-  if (!self.crossOriginIsolated) { location.href = "try/"; return; }
+// The app mounts hidden as soon as a pointer rests on the button (or keyboard focus reaches
+// it), so its ~10 MB download has a head start when the click lands. Not on page load:
+// most visitors never start it, and Save-Data asks us not to guess.
+const start = document.querySelector("[data-start]");
+function mountApp() {
+  if (app || !self.crossOriginIsolated) return;
   app = document.createElement("iframe");
-  app.className = "app";
+  app.className = "app away";
   app.src = "try/?embed";
   app.title = "OpenTab running in your browser on synthetic data";
   app.allow = "cross-origin-isolated; clipboard-write";
   tuiPane.after(app);
-  app.addEventListener("load", () => app.focus());
+  app.addEventListener("load", () => { if (started) app.contentWindow.focus(); });
+}
+const warm = () => { if (!navigator.connection?.saveData) mountApp(); };
+start.addEventListener("pointerenter", warm);
+start.addEventListener("focus", warm);
+start.addEventListener("click", () => {
+  if (!self.crossOriginIsolated) { location.href = "try/"; return; }
+  mountApp();
+  started = true;
   show("tui");
 });
 // The terminal app needs a keyboard and some width; phones get the report first.
