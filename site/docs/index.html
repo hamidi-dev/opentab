@@ -173,6 +173,8 @@ dialog.palette::backdrop { background: #05061099; backdrop-filter: blur(3px); }
   .pager { grid-template-columns: 1fr; } .pager a.next { grid-column: 1; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.legal { margin-top: 40px; font-size: 13px; }
+.legal a { color: var(--dim); }
 </style>
 </head>
 <body>
@@ -195,6 +197,7 @@ dialog.palette::backdrop { background: #05061099; backdrop-filter: blur(3px); }
     <article data-article><p style="color:var(--dim)">Loading…</p></article>
     <div class="pager" data-pager></div>
     <div class="edit" data-edit></div>
+    <p class="legal"><a href="../datenschutz/">Datenschutz · Privacy</a></p>
   </main>
   <aside class="toc" data-toc></aside>
 </div>
