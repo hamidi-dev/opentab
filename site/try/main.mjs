@@ -75,7 +75,7 @@ const worker = new Worker(new URL("./worker.mjs", import.meta.url), { type: "mod
 worker.onmessage = ({ data: m }) => {
   if (m.type === "out") {
     term.write(m.data);
-    if (!loader.classList.contains("done") && painted++ > 0) { bar.style.width = "100%"; loader.classList.add("done"); term.focus(); console.log("[opentab] first paint", Math.round(performance.now()) + "ms"); }
+    if (!loader.classList.contains("done") && painted++ > 0) { bar.style.width = "100%"; loader.classList.add("done"); if (document.hasFocus()) term.focus(); console.log("[opentab] first paint", Math.round(performance.now()) + "ms"); }
   }
   else if (m.type === "status") { step.textContent = m.text; if (m.pct != null) bar.style.width = m.pct + "%"; }
   else if (m.type === "ready") { step.textContent = "Reading a year of history"; bar.style.width = "96%"; }
@@ -84,5 +84,8 @@ worker.onmessage = ({ data: m }) => {
   else if (m.type === "fatal") { step.textContent = "OpenTab couldn't start."; err.textContent = m.data; }
   else if (m.type === "exited") console.log("[opentab] exited", m.code, Math.round(m.ms) + "ms");
 };
+// Framed by the landing page, which may start this app before showing it: focus the
+// terminal whenever the page hands focus to this frame.
+addEventListener("focus", () => { if (loader.classList.contains("done")) term.focus(); });
 worker.onerror = e => { step.textContent = "OpenTab couldn't start."; err.textContent = e.message || String(e); };
 worker.postMessage({ type: "init", ctrl: ctrlBuf, ring: ringBuf, debug: params.has("debug") });

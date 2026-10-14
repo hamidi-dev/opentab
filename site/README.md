@@ -16,8 +16,8 @@ require-corp`); without them the page explains that it cannot start.
 | Script | Does (generated files are gitignored) |
 |---|---|
 | `tools/build.sh` | `report.html` plus `report-details/` (one file per session, fetched on open) from the synthetic showcase, `docs/changelog.json` from GitHub Releases (needs `gh`), the hero clip |
-| `tools/build-try.sh` | `try/app.tar.gz` (OpenTab plus the browser shim) and `try/data/home.tar.gz` (the showcase history, cache prewarmed); cache-covered transcripts and the OpenCode database (in 256 KB chunks) go to `try/data/lazy/` and load when a session is opened |
-| `tools/vendor.sh` | `try/vendor/`: Pyodide and xterm.js, pinned by version and SHA-256 |
+| `tools/build-try.sh` | `try/app.tar.gz` (OpenTab plus the browser shim) and `try/data/home.tar.gz` (the showcase history, cache prewarmed); cache-covered transcripts and the OpenCode database (in 256 KB chunks) go to `try/data/lazy/` and load when a session is opened. Pyodide's stdlib is split into `try/stdlib/core.zip` (the modules in `try/stdlib-core.txt`) and `rest.zip`, fetched only if a left-out module is imported |
+| `tools/vendor.sh` | `try/vendor/` (Pyodide, xterm.js) and `vendor/` (the fonts, marked), pinned by version and SHA-256 |
 | `tools/dist.sh` | `dist/`: the publishable tree, symlinks dereferenced, privacy checks applied |
 | `tools/publish.sh` | Uploads `dist/` to Cloudflare Pages (opentab.hamidi.dev); `--build` regenerates first, `--preview` uses a preview URL |
 
@@ -39,7 +39,14 @@ keys, Home and End select a view, with inactive panels hidden. Screenshots keep
 their full aspect ratio. The supported-tool list is stationary; workflow tiles
 explain exports, explicit remote reads and the limits of selective scrambling.
 The real terminal/browser embed, start action and hero deep links stay in
-`index.html`; a terminal already started stays mounted when switching modes.
+`index.html`; a terminal already started stays mounted when switching modes. The
+browser tab's report loads on first view, and the app mounts hidden when the start
+button is hovered or focused, so its download has a head start.
+
+No page contacts a third party: fonts (`fonts.css`) and libraries are self-hosted,
+and the docs browser loads this repo's screenshots locally and turns any other
+image into a link. Every CSP in `_headers` is same-origin. `404.html` uses
+root-absolute links because Pages serves it at the missing path.
 
 The builds read the showcase generator and media renders under `dev/`, which is not
 in the repository. `try/py/` adapts OpenTab to the browser without changing it: a
