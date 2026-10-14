@@ -25,6 +25,7 @@ build/
 /site/media/tui.mp4
 /site/media/tui-poster.png
 /site/try/vendor/
+/site/vendor/
 /site/try/app.tar.gz
 /site/try/data/
 /site/try/build.json
