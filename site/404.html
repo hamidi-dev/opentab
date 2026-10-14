@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page not found · OpenTab</title>
+<meta name="robots" content="noindex">
+<!-- Pages serves this file at whatever path was missed, so every link is root-absolute. -->
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="stylesheet" href="/fonts.css">
+<style>
+:root {
+  --ink: #0d0f1e; --ink-2: #14172b; --line: #2a2f52; --text: #e6e8f7; --dim: #8a90b4; --lav: #b8c0ff;
+  --spectrum: linear-gradient(90deg, #d4910f, #e2582b, #d9579b, #3f8ef0, #1fa774);
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --body: "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --ink: #f6f6fb; --ink-2: #ecedf6; --line: #d3d6ea; --text: #1b1e33; --dim: #5d6286; --lav: #4a55c8;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px;
+  background: var(--ink); color: var(--text); font: 17px/1.6 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+main { width: min(520px, 100%); }
+.code { font: 600 13px var(--mono); color: var(--dim); letter-spacing: .08em; }
+.code::after { content: ""; display: block; width: 64px; height: 4px; margin: 14px 0 22px; border-radius: 2px; background: var(--spectrum); }
+h1 { margin: 0 0 10px; font: 700 clamp(30px, 7vw, 44px)/1.1 var(--display); font-variation-settings: "opsz" 72, "wdth" 100; }
+p { margin: 0 0 26px; color: var(--dim); }
+nav { display: flex; flex-wrap: wrap; gap: 10px; }
+nav a {
+  padding: 9px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--ink-2);
+  color: var(--text); font: 500 14px var(--mono); text-decoration: none;
+}
+nav a:first-child { border-color: var(--lav); color: var(--lav); }
+nav a:hover, nav a:focus-visible { border-color: var(--lav); }
+</style>
+<script>
+try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-docs-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+</script>
+</head>
+<body>
+<main>
+  <div class="code">404 · NOT FOUND</div>
+  <h1>No page at this address.</h1>
+  <p>It may have moved, or the link has a typo. Everything OpenTab has is one click away:</p>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/try/">Try the app</a>
+    <a href="/docs/">Docs</a>
+    <a href="/docs/#/changelog">Changelog</a>
+  </nav>
+</main>
+</body>
+</html>
