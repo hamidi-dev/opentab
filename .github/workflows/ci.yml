@@ -31,6 +31,41 @@ jobs:
           node --version  # ensure the browser navigation regression test runs
           python run_tests.py
 
+  # Measure line coverage; on main, publish it as the README badge's shields.io
+  # endpoint JSON on an orphan `badges` branch (force-pushed, one commit).
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (editable) + coverage
+        run: pip install -e . coverage==7.6.1
+      - name: Unit tests under coverage
+        run: |
+          coverage run --source=src/opentab run_tests.py
+          coverage report --format=total
+      - name: Publish badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pct=$(coverage report --format=total)
+          if   [ "$pct" -ge 90 ]; then color=brightgreen
+          elif [ "$pct" -ge 80 ]; then color=green
+          elif [ "$pct" -ge 70 ]; then color=yellowgreen
+          else color=orange; fi
+          mkdir badges && cd badges
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$pct" "$color" > coverage.json
+          git init -q -b badges
+          git add coverage.json
+          git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "coverage: $pct%"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" badges
+
   # Prove the package installs (pulling in the windows-curses dependency) and
   # imports on native Windows Python, which ships no stdlib curses.
   windows:
