@@ -41,6 +41,21 @@ python3 run_tests.py             # whole suite
 python3 run_tests.py pricing     # only modules/tests matching a substring
 ```
 
+Measure Python line and branch coverage with the same runner (install the
+development tools with `pip install -e '.[dev]'`):
+
+```sh
+python3 -m coverage erase
+python3 -m coverage run run_tests.py
+python3 -m coverage report
+python3 -m coverage html         # open htmlcov/index.html for missed lines/branches
+```
+
+The denominator includes every module under `src/opentab`, including unimported
+modules. The report measures Python execution in the test process, not JavaScript
+or child interpreters; browser regressions still run as part of the suite. Do not
+exclude difficult code or weaken assertions just to increase the percentage.
+
 With Node.js on `PATH`, the suite also executes the browser navigation regression
 against the shipped JavaScript. Without Node it prints an explicit skip; CI requires it.
 

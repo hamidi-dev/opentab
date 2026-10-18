@@ -3,12 +3,91 @@ import sqlite3
 import tempfile
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import opentab as ot
 from opentab.conversations.reader import ConversationError, window
 
 from tests._support import FakeStore, _empty_opencode_db, _hermes_db_full, workflow
+
+
+def test_hermes_optional_schema_probes_close_connections_and_tolerate_sqlite_failures():
+    store = object.__new__(ot.HermesStore)
+    store._cols = {"id", "actual_cost_usd"}
+    for method, args, empty in (
+        ("_probe_columns", (), set()),
+        ("_probe_records_cost", (), False),
+        ("recent_roots", (), []),
+        ("root_of", ("s",), None),
+        ("_tool_events", (["s"],), {}),
+    ):
+        with patch.object(store, "_connect", side_effect=sqlite3.OperationalError("unavailable")):
+            assert getattr(store, method)(*args) == empty
+        connection = Mock()
+        connection.execute.side_effect = sqlite3.DatabaseError("schema changed")
+        with patch.object(store, "_connect", return_value=connection):
+            assert getattr(store, method)(*args) == empty
+        connection.close.assert_called_once_with()
+    connection = Mock()
+    connection.execute.side_effect = sqlite3.DatabaseError("schema changed")
+    assert store._message_cols(connection) == set()
+    assert store._tool_events([]) == {}
+    store._cols = set()
+    store._sessions = None
+    assert store.recent_roots() == [] and store.root_of("s") is None
+    assert store._parse() == {}
+
+
+def test_hermes_status_roots_use_latest_subtree_message_and_unknown_detail_is_empty():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = _conversation_db(Path(tmp) / "state.db")
+        roots = {row["id"]: row for row in store.recent_roots()}
+        assert roots["root"]["last_active"] == 1750000005000
+        assert "child" not in roots and "archived" not in roots
+        assert store.root_of("nested") == "root"
+        assert store.workflow_nodes("missing") == []
+        assert store.node_prompt("root", "missing") is None
+
+
+def test_hermes_timestamp_representations_and_model_inference():
+    for value in (None, False, True, 0, -1, [], "", "not a timestamp"):
+        assert ot.HermesStore._epoch_ms(value) == 0
+    for value in (1750000000, 1750000000000, "2025-06-15T15:06:40Z", "2025-06-15T15:06:40"):
+        assert ot.HermesStore._epoch_ms(value) == 1750000000000
+    for value in (None, 0, float("inf"), float("nan"), 1e100):
+        assert ot.HermesStore._ts_to_local(value) == ""
+        assert ot.HermesStore._ts_to_local_ms(value) == ""
+    for value, expected in (
+        ("claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"),
+        ("gemini-2.5-pro", "google/gemini-2.5-pro"),
+        ("unknown-model", "unknown-model"),
+        ("", "unknown"),
+        ("custom/model", "custom/model"),
+    ):
+        assert ot.HermesStore._prefix_model(value) == expected
+
+
+def test_hermes_trace_calls_skip_bad_entries_but_keep_valid_neighbors_and_order():
+    for value in (None, "invalid json", "{}", {}):
+        assert ot.HermesStore._trace_calls(value) == []
+    calls = ot.HermesStore._trace_calls(
+        [
+            None,
+            {"function": None},
+            {"function": {"name": ""}},
+            {"id": 7, "function": {"name": "Read", "arguments": '{"path":"file"}'}},
+            {"function": {"name": "Bash", "arguments": {"command": "pwd"}}},
+        ]
+    )
+    assert [event["name"] for event, _key in calls] == ["Read", "Bash"]
+    assert [key for _event, key in calls] == ["7", ""]
+    assert calls[0][0]["args"] == "file" and calls[0][0]["params"] == []
+    assert ot.HermesStore._parse_tool_calls([{"function": None}]) == []
+    trace = ot.util.TraceContent()
+    ot.HermesStore._trace_result({"tool_call_id": "missing"}, {}, trace)
+    ot.HermesStore._trace_result({"tool_call_id": "call"}, {"call": ("turn", 9)}, trace)
+    assert trace == {}
+
 
 # --- Hermes Agent database helpers (~/.hermes/state.db) ----------------------
 

@@ -13,7 +13,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import attach_node_pricing, attach_pricing
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import _clean_prompt
-from opentab.util import git_root, read_files_parallel, windows_to_wsl_path
+from opentab.util import git_root, read_files_parallel, safe_int, windows_to_wsl_path
 
 
 class VscodeStore:
@@ -107,7 +107,7 @@ class VscodeStore:
         if isinstance(value, bool):
             return 0
         if isinstance(value, (int, float)):
-            return int(value) if value >= 0 else 0
+            return safe_int(value)
         return 0
 
     @staticmethod

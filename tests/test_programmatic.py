@@ -128,6 +128,81 @@ def test_programmatic_json_writer_round_trips_surrogate_text_over_utf8():
     assert json.loads(raw.getvalue()) == payload
 
 
+def test_json_resource_commands_forward_exact_session_arguments_and_errors():
+    cases = (
+        (["sessions", "nodes", "s"], "session_nodes", ("s",), {}),
+        (
+            ["sessions", "turns", "s", "--include-prompts", "--include-content-keys"],
+            "session_turns",
+            ("s",),
+            {"include_prompts": True, "include_content_keys": True},
+        ),
+        (["sessions", "tools", "s"], "session_tools", ("s",), {}),
+        (["sessions", "context", "s"], "session_context", ("s",), {}),
+        (
+            ["models", "compare", "s", "openai/gpt-5"],
+            "compare_model",
+            ("s", "openai/gpt-5"),
+            {},
+        ),
+        (["notes", "get", "s"], "get_note", ("s",), {}),
+        (["notes", "set", "s", "authored note"], "set_note", ("s", "authored note"), {}),
+        (["notes", "delete", "s"], "set_note", ("s", ""), {}),
+        (["bookmarks", "add", "s"], "mutate_set", ("bookmark", "add", "s"), {}),
+        (["ignore", "session", "add", "s"], "mutate_set", ("ignored-session", "add", "s"), {}),
+    )
+    for argv, method, positional, keywords in cases:
+        args = ot.parse_args(argv)
+        service = Mock()
+        getattr(service, method).return_value = {"fixture": method}
+        output = io.StringIO()
+        with patch.object(
+            service_module.OpenTabService, "open", return_value=service
+        ), contextlib.redirect_stdout(output):
+            assert programmatic.command(args) == 0, argv
+        getattr(service, method).assert_called_once_with(*positional, **keywords)
+        assert json.loads(output.getvalue())["data"] == {"fixture": method}
+    for error, code in (
+        (SystemExit("source unavailable"), "source_error"),
+        (OSError("permission denied"), "operation_failed"),
+        (ValueError("bad data"), "operation_failed"),
+    ):
+        output = io.StringIO()
+        with patch.object(
+            service_module.OpenTabService, "open", side_effect=error
+        ), contextlib.redirect_stdout(output):
+            assert programmatic.command(ot.parse_args(["sessions", "list"])) == 1
+        payload = json.loads(output.getvalue())
+        assert payload["ok"] is False and payload["error"]["code"] == code
+
+
+def test_preference_list_commands_need_no_backend_and_honor_no_state():
+    state = {"bookmarks": ["s"], "ignored_sessions": ["s"], "ignored_projects": ["/project"]}
+    for no_state in (False, True):
+        for argv, expected in (
+            (["bookmarks", "list"], {"bookmarks": [] if no_state else ["s"]}),
+            (
+                ["ignore", "list"],
+                {
+                    "ignored_sessions": [] if no_state else ["s"],
+                    "ignored_projects": [] if no_state else ["/project"],
+                },
+            ),
+        ):
+            output = io.StringIO()
+            with patch.object(programmatic, "load_state", return_value=state) as load, patch.object(
+                service_module.OpenTabService,
+                "open",
+                side_effect=AssertionError("no backend needed"),
+            ), contextlib.redirect_stdout(output):
+                assert (
+                    programmatic.command(ot.parse_args(argv + (["--no-state"] if no_state else [])))
+                    == 0
+                )
+            assert json.loads(output.getvalue())["data"] == expected
+            assert load.call_count == int(not no_state)
+
+
 def test_programmatic_command_tree_parses_resource_actions_and_privacy_flags():
     args = ot.parse_args(
         ["sessions", "list", "--range", "30d", "--from-harness", "claude", "--limit", "7"]

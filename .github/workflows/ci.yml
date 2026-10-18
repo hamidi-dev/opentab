@@ -46,14 +46,23 @@ jobs:
         run: pip install -e . coverage==7.6.1
       - name: Unit tests under coverage
         run: |
-          coverage run --source=src/opentab run_tests.py
-          coverage report --format=total
+          node --version
+          python -m coverage run run_tests.py
+          python -m coverage report
+          python -m coverage xml
+          python -m coverage json
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage.xml
       - name: Publish badge
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pct=$(coverage report --format=total)
+          # The badge remains line-only; coverage's default total now includes branches.
+          pct=$(python -c 'import json; t=json.load(open("coverage.json"))["totals"]; print(round(100*t["covered_lines"]/t["num_statements"]))')
           if   [ "$pct" -ge 90 ]; then color=brightgreen
           elif [ "$pct" -ge 80 ]; then color=green
           elif [ "$pct" -ge 70 ]; then color=yellowgreen

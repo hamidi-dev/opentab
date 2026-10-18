@@ -12,6 +12,13 @@ build/
 *.egg-info/
 .venv/
 
+# Local test coverage reports
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+htmlcov/
+
 # Generated README previews
 /README.html
 /README.single.html

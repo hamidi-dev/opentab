@@ -4,10 +4,116 @@ import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import Mock, mock_open, patch
 
 import opentab as ot
+from opentab import util
 
 from tests._support import app_with, fake_herdr, workflow
+
+
+def test_open_path_uses_native_openers_with_literal_argv_and_reports_failures():
+    for platform, command in (("darwin", "open"), ("linux", "xdg-open")):
+        for available, error in ((False, None), (True, None), (True, OSError("unavailable"))):
+            with patch.object(util.sys, "platform", platform), patch.object(
+                util.shutil, "which", return_value=command if available else None
+            ), patch.object(util.subprocess, "Popen", side_effect=error) as popen:
+                assert util.open_path("/a directory/with 'quotes';$(command)") is (
+                    available and error is None
+                )
+            if available:
+                popen.assert_called_once_with(
+                    [command, "/a directory/with 'quotes';$(command)"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                popen.assert_not_called()
+    for association, explorer, spawn_error, expected in (
+        (Mock(), True, None, True),
+        (Mock(side_effect=OSError("no association")), True, None, True),
+        (None, True, OSError("no explorer"), False),
+        (None, False, None, False),
+    ):
+        with patch.object(util.sys, "platform", "win32"), patch.object(
+            util.os, "startfile", association, create=True
+        ), patch.object(
+            util.shutil, "which", return_value="explorer" if explorer else None
+        ), patch.object(util.subprocess, "Popen", side_effect=spawn_error) as popen:
+            assert util.open_path("C:/a directory/file") is expected
+        if association is not None:
+            association.assert_called_once_with("C:/a directory/file")
+        if association is None or association.side_effect:
+            if explorer:
+                popen.assert_called_once_with(["explorer", "C:/a directory/file"])
+        else:
+            popen.assert_not_called()
+
+
+def test_clipboard_falls_back_after_a_command_failure_without_shell_expansion():
+    with patch.object(util.sys, "platform", "darwin"), patch.object(
+        util, "_POSIX_CLIPBOARD", [(["first"], "utf-8"), (["second"], "utf-8")]
+    ), patch.object(util.shutil, "which", return_value="present"), patch.object(
+        util.subprocess, "run", side_effect=[subprocess.CalledProcessError(1, "first"), None]
+    ) as run:
+        assert util.copy_to_clipboard("Grüße; $(not-a-command)") is True
+    assert [call.args[0] for call in run.call_args_list] == [["first"], ["second"]]
+    assert all(
+        call.kwargs["input"] == "Grüße; $(not-a-command)".encode() for call in run.call_args_list
+    )
+    with patch.object(util.shutil, "which", return_value="present"), patch.object(
+        util.subprocess, "run", side_effect=OSError("missing")
+    ):
+        assert util.copy_to_clipboard("text") is False
+
+
+def test_wsl_detection_checks_environment_kernel_and_cached_results():
+    for environment, kernel, expected in (
+        ({"WSL_DISTRO_NAME": "Ubuntu"}, "Linux", True),
+        ({"WSL_INTEROP": "socket"}, "Linux", True),
+        ({}, "Linux microsoft-standard-WSL2", True),
+        ({}, "Linux generic", False),
+    ):
+        reader = mock_open(read_data=kernel)
+        with patch.object(util, "_IS_WSL", None), patch.object(
+            util.sys, "platform", "linux"
+        ), patch.dict(os.environ, environment, clear=True), patch.object(
+            util, "open", reader, create=True
+        ):
+            assert util.is_wsl() is expected
+            assert util.is_wsl() is expected
+            assert reader.call_count == (0 if environment else 1)
+    with patch.object(util, "_IS_WSL", None), patch.object(
+        util.sys, "platform", "linux"
+    ), patch.dict(os.environ, {}, clear=True), patch.object(
+        util, "open", side_effect=OSError("no procfs"), create=True
+    ):
+        assert util.is_wsl() is False
+
+
+def test_tty_probes_return_only_successful_nonempty_results_and_never_raise():
+    with patch.object(util.sys, "stdin", SimpleNamespace(fileno=lambda: 3)), patch.object(
+        util.os, "ttyname", return_value="/dev/ttys001"
+    ):
+        assert util._current_tty() == "/dev/ttys001"
+    with patch.object(util.sys, "stdin", SimpleNamespace()):
+        assert util._current_tty() is None
+    with patch.dict(os.environ, {}, clear=True):
+        assert util._tmux_pane_tty() is None
+    for result, expected in (
+        (SimpleNamespace(returncode=0, stdout="/dev/pts/7\n"), "/dev/pts/7"),
+        (SimpleNamespace(returncode=0, stdout=" \n"), None),
+        (SimpleNamespace(returncode=1, stdout="bad"), None),
+    ):
+        with patch.dict(os.environ, {"TMUX_PANE": "%7"}), patch.object(
+            util.subprocess, "run", return_value=result
+        ) as run:
+            assert util._tmux_pane_tty() == expected
+        assert run.call_args.args[0] == ["tmux", "display-message", "-p", "-t", "%7", "#{pane_tty}"]
+    with patch.dict(os.environ, {"TMUX_PANE": "%7"}), patch.object(
+        util.subprocess, "run", side_effect=subprocess.TimeoutExpired("tmux", 1)
+    ):
+        assert util._tmux_pane_tty() is None
 
 
 def test_resolve_project_root_folds_worktree():

@@ -1,8 +1,10 @@
+import io
 import os
+import pickle
 import shutil
 import tempfile
 import types
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import opentab as ot
 from opentab import progress
@@ -162,3 +164,127 @@ class _Sink:
 
     def flush(self):
         pass
+
+
+def test_loader_spawn_failures_leave_the_parent_to_parse():
+    for error in (OSError("no interpreter"), TypeError("bad argv"), ValueError("bad fd")):
+        with patch("subprocess.Popen", side_effect=error):
+            assert loader._run_child(_build, None, "fixture", None) is False
+
+
+def test_loader_protocol_forwards_progress_and_closes_pipes():
+    for messages, success, tracked in (
+        ([("progress", 2, 7), ("progress", 7, 7), ("done",)], True, True),
+        ([("progress", 2, 7), ("done",)], True, False),
+        ([("error", "RuntimeError")], False, True),
+        ([], False, True),
+    ):
+        output = io.BytesIO()
+        for message in messages:
+            pickle.dump(message, output)
+        output.seek(0)
+        proc = Mock(stdin=io.BytesIO(), stdout=output)
+        proc.poll.return_value = None
+        task = types.SimpleNamespace(done=0, total=0) if tracked else None
+        with patch("subprocess.Popen", return_value=proc):
+            assert loader._run_child(_build, None, "fixture", task) is success
+        assert proc.stdin.closed and proc.stdout.closed
+        proc.wait.assert_called_once_with()
+        assert proc.kill.call_count == (0 if success else 1)
+        if tracked and success:
+            assert (task.done, task.total) == (7, 7)
+
+
+def test_loader_broken_input_and_corrupt_output_are_reaped():
+    for broken_input in (False, True):
+        stdin = Mock() if broken_input else io.BytesIO()
+        if broken_input:
+            stdin.write.side_effect = BrokenPipeError("child exited")
+        proc = Mock(stdin=stdin, stdout=io.BytesIO(b"not a pickle"))
+        proc.poll.return_value = None
+        with patch("subprocess.Popen", return_value=proc):
+            assert loader._run_child(_build, None, "fixture", None) is False
+        proc.kill.assert_called_once_with()
+        proc.wait.assert_called_once_with()
+        assert proc.stdout.closed
+
+
+def test_loader_does_not_kill_a_child_that_has_already_exited():
+    proc = Mock(stdin=io.BytesIO(), stdout=io.BytesIO())
+    proc.poll.return_value = 1
+    with patch("subprocess.Popen", return_value=proc):
+        assert loader._run_child(_build, None, "fixture", None) is False
+    proc.kill.assert_not_called()
+    proc.wait.assert_called_once_with()
+
+
+def test_loader_handoff_creation_failure_never_spawns_or_adopts():
+    store = Mock(persistent=False, rebuild=(_build, None, "fixture"))
+    with patch.object(loader, "_handoff_path", side_effect=OSError("disk full")), patch.object(
+        loader, "_run_child"
+    ) as child:
+        assert loader.warm(store) is False
+    child.assert_not_called()
+    store.load_from_disk.assert_not_called()
+
+
+def test_loader_child_protocol_redirects_backend_prints_and_sends_terminal_status():
+    class Capture(io.BytesIO):
+        def close(self):
+            self.saved = self.getvalue()
+            super().close()
+
+    for tracked, handoff, failed in (
+        (False, None, False),
+        (True, "/handoff", False),
+        (True, None, True),
+    ):
+        store = Mock()
+        store.writing_to.return_value = store
+        if failed:
+            store.workflows.side_effect = RuntimeError("private backend error")
+        builder = Mock(return_value=store)
+        args = types.SimpleNamespace(fixture=True)
+        payload = pickle.dumps(("builder", args, "fixture", tracked, handoff))
+        output = Capture()
+        event = Mock()
+        event.wait.side_effect = [False, False, True]
+
+        def make_thread(*, target, **kwargs):
+            return Mock(start=target, join=Mock())
+
+        with patch.object(
+            loader.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(payload))
+        ), patch.object(loader.sys, "stdout", io.StringIO()), patch.object(
+            loader.sys, "stderr", io.StringIO()
+        ), patch.object(loader.os, "dup", return_value=99), patch.object(
+            loader.os, "dup2"
+        ) as redirect, patch.object(loader.os, "fdopen", return_value=output), patch.object(
+            loader.threading, "Event", return_value=event
+        ), patch.object(loader.threading, "Thread", side_effect=make_thread), patch.object(
+            loader.progress, "track"
+        ) as track, patch.object(
+            pickle,
+            "load",
+            return_value=(builder, args, "fixture", tracked, handoff),
+        ):
+            loader._child_main()
+        redirect.assert_called_once_with(2, 1)
+        builder.assert_called_once_with(args, "fixture")
+        assert track.call_count == int(tracked)
+        if handoff is None:
+            store.writing_to.assert_not_called()
+        else:
+            store.writing_to.assert_called_once_with(handoff)
+        assert store.model_breakdown.call_count == int(not failed)
+        messages = io.BytesIO(output.saved)
+        received = []
+        while messages.tell() < len(output.saved):
+            received.append(pickle.load(messages))
+        assert received == [
+            ("progress", 0, None),
+            ("progress", 0, None),
+            ("error", "RuntimeError") if failed else ("done",),
+        ]
+        assert b"private backend error" not in output.saved
+        assert output.closed

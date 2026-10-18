@@ -7,6 +7,32 @@ import opentab as ot
 from tests._support import OCL_SID, _ocl_args, _ocl_msg, _ocl_user, _ocl_write
 
 
+def test_openclaw_demo_workflows_nodes_and_summary_scramble_one_consistent_scale():
+    with tempfile.TemporaryDirectory() as tmp:
+        _ocl_write(
+            tmp,
+            "private-agent",
+            OCL_SID,
+            [
+                _ocl_user("private customer"),
+                _ocl_msg("claude-opus-4-6", 100, 50, cost=0.02, provider="anthropic"),
+            ],
+        )
+        store = ot.OpenClawStore(tmp, _ocl_args())
+        store.demo, store.demo_scale = True, 2.0
+        store.demo_cats = ot.demo.DEMO_ALL
+        rows = store.workflows()
+        assert rows[0].title != "private customer" and "private-agent" not in rows[0].directory
+        assert rows[0].total_tokens == 300 and rows[0].total_cost == 0.04
+        assert store.summary(rows)["cost"] == 0.04
+        node = store.workflow_nodes(OCL_SID)[0]
+        assert node["title"] == rows[0].title and node["cost"] == 0.04
+        assert node["tokens_total"] == 300
+        assert store.workflow_nodes("missing") == []
+        assert store.message_timeline("missing") == []
+        assert store.tool_breakdown("missing") == []
+
+
 def _ocl_model_snapshot(provider, model_id, mid="mc1", ts="2026-04-27T15:59:00.000Z"):
     return {
         "type": "custom",
