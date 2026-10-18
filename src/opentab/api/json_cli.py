@@ -824,7 +824,7 @@ def error_envelope(code: str, message: str, details: dict | None = None) -> dict
 def _write(payload: dict, pretty: bool = False) -> None:
     text = json.dumps(
         payload,
-        ensure_ascii=False,
+        ensure_ascii=True,
         allow_nan=False,
         indent=2 if pretty else None,
         separators=None if pretty else (",", ":"),

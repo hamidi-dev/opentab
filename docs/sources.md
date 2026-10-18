@@ -334,6 +334,11 @@ one left in the old `~/.config/opentab/`.
   `session_id`, requests group into one session per date and project. Malformed rows
   are skipped.
 
+When a session supplies `prompt_id`, it defines the prompt boundaries; rows without
+one continue the preceding group. Otherwise full prompt text defines each boundary
+(not its shortened display title), with blank prompts continuing the preceding group.
+Derived grouping IDs are opaque so they do not expose full text in numeric APIs.
+
 ### Schema
 
 Column names (CSV) and keys (JSONL) match case-insensitively. A request needs a

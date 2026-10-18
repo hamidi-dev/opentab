@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 
@@ -70,7 +71,9 @@ from opentab.tui.app import App
 from opentab.util import (
     git_root,
     init_color_allowed,
+    parse_range_text,
     resolve_project_root,
+    resolve_range_bounds,
     unicode_screen,
 )
 
@@ -1074,6 +1077,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     _validate_remote_files(parser, args)
     _validate_web_args(parser, args)
     _apply_subcommand(args)
+    if args.command in ("tui", "web", "pull", "remote"):
+        # Presentation paths do not pass through the service's range validation.
+        # Check the effective bounds before discovering or opening any source.
+        try:
+            if args.since or args.until:
+                parse_range_text(f"{args.since or ''}..{args.until or ''}")
+            elif args.days is not None:
+                resolve_range_bounds(args.days, None, None, None)
+        except ValueError as exc:
+            parser.error(str(exc))
     _route_path_arg(parser, args)
     return args
 
@@ -1753,30 +1766,64 @@ def remotes_config_path() -> str:
     return os.path.join(paths.config_dir(), "remotes.json")
 
 
-def _load_remotes() -> dict:
+def _read_remotes_document() -> tuple[dict, bool]:
     try:
         with open(remotes_config_path(), encoding="utf-8") as fh:
             data = json.load(fh)
+    except FileNotFoundError:
+        return {}, True
     except (OSError, ValueError):
-        return {}
+        return {}, False
     machines = data.get("machines") if isinstance(data, dict) else None
     if not isinstance(machines, dict):
-        return {}
+        return {}, False
+    return data, True
+
+
+def _load_remotes(*, for_update: bool = False) -> dict:
+    data, readable = _read_remotes_document()
+    if for_update and not readable:
+        raise SystemExit("could not read remotes.json; refusing to overwrite saved machines")
+    machines = data.get("machines", {})
     # remotes.json is user-edited input; malformed entries must not reach workers.
     return {k: v for k, v in machines.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _atomic_text(path: str, text: str) -> None:
+    """Publish a complete file, leaving the previous one intact on any failure."""
+    tmp = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=os.path.dirname(path), prefix=".opentab-", delete=False
+        ) as stream:
+            tmp = stream.name
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
 
 
 def _save_remotes(machines: dict) -> None:
     # Best-effort and atomic: an unwritable config must not break a launch.
     path = remotes_config_path()
+    document, readable = _read_remotes_document()
+    if not readable:
+        raise SystemExit("could not read remotes.json; refusing to overwrite saved machines")
+    # Unknown envelope fields and entries are authored data, not disposable cache.
+    unknown = {
+        key: value
+        for key, value in document.get("machines", {}).items()
+        if not isinstance(value, dict)
+    }
+    document.setdefault("version", REMOTES_VERSION)
+    document["machines"] = {**unknown, **machines}
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(
-                {"version": REMOTES_VERSION, "machines": machines}, fh, indent=2, sort_keys=True
-            )
-        os.replace(tmp, path)
+        _atomic_text(path, json.dumps(document, indent=2, sort_keys=True))
     except OSError:
         pass
 
@@ -1900,15 +1947,14 @@ def _pull_one(name: str, entry: dict, remotes_dir: str) -> tuple[int, str]:
         # Any worker escape would surface at fut.result() and abort every machine.
         return 0, str(exc) or exc.__class__.__name__
     try:
-        with open(os.path.join(remotes_dir, _summary_filename(name)), "w", encoding="utf-8") as fh:
-            fh.write(text)
-    except OSError as exc:
+        _atomic_text(os.path.join(remotes_dir, _summary_filename(name)), text)
+    except (OSError, ValueError) as exc:
         return 0, f"could not save: {exc}"
     return len(payload["workflows"]), ""
 
 
 def pull_command(args: argparse.Namespace) -> None:
-    machines = _load_remotes()
+    machines = _load_remotes(for_update=bool(args.pull))
     tokens = args.pull or []
     # A pull writes summaries into a DIRECTORY. With --remotes naming a file the fetch
     # would land in the default directory while the screen that opens next still reads
@@ -2044,7 +2090,7 @@ def _make_ssh_targets_fn():
 
 
 def forget_command(args: argparse.Namespace) -> int:
-    machines = _load_remotes()
+    machines = _load_remotes(for_update=True)
     remotes_dir = _remotes_write_dir(args)
     for name in args.forget:
         existed = machines.pop(name, None) is not None

@@ -9,6 +9,19 @@ import opentab as ot
 from tests._support import CopilotEstimateStore, _parse, copilot_prices, tier_prices, workflow
 
 
+def test_remote_rejects_unencodable_routing_fields_without_poisoning_catalog():
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [workflow("good", "2026-10-18"), workflow("bad\ud800", "2026-10-18")]
+        bad_source = workflow("bad-source", "2026-10-18")
+        bad_source.source = "bad\ud800"
+        _write(tmp, "good.json", _summary("box", [*rows, bad_source]))
+        _write(tmp, "bad-label.json", _summary("box\ud800", [workflow("bad-label", "2026-10-18")]))
+        remote = ot.RemoteStore(tmp)
+        assert [row.id for row in remote.workflows()] == ["good"]
+        service = ot.OpenTabService(remote, _parse(["--no-state"]))
+        assert service.list_sessions()["sessions"][0]["native_id"] == "good"
+
+
 def test_copilot_fleet_roundtrip_retains_paid_model_splits_and_inferred_writes():
     from opentab.accounting.tiers import detail_api_cost, node_api_cost, row_api_cost
 

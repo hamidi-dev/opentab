@@ -250,7 +250,7 @@ def scan_connections() -> tuple[dict[str, TraceConnection], set[str]]:
         with open(os.path.join(paths.config_dir(), "remotes.json"), "rb") as stream:
             raw = stream.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
-            return {}
+            return {}, set()
         data = _json(raw)
     except (OSError, ValueError):
         return {}, set()

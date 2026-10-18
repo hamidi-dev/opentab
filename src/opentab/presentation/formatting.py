@@ -69,12 +69,27 @@ def cost_bar(value: float, peak: float, cells: int = 8) -> str:
     return ("█" * full + BAR_EIGHTHS[rem]).ljust(cells)
 
 
+def _iso_datetime(ts: str) -> datetime:
+    stamp = ts.strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(stamp)
+    except ValueError:
+        # Python 3.9/3.10 require 3 or 6 fractional digits. Normalize trimmed
+        # nanoseconds without discarding the offset or subsecond precision.
+        stamp = re.sub(
+            r"(?<=\d{2}:\d{2}:\d{2})[.,](\d+)",
+            lambda match: "." + match.group(1)[:6].ljust(6, "0"),
+            stamp,
+        )
+        return datetime.fromisoformat(stamp)
+
+
 def iso_to_local(ts: str) -> str:
     # Normalize ISO UTC timestamps to Store's local created_at format.
     if not ts:
         return ""
     try:
-        dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+        dt = _iso_datetime(ts)
     except ValueError:
         try:
             dt = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
@@ -90,7 +105,7 @@ def iso_to_epoch(ts: str) -> float | None:
     if not ts:
         return None
     try:
-        dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+        dt = _iso_datetime(ts)
     except ValueError:
         try:
             dt = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)

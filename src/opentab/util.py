@@ -1352,3 +1352,24 @@ def month_window_start(n: int, today: datetime | None = None) -> str:
     base = today or datetime.now()
     year, month0 = divmod(base.year * 12 + (base.month - 1) - (n - 1), 12)
     return datetime(year, month0 + 1, 1).strftime("%Y-%m-%d")
+
+
+def resolve_range_bounds(
+    days: int | None,
+    months: int | None,
+    since: str | None,
+    until: str | None,
+    today: datetime | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve parsed ranges before callers mutate scope or start rendering."""
+    now = today or datetime.now()
+    if (days is not None and days <= 0) or (months is not None and months <= 0):
+        raise ValueError("range amount must be greater than 0")
+    try:
+        if days is not None:
+            since = (now - timedelta(days=days)).date().isoformat()
+        elif months is not None:
+            since = month_window_start(months, now)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("range exceeds the supported calendar") from exc
+    return since, until

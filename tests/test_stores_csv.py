@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,154 @@ from tests._support import (
 
 def _csv_args():
     return type("Args", (), {"demo": False})()
+
+
+def test_csv_turn_groups_use_full_prompts_and_authoritative_explicit_ids():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        prefix = "shared instructions " * 20
+        for prompts, ids, expected in (
+            ([prefix + "first", prefix + "second"], ["", ""], None),
+            (["first", "continuation", "second"], ["p1", "", "p2"], ["p1", "p1", "p2"]),
+            (["first", "", "second"], ["", "", ""], ["first", "first", "second"]),
+        ):
+            _write_csv(
+                path,
+                ["timestamp", "model", "input_tokens", "session_id", "prompt", "prompt_id"],
+                [
+                    [f"2026-06-18T10:00:0{i}Z", "gpt-4o", 100, "s1", prompt, pid]
+                    for i, (prompt, pid) in enumerate(zip(prompts, ids))
+                ],
+            )
+            turns = ot.CsvStore(path, _csv_args()).message_timeline("s1")
+            actual = [turn["prompt_id"] for turn in turns]
+            expected = expected if expected is not None else prompts
+            if not any(ids):
+                expected = [
+                    "prompt:" + hashlib.sha256(value.encode()).hexdigest() for value in expected
+                ]
+            assert actual == expected, actual
+            assert all(len(turn["prompt_title"]) <= 160 for turn in turns)
+
+
+def test_csv_turns_keep_absolute_order_across_dst_fallback_and_subseconds():
+    from unittest.mock import patch
+
+    import opentab.stores.csv_source as csv_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "session_id", "request_id"],
+            [
+                ["2026-10-25T01:10:00Z", "gpt-4o", 200, "s1", "later"],
+                ["2026-10-25T00:50:00Z", "gpt-4o", 100, "s1", "earlier"],
+                ["2026-10-25T01:10:00.500Z", "gpt-4o", 400, "s1", "last"],
+                ["2026-10-25T01:10:00.100Z", "gpt-4o", 300, "s1", "third"],
+            ],
+        )
+        # Simulate the two ambiguous wall-clock hours without changing process TZ.
+        with patch.object(
+            csv_module,
+            "iso_to_local",
+            side_effect=lambda raw: "2026-10-25 02:50:00"
+            if "00:50" in raw
+            else "2026-10-25 02:10:00",
+        ):
+            turns = ot.CsvStore(path, _csv_args()).message_timeline("s1")
+        assert [turn["input"] for turn in turns] == [100, 200, 300, 400]
+
+
+def test_csv_variable_fraction_offsets_keep_absolute_turn_order():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "session_id", "prompt"],
+            [
+                ["2026-11-01T01:00:00.5-07:00", "gpt-4o", 200, "s1", "first"],
+                ["2026-11-01T07:59:59.999999Z", "gpt-4o", 100, "s1", "first"],
+                ["2026-11-01T01:00:00.9-07:00", "gpt-4o", 300, "s1", "first"],
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        turns = store.message_timeline("s1")
+        assert [turn["input"] for turn in turns] == [100, 200, 300]
+        assert abs(turns[-1]["ts_epoch"] - turns[0]["ts_epoch"] - 0.900001) < 1e-6
+        assert abs(store.workflows()[0].worked_seconds - 0.900001) < 1e-6
+
+
+def test_csv_accepts_large_prompt_fields_in_cost_probe_and_accounting():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        prompt = "x" * 150_000
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "session_id", "prompt", "cost"],
+            [["2026-06-18T10:00:00Z", "gpt-4o", 100, "s1", prompt, 1]],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        assert store.records_cost
+        assert store.workflows()[0].total_cost == 1
+        assert store.message_timeline("s1")[0]["prompt_full"] == prompt
+
+
+def test_csv_record_errors_do_not_hide_later_usage_or_recorded_cost():
+    import csv
+    from unittest.mock import patch
+
+    class DamagedRecordReader:
+        def __init__(self, stream):
+            self.reader = csv.DictReader(stream)
+
+        @property
+        def fieldnames(self):
+            return self.reader.fieldnames
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            row = next(self.reader)
+            if row["prompt"] == "damaged":
+                raise csv.Error("line contains NUL")
+            return row
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "session_id", "prompt", "cost"],
+            [
+                ["2026-10-18T10:00:00Z", "gpt-4o", 100, "s1", "first", 0],
+                ["2026-10-18T10:00:01Z", "gpt-4o", 200, "s1", "damaged", 0],
+                ["2026-10-18T10:00:02Z", "gpt-4o", 300, "s2", "later", 1.5],
+            ],
+        )
+        with patch.object(ot.CsvStore, "_reader", side_effect=DamagedRecordReader):
+            store = ot.CsvStore(path, _csv_args())
+            assert store.records_cost
+            rows = {row.id: row for row in store.workflows()}
+            assert rows["s1"].total_tokens == 100
+            assert rows["s2"].total_tokens == 300 and rows["s2"].total_cost == 1.5
+
+
+def test_csv_nul_record_does_not_discard_the_following_session():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        # Write corrupt bytes directly: older csv.writer versions reject NUL too.
+        with open(path, "w", encoding="utf-8", newline="") as stream:
+            stream.write(
+                "timestamp,model,input_tokens,session_id,prompt,cost\n"
+                "2026-10-18T10:00:00Z,gpt-4o,100,s1,first,0\n"
+                "2026-10-18T10:00:01Z,gpt-4o,200,s1,broken\0,0\n"
+                "2026-10-18T10:00:02Z,gpt-4o,300,s2,later,1.5\n"
+            )
+        store = ot.CsvStore(path, _csv_args())
+        assert store.records_cost
+        rows = {row.id: row for row in store.workflows()}
+        assert "s1" in rows and rows["s2"].total_cost == 1.5
 
 
 def test_csv_store_splits_cache_prefixes_providers_and_stays_unpriced():
@@ -644,7 +793,7 @@ def test_csv_turns_timeline_groups_prompts_and_dedupes_requests():
         t = store.message_timeline("s1")
         assert len(t) == 3
         assert [r["prompt_title"] for r in t] == ["fix the bug", "fix the bug", "now the docs"]
-        assert t[0]["prompt_id"] == "fix the bug"  # no explicit id -> the text groups
+        assert t[0]["prompt_id"].startswith("prompt:")  # full text groups via an opaque identity
         assert t[2]["model_name"] == "anthropic/claude-sonnet-4"
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from opentab.util import month_window_start, parse_range_text
+from opentab.util import parse_range_text, resolve_range_bounds
 
 PRESETS = (
     "All time",
@@ -44,13 +44,7 @@ def preset_value(index: int, today: datetime | None = None) -> str:
 
 
 def resolved_bounds(raw: str, today: datetime | None = None) -> tuple[str | None, str | None]:
-    days, months, since, until = parse_range_text(raw)
-    now = today or datetime.now()
-    if days is not None:
-        since = (now - timedelta(days=days)).strftime("%Y-%m-%d")
-    elif months is not None:
-        since = month_window_start(months, now)
-    return since, until
+    return resolve_range_bounds(*parse_range_text(raw), today=today)
 
 
 def range_preview(raw: str, today: datetime | None = None) -> str:

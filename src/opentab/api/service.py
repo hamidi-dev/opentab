@@ -5,7 +5,6 @@ import os
 import socket
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 
 from opentab import sources
 from opentab.accounting.models import API_SCHEMA_VERSION, SessionRef, Workflow
@@ -38,9 +37,9 @@ from opentab.util import (
     git_root,
     model_row_1h_write,
     model_row_split,
-    month_window_start,
     parse_range_text,
     resolve_project_root,
+    resolve_range_bounds,
     tool_names,
     tool_namespace,
     workflow_fuzzy_score,
@@ -201,14 +200,9 @@ class OpenTabService:
     @staticmethod
     def _date_bounds(spec: str) -> tuple[str | None, str | None]:
         try:
-            days, months, since, until = parse_range_text(spec or "all")
+            return resolve_range_bounds(*parse_range_text(spec or "all"))
         except ValueError as exc:
             raise ServiceError("invalid_range", str(exc)) from exc
-        if days is not None:
-            since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        elif months is not None:
-            since = month_window_start(months)
-        return since, until
 
     def _model_rows(self, item: _Session) -> list[dict]:
         owner_key = id(item.owner)

@@ -105,6 +105,29 @@ class FakeService:
         return {"range": query.range, "group_by": group_by}
 
 
+def test_programmatic_out_of_calendar_ranges_emit_domain_errors():
+    for command in (["sessions", "list"], ["usage", "summary"], ["models", "list"]):
+        args = ot.parse_args([*command, "--range", "999999999999999d", "--no-state"])
+        service = ot.OpenTabService(FakeStore([]), args)
+        output = io.StringIO()
+        with patch.object(
+            service_module.OpenTabService, "open", return_value=service
+        ), contextlib.redirect_stdout(output):
+            assert programmatic.command(args) == 1
+        result = json.loads(output.getvalue())
+        assert result["ok"] is False and result["error"]["code"] == "invalid_range", result
+
+
+def test_programmatic_json_writer_round_trips_surrogate_text_over_utf8():
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="utf-8")
+    payload = {"title": "cut off emoji \ud83d", "valid": "café 😀"}
+    with contextlib.redirect_stdout(stream):
+        programmatic._write(payload)
+    stream.flush()
+    assert json.loads(raw.getvalue()) == payload
+
+
 def test_programmatic_command_tree_parses_resource_actions_and_privacy_flags():
     args = ot.parse_args(
         ["sessions", "list", "--range", "30d", "--from-harness", "claude", "--limit", "7"]

@@ -20,6 +20,15 @@ from tests._support import _parse, workflow
 from tests.test_stores_remote import _FakeExtrasStore, _summary, _turn, _write
 
 
+def test_oversized_connection_config_returns_a_complete_empty_scan():
+    with tempfile.TemporaryDirectory() as root:
+        with open(os.path.join(root, "remotes.json"), "wb") as stream:
+            stream.write(b" " * (1024 * 1024 + 1))
+        with patch.object(rc.paths, "config_dir", return_value=root):
+            assert rc.scan_connections() == ({}, set())
+            assert rc.saved_connections() == {}
+
+
 def _session(sid="s1", source="OpenCode"):
     row = workflow(sid, "2026-07-15")
     row.source = source

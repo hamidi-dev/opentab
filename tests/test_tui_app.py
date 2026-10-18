@@ -25,6 +25,34 @@ from tests._support import (
 )
 
 
+def test_relative_ranges_expire_cached_sessions_at_day_and_month_boundaries():
+    for spec, before, after, stamp in (
+        ("7d", datetime(2026, 10, 18, 23, 59), datetime(2026, 10, 19, 0, 1), "2026-10-11"),
+        ("2m", datetime(2026, 10, 31, 23, 59), datetime(2026, 11, 1, 0, 1), "2026-09-15"),
+    ):
+        app = app_with([workflow("edge", stamp), workflow("keep", "2026-10-18")])
+        with patch.object(app_module, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = before
+            app.set_range_from_text(spec)
+            assert {row.id for row in app.all_workflows} == {"edge", "keep"}
+            clock.now.return_value = after
+            assert {row.id for row in app.all_workflows} == {"keep"}, spec
+
+
+def test_rejected_out_of_calendar_range_preserves_active_scope():
+    app = app_with([workflow("keep", "2026-10-18")])
+    app.set_range_from_text("2026")
+    before = (app.range_days, app.range_months, app.custom_since, app.custom_until)
+    for value in ("999999999999999d", "999999999999999m"):
+        try:
+            app.set_range_from_text(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid range: {value}")
+        assert (app.range_days, app.range_months, app.custom_since, app.custom_until) == before
+
+
 def test_search_project_picker_uses_local_loaded_projects_not_the_spend_date_range():
     rows = [
         workflow("old", "2020-01-01", directory="/work/old"),

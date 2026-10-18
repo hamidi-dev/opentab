@@ -424,7 +424,11 @@ class McpServer:
             if method == "tools/call":
                 name = params.get("name")
                 arguments = params.get("arguments", {})
-                if name not in _TOOL_NAMES or not isinstance(arguments, dict):
+                if (
+                    not isinstance(name, str)
+                    or name not in _TOOL_NAMES
+                    or not isinstance(arguments, dict)
+                ):
                     return self._error(request_id, -32602, "Unknown tool or invalid arguments")
                 result = self.call_tool(name, arguments)
                 return self._success(request_id, self._modern_result(result) if modern else result)
@@ -449,7 +453,7 @@ class McpServer:
             "content": [
                 {
                     "type": "text",
-                    "text": json.dumps(data, ensure_ascii=False, allow_nan=False),
+                    "text": json.dumps(data, ensure_ascii=True, allow_nan=False),
                 }
             ],
             "structuredContent": data,
@@ -639,8 +643,11 @@ def run_server(args, stdin=None, stdout=None) -> int:
     server = McpServer(args)
     inp = stdin or sys.stdin
     out = stdout or sys.stdout
-    for line in inp:
+    # Decode one wire line at a time so bad UTF-8 cannot kill the protocol loop.
+    for line in getattr(inp, "buffer", inp):
         try:
+            if isinstance(line, bytes):
+                line = line.decode("utf-8")
             request = json.loads(line)
         except ValueError:
             response = server._error(None, -32700, "Parse error")
@@ -648,7 +655,7 @@ def run_server(args, stdin=None, stdout=None) -> int:
             response = server.handle(request)
         if response is not None:
             out.write(
-                json.dumps(response, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+                json.dumps(response, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
                 + "\n"
             )
             out.flush()

@@ -34,6 +34,28 @@ def _request(method, params=None, request_id=1):
     return out
 
 
+def test_mcp_rejects_non_string_tool_names_without_internal_errors():
+    server = McpServer(_args(), FakeService())
+    for name in ([], {}, ["opentab_get_session"], None, True, 123):
+        response = server.handle(_request("tools/call", {"name": name}))
+        assert response["error"]["code"] == -32602, response
+    assert server.handle(_request("ping"))["result"] == {}
+
+
+def test_mcp_utf8_stream_survives_invalid_bytes_and_surrogate_request_ids():
+    raw = b'\xff\xfe\n{"jsonrpc":"2.0","id":"\\ud800","method":"ping"}\n'
+    raw += json.dumps(_request("ping", request_id=2)).encode() + b"\n"
+    input_stream = io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8")
+    output_bytes = io.BytesIO()
+    output_stream = io.TextIOWrapper(output_bytes, encoding="utf-8")
+    assert run_server(_args(), input_stream, output_stream) == 0
+    output_stream.flush()
+    replies = [json.loads(line) for line in output_bytes.getvalue().splitlines()]
+    assert replies[0]["error"]["code"] == -32700
+    assert replies[1]["id"] == "\ud800" and replies[1]["result"] == {}
+    assert replies[2]["id"] == 2 and replies[2]["result"] == {}
+
+
 def test_mcp_added_conversation_readers_use_real_lazy_source_factory_and_confirmations():
     for harness in ("hermes", "copilot", "pi", "omp"):
         with tempfile.TemporaryDirectory() as directory:
