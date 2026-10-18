@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import hashlib
 import os
 import re
 import shlex
@@ -103,6 +104,7 @@ from opentab.util import (
     open_path,
     parse_range_text,
     resolve_project_root,
+    resolve_range_bounds,
     tool_namespace,
     workflow_fuzzy_score,
 )
@@ -640,12 +642,14 @@ class App:
     @property
     def ranged_workflows(self) -> list[Workflow]:
         # Ignored projects remain available here so the UI can unignore them.
+        now = datetime.now()
         key = (
             id(self.loaded),
             self.custom_since,
             self.custom_until,
             self.range_days,
             self.range_months,
+            now.date() if self.range_days is not None or self.range_months is not None else None,
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
             self.machine_filter,
             self.harness_filter,
@@ -665,10 +669,10 @@ class App:
             if self.custom_until:
                 rows = [w for w in rows if w.created_at[:10] <= self.custom_until]
         elif self.range_days is not None:
-            cutoff = (datetime.now() - timedelta(days=self.range_days)).strftime("%Y-%m-%d")
+            cutoff = (now - timedelta(days=self.range_days)).strftime("%Y-%m-%d")
             rows = [w for w in rows if w.created_at[:10] >= cutoff]
         elif self.range_months is not None:
-            cutoff = month_window_start(self.range_months)
+            cutoff = month_window_start(self.range_months, now)
             rows = [w for w in rows if w.created_at[:10] >= cutoff]
         self._rw_key = key
         self._rw_cache = list(rows)
@@ -676,8 +680,9 @@ class App:
 
     @property
     def all_workflows(self) -> list[Workflow]:
+        ranged = self.ranged_workflows
         key = (
-            id(self.loaded),
+            id(ranged),
             self.custom_since,
             self.custom_until,
             self.range_days,
@@ -692,11 +697,11 @@ class App:
         if getattr(self, "_aw_key", None) == key:
             return self._aw_cache
         rows = (
-            self.ranged_workflows
+            ranged
             if self.show_ignored_projects
             else [
                 w
-                for w in self.ranged_workflows
+                for w in ranged
                 if self.project_root(w.directory) not in self.ignored_projects
                 and w.id not in self.ignored_sessions
             ]
@@ -793,6 +798,7 @@ class App:
     def set_range_from_text(self, raw: str) -> None:
         # Validate before clearing drills: rejected input must leave scope untouched.
         days, months, since, until = parse_range_text(raw)
+        resolve_range_bounds(days, months, since, until)
         # Capture first because clearing drills widens the list containing the selection.
         self._tools_return = None
         anchor = self.selection_anchor()
@@ -2861,6 +2867,15 @@ class App:
                     r["prompt_title"] = demo_title(r.get("prompt_id") or "noprompt")
             if turns and "prompt_full" in r:
                 r["prompt_full"] = demo_title(r.get("prompt_id") or "noprompt")
+            if (titles or turns) and r.get("prompt_id"):
+                # Some harnesses use prompt text as an ID. Reports serialize it
+                # even after the visible prompt fields have been disguised.
+                r["prompt_id"] = (
+                    "demo:"
+                    + hashlib.sha256(
+                        str(r["prompt_id"]).encode("utf-8", "surrogatepass")
+                    ).hexdigest()
+                )
             if synthetic_trace:
                 r["content_key"] = f"demo:{n}"
                 r["has_text"] = True

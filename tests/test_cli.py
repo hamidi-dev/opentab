@@ -43,6 +43,82 @@ from tests._support import (
 )
 
 
+def test_presentation_date_options_reject_bad_bounds_before_loading_sources():
+    for command in ([], ["tui"], ["web"], ["pull"], ["remote"]):
+        for flags in (
+            ["--days", "-1"],
+            ["--days", "0"],
+            ["--days", "999999999999999999"],
+            ["--since", "not-a-date"],
+            ["--until", "2026-02-30"],
+            ["--since", "2026-10-18", "--until", "2026-10-17"],
+        ):
+            with contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    cli.parse_args([*command, *flags])
+                except SystemExit as exc:
+                    assert exc.code == 2, (command, flags)
+                else:
+                    raise AssertionError(f"accepted invalid date options: {command + flags}")
+    # Explicit bounds override an unused relative range, as documented.
+    assert cli.parse_args(["--days", "-1", "--since", "2026-10-01"]).since == "2026-10-01"
+
+
+def test_remote_mutations_refuse_to_overwrite_malformed_config():
+    for text in ("{broken,", "[]", '{"machines": []}'):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = os.path.join(tmp, "remotes.json")
+            with open(config, "w") as stream:
+                stream.write(text)
+            with patch.object(cli, "remotes_config_path", return_value=config):
+                for argv in (["forget", "missing"], ["pull", "new-host"]):
+                    args = cli.parse_args([*argv, "--remotes", os.path.join(tmp, "summaries")])
+                    with patch.object(
+                        cli, "_fetch_summary", side_effect=AssertionError("unexpected network")
+                    ), contextlib.redirect_stderr(io.StringIO()):
+                        try:
+                            if args.command == "forget":
+                                cli.forget_command(args)
+                            else:
+                                cli.pull_command(args)
+                        except SystemExit as exc:
+                            assert "remotes" in str(exc), str(exc)
+                        else:
+                            raise AssertionError("malformed config accepted for mutation")
+                    with open(config) as stream:
+                        assert stream.read() == text
+
+
+def test_remote_config_saves_preserve_unknown_fields_and_entries():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = os.path.join(tmp, "remotes.json")
+        payload = {"version": 1, "future": {"keep": True}, "machines": {"unknown": None}}
+        with open(config, "w") as stream:
+            json.dump(payload, stream)
+        with patch.object(cli, "remotes_config_path", return_value=config):
+            cli._save_remotes({"box": {"ssh": "box", "future": "keep"}})
+        with open(config) as stream:
+            actual = json.load(stream)
+        assert actual["future"] == payload["future"]
+        assert actual["machines"]["unknown"] is None
+        assert actual["machines"]["box"]["future"] == "keep"
+
+
+def test_failed_remote_summary_publish_preserves_previous_summary():
+    with tempfile.TemporaryDirectory() as tmp:
+        filename = os.path.join(tmp, cli._summary_filename("box"))
+        with open(filename, "w") as stream:
+            stream.write("last good summary")
+        with patch.object(cli, "_fetch_summary", return_value='{"workflows": []}'), patch.object(
+            cli.os, "replace", side_effect=OSError("full disk")
+        ):
+            count, error = cli._pull_one("box", {"ssh": "box"}, tmp)
+        assert count == 0 and "could not save" in error
+        with open(filename) as stream:
+            assert stream.read() == "last good summary"
+        assert os.listdir(tmp) == [os.path.basename(filename)]
+
+
 def test_debug_flags_on_tui_web_and_machine_commands():
     for argv in (
         ["--debug", "--timings"],

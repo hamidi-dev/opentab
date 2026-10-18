@@ -3,6 +3,34 @@ import opentab as ot
 from tests._support import app_with, workflow
 
 
+def test_iso_fractional_seconds_preserve_offsets_on_legacy_python():
+    import re
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    from opentab.presentation import formatting
+
+    def legacy_fromisoformat(stamp):
+        fraction = re.search(r":\d{2}\.([0-9]+)", stamp)
+        if fraction and len(fraction.group(1)) not in (3, 6):
+            raise ValueError("Invalid isoformat string")
+        return datetime.fromisoformat(stamp)
+
+    with patch.object(formatting, "datetime", wraps=datetime) as legacy:
+        legacy.fromisoformat.side_effect = legacy_fromisoformat
+        for fraction in ("5", "12", "1234", "12345", "1234567", "123456789"):
+            for offset in ("-07:00", "+05:30", "Z", ""):
+                stamp = f"2026-11-01T01:00:00.{fraction}{offset}"
+                normalized = f"2026-11-01T01:00:00.{fraction[:6].ljust(6, '0')}"
+                expected = datetime.fromisoformat(normalized + offset.replace("Z", "+00:00"))
+                if expected.tzinfo is None:
+                    expected = expected.replace(tzinfo=timezone.utc)
+                assert abs(formatting.iso_to_epoch(stamp) - expected.timestamp()) < 1e-6, stamp
+                assert formatting.iso_to_local(stamp) == expected.astimezone().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ), stamp
+
+
 def test_relative_age():
     from datetime import datetime, timedelta, timezone
 

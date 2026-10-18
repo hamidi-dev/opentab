@@ -298,8 +298,11 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     trend_sort_ok = isinstance(saved_trend_sort, str) and saved_trend_sort in app.TREND_SORT_KEYS
     if trend_sort_ok:
         app.trend_sort = saved_trend_sort
-    if state.get("prices_view") in {k for k, _label in app.prices_views}:
-        app.prices_view = state["prices_view"]
+    saved_prices_view = state.get("prices_view")
+    if isinstance(saved_prices_view, str) and saved_prices_view in {
+        k for k, _label in app.prices_views
+    }:
+        app.prices_view = saved_prices_view
     # A direction without its validated column must not flip the fallback column.
     if isinstance(state.get("sort_reverse"), bool) and saved_sort in app.sort_options:
         app.sort_reverse = state["sort_reverse"]
@@ -347,7 +350,7 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     # An explicit non-default CLI theme wins over saved state.
     if getattr(args, "theme", themes.DEFAULT_THEME) in (None, themes.DEFAULT_THEME):
         saved_theme = state.get("theme")
-        if saved_theme in themes.THEMES:
+        if isinstance(saved_theme, str) and saved_theme in themes.THEMES:
             app.theme_id = saved_theme
             app.theme = themes.resolve_theme(saved_theme)
     saved_levels = state.get("cal_levels")

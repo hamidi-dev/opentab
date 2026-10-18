@@ -21,12 +21,40 @@ from tests._support import (
     _claude_msg,
     _parse,
     _usage,
+    _write_csv,
     _write_jsonl,
     copilot_prices,
     tier_prices,
     workflow,
 )
 from tests.test_remote_content import _managed, _replies
+
+
+def test_out_of_calendar_ranges_return_invalid_range():
+    service = ot.OpenTabService(FakeStore([]), _args())
+    for value in ("999999999999999999999d", "999999999999999999999m", "999999999999y"):
+        try:
+            service.list_sessions(ot.SessionQuery(range=value))
+        except ot.ServiceError as exc:
+            assert exc.code == "invalid_range", (value, exc.code)
+        else:
+            raise AssertionError(f"accepted invalid range: {value}")
+
+
+def test_csv_long_prompt_group_ids_do_not_bypass_raw_content_gate():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        prompt = "visible prompt " * 20 + "private-suffix-beyond-title"
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "session_id", "prompt"],
+            [["2026-10-18T10:00:00Z", "gpt-4o", 100, "s1", prompt]],
+        )
+        service = ot.OpenTabService(ot.CsvStore(path, _args()), _args())
+        result = service.session_turns("s1")
+        assert "private-suffix-beyond-title" not in json.dumps(result)
+        service.allow_raw_content = True
+        assert service.session_turns("s1", include_prompts=True)["turns"][0]["prompt"] == prompt
 
 
 def test_copilot_service_reprices_paid_root_nodes_turns_and_tools_consistently():

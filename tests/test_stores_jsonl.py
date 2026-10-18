@@ -1,5 +1,6 @@
 """Duration/event JSONL accounting and local trace ownership."""
 
+import hashlib
 import json
 import os
 import tempfile
@@ -40,6 +41,38 @@ def _usage(seconds, status="running", **fields):
         usage_status=status,
         **fields,
     )
+
+
+def test_jsonl_turn_groups_use_full_text_and_keep_blank_id_continuations():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        prefix = "shared instructions " * 20
+        for prompts, ids, expected in (
+            ([prefix + "first", prefix + "second"], ["", ""], None),
+            (["first", "continuation", "second"], ["p1", "", "p2"], ["p1", "p1", "p2"]),
+            (["first", "", "second"], ["", "", ""], ["first", "first", "second"]),
+        ):
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "timestamp": f"2026-06-18T10:00:0{i}Z",
+                        "model": "gpt-4o",
+                        "input_tokens": 100,
+                        "session_id": "s1",
+                        "prompt": prompt,
+                        "prompt_id": pid,
+                    }
+                    for i, (prompt, pid) in enumerate(zip(prompts, ids))
+                ],
+            )
+            turns = ot.JsonlStore(path, _jsonl_args()).message_timeline("s1")
+            expected = expected if expected is not None else prompts
+            if not any(ids):
+                expected = [
+                    "prompt:" + hashlib.sha256(value.encode()).hexdigest() for value in expected
+                ]
+            assert [turn["prompt_id"] for turn in turns] == expected
 
 
 def test_duration_snapshots_replace_instead_of_sum_and_preserve_events():

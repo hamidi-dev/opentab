@@ -340,9 +340,6 @@ class JsonlStore(CsvStore):
 
     def message_timeline(self, workflow_id: str) -> list[dict]:
         rows = super().message_timeline(workflow_id)
-        # Speech offsets can share the same displayed second. Preserve true
-        # timestamp order, including full-duplex overlapping speaker groups.
-        rows.sort(key=lambda row: row.get("ts_epoch") or 0)
         if self.demo:
             for row in rows:
                 for field in (

@@ -36,6 +36,16 @@ def test_read_state_distinguishes_missing_valid_and_malformed_files():
         assert ot.load_state(path) == {}
 
 
+def test_restore_ignores_non_string_enum_preferences():
+    for key in ("prices_view", "browse_mode", "theme"):
+        for value in ([], {}, ["invalid"], {"invalid": True}):
+            app = app_with([])
+            target = "theme_id" if key == "theme" else key
+            original = getattr(app, target)
+            ot.apply_state(app, app.args, {key: value})
+            assert getattr(app, target) == original, (key, value)
+
+
 def test_star_request_counts_launches_and_snoozes_for_thirty_days():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "state.json")

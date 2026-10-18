@@ -16,11 +16,87 @@ from tests._support import (
     _whatif_baseline,
     _whatif_db,
     _whatif_msg,
+    _write_csv,
     app_with,
     copilot_prices,
     fleet_app,
     workflow,
 )
+
+
+def test_csv_prompt_boundaries_match_tui_and_shipped_browser_groups():
+    from opentab.tui.views.turns import turn_group_rows
+
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for browser grouping parity"
+    source = _js_source()
+    shipped = source[
+        source.index("function turnGroupRows(") : source.index("function turnCostContextStrip(")
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        prefix = "shared instructions " * 20
+        for prompts, ids in (
+            ([prefix + "first", "", prefix + "second"], ["", "", ""]),
+            (["first", "continuation text", "second"], ["p1", "", "p2"]),
+        ):
+            _write_csv(
+                path,
+                ["timestamp", "model", "input_tokens", "session_id", "prompt", "prompt_id"],
+                [
+                    [f"2026-10-18T10:00:0{i}Z", "gpt-4o", 100, "s1", prompt, pid]
+                    for i, (prompt, pid) in enumerate(zip(prompts, ids))
+                ],
+            )
+            args = cli.parse_args(["--csv", path, "--no-state"])
+            store = ot.CsvStore(path, args)
+            app = ot.App(store, args)
+            rows = store.message_timeline("s1")
+            tui_groups = turn_group_rows(rows, [0] * len(rows))
+            assert [group["indices"] for group in tui_groups] == [[0, 1], [2]]
+            extras = report.session_extras(app, "s1")
+            script = (
+                "const toolNames=t=>t||[], mCost=t=>t.real||0, cached=t=>0, agentLabel=t=>'';\n"
+                + shipped
+                + "\nconsole.log(JSON.stringify(turnGroupRows("
+                + json.dumps(extras["turns"])
+                + ").map(g=>g.indices)));"
+            )
+            result = subprocess.run(
+                [node, "-e", script], capture_output=True, text=True, timeout=10
+            )
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout) == [[0, 1], [2]]
+
+
+def test_demo_html_does_not_retain_prompt_text_in_group_ids():
+    class TextIdStore(FakeStore):
+        demo = True
+        demo_scale = 1.0
+        demo_cats = frozenset({"titles", "turns"})
+
+        def supports_turns(self, workflow_id):
+            return True
+
+        def message_timeline(self, workflow_id):
+            return [
+                {
+                    "time": "2026-10-18 10:00:00",
+                    "model_name": "gpt-4o",
+                    "prompt_id": "company-secret-internal-prompt",
+                    "prompt_title": "company-secret-internal-prompt",
+                    "prompt_full": "company-secret-internal-prompt",
+                    "input": 100,
+                    "tokens_total": 100,
+                }
+            ]
+
+    args = cli.parse_args(["web", "--html", "--include-details", "--demo", "--no-state"])
+    app = ot.App(TextIdStore([workflow("s1", "2026-10-18")]), args)
+    payload = ot.build_payload(app)
+    payload["sessionExtras"] = {"s1": report.session_extras(app, "s1")}
+    assert payload["sessionExtras"]["s1"]["turns"][0]["promptId"].startswith("demo:")
+    assert "company-secret-internal-prompt" not in ot.render_html(payload)
 
 
 def test_web_copilot_estimates_and_shipped_comparison_match_tui():

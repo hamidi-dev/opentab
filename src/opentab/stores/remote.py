@@ -438,6 +438,11 @@ class RemoteStore:
                 continue
             stem = os.path.splitext(os.path.basename(path))[0]
             label = str(data.get("label") or stem)
+            try:
+                label.encode("utf-8")
+            except UnicodeEncodeError:
+                unreadable.append(path)
+                continue
             machines.append(label)
             try:
                 sizes[label] = os.path.getsize(path)
@@ -485,6 +490,13 @@ class RemoteStore:
                 # per-file `kept` set, and for the App's model attribution. A missing or
                 # non-string id (a corrupt/crafted summary) is dropped, not carried.
                 if not isinstance(clean.get("id"), str) or not clean["id"]:
+                    continue
+                try:
+                    # These fields become a UTF-8 qualified session reference.
+                    # A malformed identity must not poison the whole fleet catalog.
+                    clean["id"].encode("utf-8")
+                    clean.get("source", "").encode("utf-8")
+                except UnicodeEncodeError:
                     continue
                 try:
                     w = Workflow(**clean)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import math
 import os
 from datetime import datetime, timezone
@@ -128,6 +129,27 @@ class CsvStore:
                 if canon == "cost" and norm in ("credits", "credit"):
                     cost_is_credits = True
         return mapping, cost_is_credits
+
+    @staticmethod
+    def _reader(fh):
+        # Real prompts routinely exceed csv's 128 KiB default. The limit is
+        # process-global: only raise it, and use a value supported on Windows too.
+        if csv.field_size_limit() < 2**31 - 1:
+            csv.field_size_limit(2**31 - 1)
+        return csv.DictReader(fh)
+
+    @staticmethod
+    def _rows(reader):
+        # csv.Error is raised while advancing, not while processing a row.
+        # Python 3.9/3.10 reject NUL-containing records but recover on next().
+        while True:
+            try:
+                row = next(reader)
+            except StopIteration:
+                return
+            except csv.Error:
+                continue
+            yield row
 
     @staticmethod
     def _to_int(raw) -> int:
@@ -259,15 +281,15 @@ class CsvStore:
         # stays cheap.
         try:
             with open(self.csv_path, newline="", encoding="utf-8", errors="replace") as fh:
-                reader = csv.DictReader(fh)
+                reader = self._reader(fh)
                 mapping, is_credits = self._resolve_headers(reader.fieldnames)
                 col = mapping.get("cost")
                 if not col:
                     return False
-                for row in reader:
+                for row in self._rows(reader):
                     if self._to_float(row.get(col)) > 0:
                         return True
-        except OSError:
+        except (OSError, csv.Error):
             return False
         return False
 
@@ -333,9 +355,9 @@ class CsvStore:
         sessions: dict[str, dict] = {}
         try:
             with open(self.csv_path, newline="", encoding="utf-8", errors="replace") as fh:
-                reader = csv.DictReader(fh)
+                reader = self._reader(fh)
                 mapping, cost_is_credits = self._resolve_headers(reader.fieldnames)
-                for row in reader:
+                for row in self._rows(reader):
                     try:
                         self._parse_row(row, mapping, cost_is_credits, sessions)
                     except (ValueError, TypeError):
@@ -343,6 +365,8 @@ class CsvStore:
         except OSError:
             self._sessions = {}
             return self._sessions
+        except csv.Error:
+            pass  # An unreadable record must not discard earlier valid usage.
         for sid, s in sessions.items():
             self._finalize(sid, s)
         # Drop sessions with no recorded token usage (mirrors CodexStore).
@@ -452,7 +476,7 @@ class CsvStore:
         turns = sorted(
             (t for t in s["turns"] if t["ts_epoch"] is not None), key=lambda t: t["ts_epoch"]
         )
-        use_id = any(t["prompt_id"] for t in turns)
+        use_id = s["uses_prompt_ids"] = any(t["prompt_id"] for t in s["turns"])
         prompt_epochs, prev_key = [], None
         for t in turns:
             key = t["prompt_id"] if use_id else t["prompt_full"]
@@ -622,22 +646,36 @@ class CsvStore:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
     def message_timeline(self, workflow_id: str) -> list[dict]:
-        # Chronological per-turn rows. Canonical "YYYY-MM-DD HH:MM:SS" timestamps
-        # sort in time order; a turn's prompt_id (the explicit id, else the prompt
-        # text) groups consecutive same-prompt turns under one "▸" header, like the
-        # other backends. App._scale_demo_turns hides magnitudes in demo, like Tools.
+        # Group on the same session-wide boundaries as worked time. Display labels
+        # are capped, not identities; blank keys continue the preceding prompt.
         s = self._parse().get(workflow_id)
         if not s:
             return []
         out = []
-        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+        use_id = s["uses_prompt_ids"]
+        current_id = current_title = current_full = ""
+        # Wall-clock strings reverse a DST fall-back and lose fractional seconds.
+        for t in sorted(
+            s["turns"], key=lambda r: r["ts_epoch"] if r["ts_epoch"] is not None else -math.inf
+        ):
             r = dict(t)
             r["time"] = r.pop("ts")  # already canonical "YYYY-MM-DD HH:MM:SS" (local)
             prompt = r.pop("prompt", "")
             explicit = r.pop("prompt_id", "")
-            r["prompt_id"] = explicit or prompt  # group consecutive same-prompt turns
-            r["prompt_title"] = prompt
-            r["prompt_full"] = r.get("prompt_full") or prompt
+            full = r.get("prompt_full") or prompt
+            key = explicit if use_id else full
+            if key:
+                # IDs leave through numeric APIs without raw-content permission.
+                current_id = (
+                    key
+                    if use_id
+                    else "prompt:"
+                    + hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()
+                )
+                current_title, current_full = prompt, full
+            r["prompt_id"] = current_id
+            r["prompt_title"] = current_title
+            r["prompt_full"] = current_full
             out.append(r)
         return out
 

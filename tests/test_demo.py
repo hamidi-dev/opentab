@@ -1,3 +1,4 @@
+import copy
 import os
 import sqlite3
 import tempfile
@@ -5,6 +6,27 @@ import tempfile
 import opentab as ot
 
 from tests._support import FakeStore, _app_on_session, _select_session, app_with, workflow
+
+
+def test_demo_anonymizes_text_based_group_ids_without_changing_group_membership():
+    original = [
+        {
+            "model_name": "gpt-4o",
+            "prompt_id": prompt,
+            "prompt_title": prompt,
+            "prompt_full": prompt,
+            "tokens_total": 100,
+        }
+        for prompt in ("company secret one", "company secret one", "company secret two")
+    ]
+    app = app_with([workflow("s1", "2026-10-18")])
+    app.store.demo_scale = 1.0
+    for cats in (frozenset({"titles"}), frozenset({"turns"}), frozenset({"titles", "turns"})):
+        app.store.demo_cats = cats
+        rows = app._scale_demo_turns("s1", copy.deepcopy(original))
+        assert all("company secret" not in row["prompt_id"] for row in rows)
+        assert rows[0]["prompt_id"] == rows[1]["prompt_id"] != rows[2]["prompt_id"]
+        assert rows == app._scale_demo_turns("s1", copy.deepcopy(original))
 
 
 def test_demo_toggle_hides_and_locks_notes_live():
