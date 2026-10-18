@@ -11,6 +11,37 @@ from opentab.presentation.formatting import iso_to_local
 from tests._support import PI_SID, _pi_args, _pi_assistant, _pi_session, _pi_user, _pi_write
 
 
+def test_pi_demo_workflows_and_nodes_scramble_labels_and_keep_summary_consistent():
+    with tempfile.TemporaryDirectory() as tmp:
+        _pi_write(
+            tmp,
+            "project",
+            PI_SID,
+            [
+                _pi_session(PI_SID, tmp),
+                _pi_user("private customer"),
+                _pi_assistant("anthropic/claude-sonnet-4", 100, 50, cost=0.02),
+            ],
+        )
+        store = ot.PiStore(tmp, _pi_args())
+        store.demo, store.demo_scale = True, 2.0
+        store.demo_cats = ot.demo.DEMO_ALL
+        rows = store.workflows()
+        assert len(rows) == 1 and rows[0].id == PI_SID
+        assert rows[0].title != "private customer" and rows[0].directory != tmp
+        assert rows[0].total_tokens == 300 and rows[0].total_cost == 0.04
+        summary = store.summary(rows)
+        assert (
+            summary["tokens"] == 300 and summary["cost"] == 0.04 and summary["paid_workflows"] == 1
+        )
+        node = store.workflow_nodes(PI_SID)[0]
+        assert node["title"] == rows[0].title and node["cost"] == rows[0].total_cost
+        assert node["tokens_total"] == 300
+        assert store.workflow_nodes("missing") == []
+        assert store.message_timeline("missing") == []
+        assert store.tool_breakdown("missing") == []
+
+
 def test_pi_conversation_retains_zero_usage_multipart_and_replayed_occurrences():
     with tempfile.TemporaryDirectory() as tmp:
         text = "  Grüße 👋\n\n```py\n  x = 1\n```\n"

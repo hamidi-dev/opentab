@@ -4,12 +4,120 @@ import json
 import os
 import sqlite3
 import tempfile
+from dataclasses import asdict
 from unittest.mock import patch
 
 import opentab as ot
 from opentab.stores.opencode import REQUIRED_SCHEMA, REQUIRED_SCHEMA_V2
 
 from tests._support import FakeStore, _empty_opencode_db, _parse, _write_csv, workflow
+
+
+def test_remote_source_factory_merges_live_and_imported_rows_with_live_duplicates_winning():
+    for local, imported in ((True, True), (True, False), (False, True), (False, False)):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _parse(["--source", "remote", "--remotes", tmp, "--no-cache"])
+            if imported:
+                rows = [
+                    workflow("shared", "2026-09-01", title="stale shared"),
+                    workflow("remote", "2026-09-02"),
+                ]
+                with open(os.path.join(tmp, "server.json"), "w") as handle:
+                    json.dump(
+                        {
+                            "opentab_export": 1,
+                            "label": "server",
+                            "records_cost": True,
+                            "workflows": [asdict(row) for row in rows],
+                            "model_breakdown": [],
+                        },
+                        handle,
+                    )
+            live = FakeStore([workflow("shared", "2026-09-03", title="live shared")])
+            with patch.object(
+                ot.sources, "available_sources", return_value=["opencode"] if local else []
+            ), patch.object(ot.sources, "make_store", return_value=(live, "")), patch.object(
+                ot.util, "local_machine_name", return_value="laptop"
+            ):
+                if not local and not imported:
+                    try:
+                        ot.sources._build_store(args, "remote")
+                    except SystemExit as exc:
+                        assert "No machine summaries" in str(exc)
+                    else:
+                        raise AssertionError("empty fleet accepted")
+                    continue
+                store, message = ot.sources._build_store(args, "remote")
+            rows = store.workflows()
+            assert len(rows) == (2 if imported else 1)
+            shared = next(row for row in rows if row.id == "shared")
+            assert shared.title == ("live shared" if local else "stale shared")
+            assert shared.machine == ("laptop" if local else "server")
+            assert "fleet" in message
+            if local and not imported:
+                assert store.fleet_warning
+
+
+def test_explicit_backend_selection_reports_missing_data_instead_of_opening_other_sources():
+    with tempfile.TemporaryDirectory() as tmp:
+        args = _parse([])
+        for name in (
+            "db",
+            "claude_dir",
+            "codex_dir",
+            "hermes_db",
+            "csv",
+            "jsonl",
+            "pi_dir",
+            "omp_dir",
+            "openclaw_dir",
+            "zaly_dir",
+            "gemini_dir",
+            "antigravity_dir",
+        ):
+            setattr(args, name, os.path.join(tmp, "missing", name))
+        args.copilot_dirs, args.vscode_dirs = [], []
+        for key in (
+            "claude",
+            "codex",
+            "hermes",
+            "csv",
+            "jsonl",
+            "pi",
+            "omp",
+            "openclaw",
+            "zaly",
+            "gemini",
+            "antigravity",
+        ):
+            try:
+                ot.sources._build_store(args, key)
+            except SystemExit as exc:
+                assert "not found" in str(exc) or "No " in str(exc), (key, str(exc))
+            else:
+                raise AssertionError(f"missing {key} silently opened")
+        for conversation in (False, True):
+            args.conversation_sources_only = conversation
+            with patch.object(ot.sources, "available_sources", return_value=[]):
+                try:
+                    ot.sources._build_store(args, "all")
+                except SystemExit as exc:
+                    assert (
+                        "no supported conversation sources" in str(exc)
+                        if conversation
+                        else "no data sources" in str(exc)
+                    )
+                else:
+                    raise AssertionError("empty source catalog accepted")
+
+
+def test_cache_wrapper_bypasses_combined_and_unsupported_backends_without_constructing_cache():
+    args = _parse([])
+    plain = FakeStore([])
+    combined = ot.CombinedStore([plain])
+    with patch.object(ot.sources, "CachedStore", side_effect=AssertionError("must not cache")):
+        assert ot.sources._wrap_cache(plain, "opencode", args) is plain
+        assert ot.sources._wrap_cache(combined, "all", args) is combined
 
 
 def test_conversation_all_builds_only_present_supported_readers():

@@ -824,6 +824,8 @@ class Renderer:
                 return self.day_sources(day, content_width)
             if current == "Machines":
                 return self.day_machines(day, content_width)
+            if current == "Models":
+                return self.day_models(day, content_width)
             if current == "Projects":
                 return self.day_projects(day, content_width)
             return self.day_workflows(day, content_width)

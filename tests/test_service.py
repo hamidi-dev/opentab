@@ -247,6 +247,71 @@ def _args():
     return type("Args", (), {"source": "auto", "demo": False})()
 
 
+def test_context_service_keeps_only_root_request_sizes_and_estimated_composition():
+    class ContextStore(DetailStore):
+        def message_timeline(self, wid):
+            row = super().message_timeline(wid)[0]
+            return [
+                row,
+                {**row, "depth": 1},
+                {"input": 0},
+                {**row, "input": 20000, "cache_read": 10000},
+            ]
+
+    store = ContextStore([workflow("root", "2026-09-01")])
+    service = ot.OpenTabService(store, _args())
+    result = service.session_context("root")
+    assert [point["tokens"] for point in result["points"]] == [100, 30000]
+    assert result["points"][0]["cached_share"] is None
+    assert abs(result["points"][1]["cached_share"] - 1 / 3) < 1e-9
+    assert all(point["window_tokens"] > 0 for point in result["points"])
+    assert result["composition"] == [
+        {"category": "tools", "kind": "definitions", "count": 2, "estimated_tokens": 40}
+    ]
+    assert "secret" not in str(result) and "content_key" not in str(result)
+    with patch.object(store, "supports_context", return_value=False), patch.object(
+        store, "supports_context_curve", return_value=False
+    ), patch.object(
+        store, "context_breakdown", side_effect=AssertionError("unsupported")
+    ), patch.object(store, "message_timeline", side_effect=AssertionError("unsupported")):
+        result = service.session_context("root")
+    assert result["points"] == result["composition"] == []
+
+
+def test_session_service_all_sort_orders_and_relative_ranges_validate_without_ui():
+    rows = [
+        workflow("a", "2026-09-02", title="Zebra", tokens=100, directory="/Beta"),
+        workflow("b", "2026-09-01", title="apple", tokens=200, directory="/alpha"),
+    ]
+    rows[1].ended_at = "2026-09-03"
+    service = ot.OpenTabService(DetailStore(rows), _args())
+    for key, expected in (
+        ("tokens", ["b", "a"]),
+        ("date", ["a", "b"]),
+        ("last_activity", ["b", "a"]),
+        ("title", ["b", "a"]),
+        ("project", ["b", "a"]),
+    ):
+        for reverse in (False, True):
+            result = service.list_sessions(ot.SessionQuery(sort=key, reverse=reverse))
+            assert [row["native_id"] for row in result["sessions"]] == (
+                expected[::-1] if reverse else expected
+            )
+    for query, code in (
+        (ot.SessionQuery(sort="not-a-sort"), "invalid_sort"),
+        (ot.SessionQuery(range="not-a-range"), "invalid_range"),
+    ):
+        try:
+            service.list_sessions(query)
+        except ot.ServiceError as exc:
+            assert exc.code == code
+        else:
+            raise AssertionError("invalid query accepted")
+    for spec in ("7d", "3m"):
+        since, until = service._date_bounds(spec)
+        assert len(since) == 10 and until is None
+
+
 class ConversationStore(DetailStore):
     def __init__(self, workflows, source="OpenCode"):
         super().__init__(workflows, source)

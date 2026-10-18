@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import opentab as ot
@@ -15,6 +16,7 @@ from opentab.cli import main as cli
 
 from tests._support import (
     OCL_SID,
+    FakeStore,
     _claude_msg,
     _codex_meta,
     _codex_tokens,
@@ -117,6 +119,186 @@ def test_failed_remote_summary_publish_preserves_previous_summary():
         with open(filename) as stream:
             assert stream.read() == "last good summary"
         assert os.listdir(tmp) == [os.path.basename(filename)]
+
+
+def test_web_command_builds_headless_app_and_routes_static_and_live_reports():
+    from opentab.web import report
+
+    for live, saved_state, source in ((False, False, "opencode"), (True, True, "remote")):
+        argv = ["web", "--headless"] if live else ["web", "--html", "report.html", "--no-state"]
+        args = cli.parse_args(argv)
+        store = FakeStore([workflow("s", "2026-09-01")])
+        store.fleet_warning = "one machine skipped"
+        out = io.StringIO()
+        with patch.object(
+            cli, "load_state", return_value={"theme": "fixture"}
+        ) as load, patch.object(cli, "resolve_source", return_value=source), patch.object(
+            cli.sources, "require_history"
+        ), patch.object(
+            cli.sources, "make_store", return_value=(store, "loading fixture")
+        ), patch.object(cli, "apply_state") as restore, patch.object(
+            cli, "_offer_retention_warnings"
+        ) as warnings, patch.object(
+            cli, "_make_refresh_fn", return_value="refresh"
+        ) as refresh, patch.object(report, "html_command", return_value=17) as html, patch.object(
+            report, "serve_command", return_value=19
+        ) as serve, contextlib.redirect_stderr(out):
+            assert cli.web_command(args) == (19 if live else 17)
+        call = serve if live else html
+        other = html if live else serve
+        app, received_args = call.call_args.args
+        assert received_args is args and app.store is store and not app.allow_price_prompt
+        assert [row.id for row in app.loaded] == ["s"]
+        warnings.assert_called_once_with(app, args, source, can_persist=False)
+        other.assert_not_called()
+        assert load.call_count == restore.call_count == int(saved_state)
+        assert refresh.call_count == int(source == "remote")
+        if source == "remote":
+            assert app._refresh_backend == "refresh"
+        assert "one machine skipped" in out.getvalue()
+
+
+def test_fleet_transport_errors_remain_per_machine_and_never_write_bad_exports():
+    for outcome, expected in (
+        (subprocess.TimeoutExpired("ssh", 1), "timed out"),
+        (FileNotFoundError("ssh"), "ssh not found"),
+        (OSError("offline"), "offline"),
+        (RuntimeError(), "RuntimeError"),
+        ("invalid json", "Expecting value"),
+        ("[]", "not an opentab summary"),
+        ('{"workflows":{}}', "not an opentab summary"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            cli,
+            "_fetch_summary",
+            **(
+                {"side_effect": outcome}
+                if isinstance(outcome, Exception)
+                else {"return_value": outcome}
+            ),
+        ):
+            count, error = cli._pull_one("fixture", {"ssh": "fixture"}, tmp)
+            assert count == 0 and expected in error
+            assert os.listdir(tmp) == []
+    with tempfile.TemporaryDirectory() as tmp, patch.object(
+        cli, "_fetch_summary", return_value='{"workflows":[]}'
+    ):
+        count, error = cli._pull_one("fixture", {}, os.path.join(tmp, "missing"))
+        assert count == 0 and error.startswith("could not save:")
+    for entry, expected in ((None, "invalid machine entry"), ({}, "neither an 'ssh' target")):
+        try:
+            cli._fetch_summary("fixture", entry)
+        except RuntimeError as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError("invalid machine configuration accepted")
+    for stderr, expected in (
+        ("first detail\nfinal detail\n", "final detail"),
+        ("", "ssh exited 7"),
+    ):
+        with patch.object(
+            cli.subprocess, "run", return_value=SimpleNamespace(returncode=7, stderr=stderr)
+        ):
+            try:
+                cli._fetch_summary("fixture", {"ssh": "fixture"})
+            except RuntimeError as exc:
+                assert str(exc) == expected
+            else:
+                raise AssertionError("failed ssh reported success")
+
+
+def test_fleet_refresh_reports_unwritable_destination_for_each_saved_target():
+    with tempfile.TemporaryDirectory() as tmp:
+        args = cli.parse_args(["--remotes", tmp])
+        refresh = cli._make_refresh_fn(args)
+        with patch.object(
+            cli,
+            "_load_remotes",
+            return_value={"first": {"ssh": "box"}, "second": {"url": "https://example.invalid"}},
+        ), patch.object(cli.os, "makedirs", side_effect=PermissionError("read only")), patch.object(
+            cli, "_pull_one", side_effect=AssertionError("must not fetch")
+        ):
+            assert refresh(["missing"]) == []
+            results = refresh(["first", "missing", "second"])
+        assert [name for name, _count, _error in results] == ["first", "second"]
+        assert all(count == 0 and "read only" in error for _name, count, error in results)
+    targets = cli._make_ssh_targets_fn()
+    with patch.object(
+        cli,
+        "_load_remotes",
+        side_effect=[
+            {"first": {"ssh": "user@box"}, "http": {"url": "https://example.invalid"}, "bad": None},
+            {"new": {"ssh": "newbox"}},
+        ],
+    ):
+        assert targets() == {"first": "user@box"}
+        assert targets() == {"new": "newbox"}
+
+
+def test_native_windows_missing_curses_error_leaves_headless_commands_available():
+    with patch.object(cli, "curses", None), patch.object(cli.paths, "migrate_legacy_caches"):
+        try:
+            cli._run(cli.parse_args(["--no-state"]))
+        except SystemExit as exc:
+            assert "pip install windows-curses" in str(exc)
+        else:
+            raise AssertionError("TUI started without curses")
+        with patch.object(cli, "web_command", return_value=17) as web:
+            args = cli.parse_args(["web", "--headless"])
+            assert cli._run(args) == 17
+            web.assert_called_once_with(args)
+
+
+def test_price_catalog_refresh_command_reports_success_and_actionable_errors():
+    for outcome in ((42, "/cache/models.json"), OSError("offline"), ValueError("invalid catalog")):
+        output = io.StringIO()
+        with patch.object(
+            cli,
+            "refresh_model_prices",
+            **(
+                {"side_effect": outcome}
+                if isinstance(outcome, Exception)
+                else {"return_value": outcome}
+            ),
+        ), contextlib.redirect_stdout(output):
+            if isinstance(outcome, Exception):
+                try:
+                    cli.refresh_models_command()
+                except SystemExit as exc:
+                    assert str(exc) == f"price refresh failed: {outcome}"
+                else:
+                    raise AssertionError("failed refresh reported success")
+            else:
+                assert cli.refresh_models_command() == 0
+                assert "Cached 42 model prices" in output.getvalue()
+
+
+def test_unicode_locale_fallback_tries_installed_utf8_names_without_leaking_errors():
+    error = cli.locale.Error("not installed")
+    for initial_error, codeset, failures, expected in (
+        (False, "UTF-8", 0, [""]),
+        (True, "ANSI_X3.4-1968", 2, ["", "C.UTF-8", "C.utf8", "en_US.UTF-8"]),
+        (False, "ASCII", 3, ["", "C.UTF-8", "C.utf8", "en_US.UTF-8"]),
+    ):
+
+        def setlocale(category, name, initial_error=initial_error, failures=failures):
+            assert category == cli.locale.LC_ALL
+            if (name == "" and initial_error) or (
+                name in ("C.UTF-8", "C.utf8", "en_US.UTF-8")[:failures]
+            ):
+                raise error
+            return name
+
+        with patch.object(cli.locale, "setlocale", side_effect=setlocale) as set_mock, patch.object(
+            cli.locale, "nl_langinfo", return_value=codeset
+        ):
+            cli.enable_unicode_locale()
+        assert [call.args[1] for call in set_mock.call_args_list] == expected
+    with patch.object(cli.locale, "setlocale") as setter, patch.object(
+        cli.locale, "nl_langinfo", side_effect=ValueError("no probe")
+    ):
+        cli.enable_unicode_locale()
+    setter.assert_called_once_with(cli.locale.LC_ALL, "")
 
 
 def test_debug_flags_on_tui_web_and_machine_commands():

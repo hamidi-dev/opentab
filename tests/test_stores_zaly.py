@@ -1,8 +1,10 @@
 import json
 import os
 import tempfile
+from unittest.mock import patch
 
 import opentab as ot
+from opentab.stores import zaly
 
 from tests._support import (
     FakeStore,
@@ -16,6 +18,146 @@ from tests._support import (
 )
 
 ZALY_SID = "019f4c95-ffa0-7e39-875c-2e9b34958e7f"
+
+
+def test_zaly_demo_workflows_nodes_and_summary_use_one_anonymization_scale():
+    with tempfile.TemporaryDirectory() as tmp:
+        _zaly_write(
+            tmp,
+            "project",
+            ZALY_SID,
+            [
+                _zaly_settings(ZALY_SID, tmp),
+                _zaly_user("private customer"),
+                _zaly_assistant("anthropic/claude-opus-4-6", 100, 50, cost={"input": 0.02}),
+            ],
+        )
+        store = _zaly_store(tmp)
+        store.demo, store.demo_scale = True, 2.0
+        store.demo_cats = ot.demo.DEMO_ALL
+        rows = store.workflows()
+        assert rows[0].title != "private customer" and rows[0].directory != tmp
+        assert rows[0].total_tokens == 300 and rows[0].total_cost == 0.04
+        assert store.summary(rows)["cost"] == 0.04
+        node = store.workflow_nodes(ZALY_SID)[0]
+        assert node["title"] == rows[0].title and node["cost"] == 0.04
+        assert node["tokens_total"] == 300
+        assert store.workflow_nodes("missing") == []
+        assert store.message_timeline("missing") == []
+        assert store.tool_breakdown("missing") == []
+
+
+def test_zaly_context_estimates_cover_nested_results_and_all_part_roles():
+    store = object.__new__(ot.ZalyStore)
+    context = {}
+    store._ctx_content(context, "abcd", "assistant")
+    store._ctx_content(context, "abcd", "system")
+    store._ctx_content(context, " abcd ", "user")
+    for role in ("assistant", "system", "user"):
+        store._ctx_content(context, [None, {"type": "text", "text": "abcd"}], role)
+    store._ctx_part(context, {"type": "reasoning", "text": "abcd"}, "assistant")
+    store._ctx_part(context, {"type": "tool-call", "name": "Read", "params": {"x": 1}}, "assistant")
+    store._ctx_part(context, {"type": "tool-result", "name": "Read", "result": "abcd"}, "tool")
+    store._ctx_part(
+        context,
+        {
+            "type": "tool-result",
+            "name": "Read",
+            "content": [{"type": "image"}, "abcd", {"text": "abcd"}],
+        },
+        "tool",
+    )
+    store._ctx_part(context, {"type": "pdf"}, "user")
+    store._ctx_part(context, {"type": "meta", "tag": "compaction", "data": "abcd"}, "system")
+    store._ctx_part(context, {"type": "error", "text": "abcd"}, "system")
+    assert context == {
+        ("assistant text", ""): [2, 2],
+        ("injected context", "system"): [2, 2],
+        ("user prompts", ""): [2, 2],
+        ("reasoning", ""): [1, 1],
+        ("tool call params", "Read"): [1, 2],
+        ("tool results", "Read"): [2, 1503],
+        ("attachments", "pdf"): [1, 8000],
+        ("injected context", "compaction"): [1, 2],
+        ("injected context", "error"): [1, 1],
+    }
+    assert store._est_content_tokens({"x": 1}) == 2
+    assert store._est_content_tokens(None) == 0
+    # Non-JSON plugin payloads use their text form without crashing a whole session.
+    assert store._est_content_tokens({"x": {1}}) > 0
+    store._ctx_part(context, {"type": "tool-call", "params": {1}}, "assistant")
+    store._ctx_part(context, {"type": "meta", "data": {1}}, "system")
+    assert ("tool call params", "(unknown)") in context
+    assert ("injected context", "meta") in context
+
+
+def test_zaly_trace_results_keep_text_and_attachment_markers_not_binary_payloads():
+    result = ot.ZalyStore._trace_result
+    assert result("verbatim") == "verbatim"
+    assert result(None) == ""
+    assert (
+        result(
+            [
+                "plain",
+                {"type": "image", "data": "privatebinary"},
+                {"text": "text"},
+                {"type": "unknown"},
+            ]
+        )
+        == "plain\n(image)\ntext"
+    )
+    assert result({"x": 1}) == '{"x": 1}'
+    assert result({1}) == "{1}"
+    assert (
+        ot.ZalyStore._user_text(
+            [
+                None,
+                {"type": "text", "text": "first"},
+                {"type": "image"},
+                {"type": "text", "text": "  "},
+                {"type": "text", "text": "second"},
+            ]
+        )
+        == "first second"
+    )
+    assert ot.ZalyStore._user_text(None) == ""
+
+
+def test_zaly_data_and_state_paths_follow_platform_and_independent_overrides():
+    for platform in ("linux", "darwin", "win32"):
+        with patch.dict(
+            os.environ,
+            {"XDG_DATA_HOME": "/data", "XDG_STATE_HOME": "/state", "LOCALAPPDATA": "/local"},
+            clear=True,
+        ), patch.object(zaly.sys, "platform", platform):
+            assert (
+                zaly.default_zaly_data_dir() == os.path.join("/local", "zaly", "Data")
+                if platform == "win32"
+                else zaly.default_zaly_data_dir() == "/data/zaly"
+            )
+            assert (
+                zaly._default_zaly_state_dir() == os.path.join("/local", "zaly", "State")
+                if platform == "win32"
+                else zaly._default_zaly_state_dir() == "/state/zaly"
+            )
+            with patch.dict(os.environ, {"ZALY_ROOT": "/root"}):
+                assert zaly.default_zaly_data_dir() == "/root/data"
+                assert zaly._default_zaly_state_dir() == "/root/state"
+                with patch.dict(
+                    os.environ, {"ZALY_DATA": " /custom-data ", "ZALY_STATE": " /custom-state "}
+                ):
+                    assert zaly.default_zaly_data_dir() == "/custom-data"
+                    assert zaly._default_zaly_state_dir() == "/custom-state"
+
+
+def test_zaly_epoch_units_and_unrepresentable_dates():
+    for value in (None, False, True, 0, -1, "1783696388553", []):
+        assert ot.ZalyStore._epoch(value) is None
+    assert ot.ZalyStore._epoch(1783696388) == 1783696388
+    assert ot.ZalyStore._epoch(1783696388000) == 1783696388
+    assert ot.ZalyStore._epoch(1783696388000000) == 1783696388
+    for value in (None, float("inf"), float("nan"), 1e100):
+        assert ot.ZalyStore._fmt_epoch(value) == ""
 
 
 def test_zaly_store_ended_at_reflects_the_latest_assistant_reply():

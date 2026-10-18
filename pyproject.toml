@@ -38,7 +38,7 @@ classifiers = [
 dependencies = ["windows-curses; platform_system == 'Windows'"]
 
 [project.optional-dependencies]
-dev = ["ruff==0.1.15"]
+dev = ["ruff==0.1.15", "coverage[toml]>=7.6,<8"]
 
 [project.urls]
 Homepage = "https://github.com/hamidi-dev/opentab"
@@ -50,6 +50,14 @@ opentab = "opentab.cli.main:main"
 
 [tool.hatch.version]
 path = "src/opentab/__init__.py"
+
+[tool.coverage.run]
+branch = true
+source = ["src/opentab"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/opentab"]

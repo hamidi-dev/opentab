@@ -2,7 +2,7 @@ import contextlib
 import os
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import opentab as ot
 from opentab.tui import app as app_module
@@ -79,6 +79,213 @@ def test_search_project_picker_uses_local_loaded_projects_not_the_spend_date_ran
             "/work/old",
         ]
     app._close_conversation_search()
+
+
+def _navigation_app():
+    rows = [
+        workflow(str(i), stamp, directory=f"/project-{i % 2}", cost=10 - i)
+        for i, stamp in enumerate(("2026-09-12", "2026-09-11", "2026-08-10", "2025-07-09"))
+    ]
+    rows[1].source = "Claude Code"
+    app = fleet_app({"laptop": rows[:2], "server": rows[2:]})
+    app._model_by_root = {
+        row.id: [_model_row("opus" if i % 2 else "haiku", row.total_cost, 100)]
+        for i, row in enumerate(rows)
+    }
+    return app
+
+
+def test_home_end_and_motion_clamp_every_browse_sidebar():
+    for scope, cursor, collection in (
+        ("years", "year_index", "years"),
+        ("months", "month_index", "months"),
+        ("days", "day_index", "panel_days"),
+        ("projects", "project_index", "projects"),
+        ("harnesses", "harness_index", "harnesses"),
+        ("machines", "machine_index", "machines"),
+    ):
+        app = _navigation_app()
+        app.set_browse_mode(scope if scope in ("projects", "harnesses", "machines") else "time")
+        if scope in ("years", "months", "days"):
+            app.focus = scope
+        count = len(getattr(app, collection))
+        assert count > 0
+        app.jump(True)
+        assert getattr(app, cursor) == count - 1, scope
+        app.move(100)
+        assert getattr(app, cursor) == count - 1
+        app.jump(False)
+        assert getattr(app, cursor) == 0
+        app.move(-100)
+        assert getattr(app, cursor) == 0
+        app.move(1)
+        assert getattr(app, cursor) == min(1, count - 1)
+
+
+def test_home_end_motion_and_wheel_target_each_zoom_picker_not_the_pager():
+    for tab, cursor, rows, region in (
+        ("Sessions", "workflow_index", "current_sessions", "session"),
+        ("Projects", "project_index", "zoom_projects", "zoomproject"),
+        ("Harnesses", "source_index", "zoom_source_rows", "zoomsource"),
+        ("Models", "model_pick_index", "zoom_model_rows", "zoommodel"),
+        ("Machines", "machine_pick_index", "zoom_machine_rows", "zoommachine"),
+    ):
+        app = _navigation_app()
+        app.focus, app.view = "years", "zoom"  # synthetic All years contains every row
+        app.tab = app.current_tabs().index(tab)
+        count = len(getattr(app, rows)())
+        assert count >= 2
+        app.jump(True)
+        assert getattr(app, cursor) == count - 1, tab
+        app.jump(False)
+        assert getattr(app, cursor) == 0
+        app.move(1)
+        assert getattr(app, cursor) == 1
+        app.renderer._add_rows_region(region, 5, 0, 30, 0, count)
+        app._wheel(5, 1, 100)
+        assert getattr(app, cursor) == count - 1
+        app._wheel(5, 1, -100)
+        assert getattr(app, cursor) == 0
+        assert app.scroll == 0 and app.view == "zoom"
+
+
+def test_wheeling_other_sidebars_preserves_focus_and_clears_rescoped_drills():
+    for scope, kind, cursor, collection in (
+        ("time", "year", "year_index", "years"),
+        ("projects", "project", "project_index", "projects"),
+        ("harnesses", "harness", "harness_index", "harnesses"),
+        ("machines", "machine", "machine_index", "machines"),
+    ):
+        app = _navigation_app()
+        app.set_browse_mode(scope)
+        app.view, app.focus = "zoom", "years"
+        app.zoom_model, app.model_pick_index = "opus", 1
+        count = len(getattr(app, collection))
+        assert count > 1
+        app.renderer._add_rows_region(kind, 3, 0, 30, 0, count)
+        app._wheel(3, 1, 1)
+        assert getattr(app, cursor) == 1
+        assert app.zoom_model is None and app.model_pick_index == 0
+        assert app.focus == "years" and app.view == "zoom"
+
+
+def test_wheel_detail_regions_scroll_without_changing_the_session_cursor():
+    for kind in ("detail", "turnline", "subagentline", "toolline", "toolcallline", "changeline"):
+        app = _navigation_app()
+        app.renderer._add_rows_region(kind, 5, 10, 30, 0, 1)
+        app._wheel(5, 11, 3)
+        assert app.scroll == 3 and app.workflow_index == 0
+        app._wheel(5, 11, -100)
+        assert app.scroll == 0
+
+
+def test_open_current_directory_reports_success_failure_missing_and_demo_without_launching():
+    for directory, demo, opened, expected in (
+        ("/project with spaces", False, True, "opened /project with spaces"),
+        ("/project", False, False, "no opener found"),
+        ("(unknown)", False, True, "no directory"),
+        ("/project", True, True, "disabled in demo"),
+    ):
+        app = app_with([workflow("s", "2026-09-01", directory=directory)])
+        app.view = "session"
+        app.store.demo = demo
+        with patch.object(app_module, "open_path", return_value=opened) as opener:
+            app.open_current()
+        assert expected in app.notice
+        if demo or directory == "(unknown)":
+            opener.assert_not_called()
+        else:
+            opener.assert_called_once_with(directory)
+    app = app_with([])
+    app.open_current()
+    assert "no directory" in app.notice
+    app = app_with([workflow("s", "2026-09-01", directory="/project")])
+    app.set_browse_mode("projects")
+    assert app._current_directory() == "/project"
+
+
+def test_fleet_refresh_reports_partial_failures_and_preserves_ui_snapshot():
+    for results, expected in (
+        ([("server", 3, ""), ("other", 2, "")], "refreshed 2 machine(s) · 5 sessions"),
+        ([("server", 0, "offline"), ("other", 2, "")], "server: offline"),
+        ([], "nothing refreshed"),
+        (None, "nothing refreshed"),
+    ):
+        app = _navigation_app()
+        app._refresh_backend = Mock(return_value=results)
+        snapshot = app.ui_snapshot()
+        with patch.object(app, "_rebuild_fleet_store") as rebuild, patch.object(
+            app, "_reload_for_source"
+        ) as reload:
+            app._do_refresh(["server", "other"])
+        app._refresh_backend.assert_called_once_with(["server", "other"])
+        rebuild.assert_called_once_with()
+        reload.assert_called_once_with(snapshot)
+        assert expected in app.notice
+    app._refresh_backend = Mock(side_effect=OSError("offline"))
+    with patch.object(app, "_rebuild_fleet_store") as rebuild:
+        app._do_refresh(["server"])
+    rebuild.assert_not_called()
+    assert "refresh failed: offline" in app.notice
+    app._refresh_backend = Mock(return_value=[])
+    with patch.object(
+        app, "_rebuild_fleet_store", side_effect=SystemExit("no fleet")
+    ), patch.object(app, "_reload_for_source") as reload:
+        app._do_refresh(["server"])
+    reload.assert_not_called()
+    assert app.notice == "no fleet"
+
+
+def test_immediate_fleet_refresh_only_calls_saved_remote_keys_and_rebuilds_after_pull():
+    app = _navigation_app()
+    app._refresh_backend = Mock(return_value=[("server", 2, "")])
+    with patch.object(app, "_rebuild_fleet_store") as rebuild, patch.object(
+        app, "reload"
+    ) as reload:
+        assert app.refresh_machines_now("laptop") == []
+        app._refresh_backend.assert_not_called()
+        rebuild.assert_not_called()
+        assert app.refresh_machines_now("server") == [("server", 2, "")]
+        app._refresh_backend.assert_called_once_with(["server"])
+        rebuild.assert_called_once_with()
+        reload.assert_called_once_with()
+    app.store.demo = True
+    app._refresh_backend.reset_mock()
+    app.request_machine_refresh("server")
+    assert "disabled in demo" in app.notice
+    assert app.refresh_machines_now() == []
+    app._refresh_backend.assert_not_called()
+
+
+def test_edit_keymap_suspends_and_restores_terminal_even_when_editor_fails():
+    for editor, error, expected_argv in (
+        ("code -w", None, ["code", "-w", "/config/keymap.conf"]),
+        ('broken"quote', OSError("missing executable"), ['broken"quote', "/config/keymap.conf"]),
+    ):
+        app = app_with([])
+        screen = Mock()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"VISUAL": editor}))
+            stack.enter_context(
+                patch.object(bindings, "ensure_user_keymap", return_value="/config/keymap.conf")
+            )
+            terminal = {
+                name: stack.enter_context(patch.object(ot.curses, name))
+                for name in ("def_prog_mode", "endwin", "reset_prog_mode", "curs_set", "mousemask")
+            }
+            call = stack.enter_context(patch("subprocess.call", side_effect=error))
+            reload = stack.enter_context(patch.object(app, "reload_keymap"))
+            app.edit_keymap(screen)
+        call.assert_called_once_with(expected_argv)
+        for name in ("def_prog_mode", "endwin", "reset_prog_mode", "mousemask"):
+            terminal[name].assert_called_once()
+        screen.clear.assert_called_once_with()
+        screen.refresh.assert_called_once_with()
+        if error:
+            reload.assert_not_called()
+            assert "editor failed" in app.notice
+        else:
+            reload.assert_called_once_with()
 
 
 def test_terminal_resize_does_not_close_overlays():

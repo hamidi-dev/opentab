@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import tempfile
+from unittest.mock import Mock
 
 import opentab as ot
 
@@ -138,6 +139,73 @@ def test_combined_demo_shares_one_scale():
     # non-demo stays unscaled
     plain = ot.CombinedStore([type("S", (), {"records_cost": True})()])
     assert plain.demo is False and plain.demo_scale == 1.0
+
+
+def test_combined_detail_methods_use_the_owner_and_fail_closed_for_unknown_ids():
+    left = FakeStore([workflow("left", "2026-09-01")])
+    right = FakeStore([workflow("right", "2026-09-02")])
+    for store in (left, right):
+        for method, value in (
+            ("workflow_nodes", [{"id": store._workflows[0].id}]),
+            ("tool_breakdown", [{"tool": store._workflows[0].id}]),
+            ("message_timeline", [{"time": store._workflows[0].id}]),
+            ("context_breakdown", [{"category": store._workflows[0].id}]),
+            ("turn_content", {"key": [{"text": store._workflows[0].id}]}),
+        ):
+            setattr(store, method, Mock(return_value=value))
+        store.workflow_nodes.side_effect = lambda sid, owner=store: (
+            owner.workflow_nodes.return_value if sid == owner._workflows[0].id else []
+        )
+        for method in (
+            "supports_tools",
+            "supports_turns",
+            "supports_turn_content",
+            "supports_context",
+            "supports_cache_misses",
+        ):
+            setattr(store, method, Mock(return_value=store is right))
+    combined = ot.CombinedStore([left, right])
+    combined.workflows()
+    for method in (
+        "workflow_nodes",
+        "tool_breakdown",
+        "message_timeline",
+        "context_breakdown",
+        "turn_content",
+    ):
+        fetch = getattr(combined, method)
+        assert fetch("right") == getattr(right, method).return_value
+        getattr(right, method).assert_called_once_with("right")
+        getattr(left, method).assert_not_called()
+        assert fetch("missing") == ({} if method == "turn_content" else [])
+    assert combined.turn_content("right", "key") == right.turn_content.return_value
+    right.turn_content.assert_called_with("right", content_key="key")
+    for method in (
+        "supports_tools",
+        "supports_turns",
+        "supports_turn_content",
+        "supports_context",
+        "supports_cache_misses",
+    ):
+        assert getattr(combined, method)("right") is True
+        assert getattr(combined, method)("left") is False
+        assert getattr(combined, method)("missing") is False
+    # Batch export reads only backends that implement the optional batch path.
+    right.message_timeline_all = Mock(return_value={"right": [1]})
+    assert combined.message_timeline_all() == {"right": [1]}
+
+
+def test_combined_node_lookup_before_rollups_and_absent_optional_methods():
+    left, right = FakeStore([]), FakeStore([])
+    left.workflow_nodes = Mock(return_value=[])
+    right.workflow_nodes = Mock(side_effect=lambda sid: [{"id": sid}] if sid == "child" else [])
+    combined = ot.CombinedStore([left, right])
+    assert combined.workflow_nodes("child") == [{"id": "child"}]
+    assert combined.workflow_nodes("missing") == []
+    for method in ("tool_breakdown", "message_timeline", "context_breakdown"):
+        assert getattr(combined, method)("missing") == []
+    assert combined.turn_content("missing", "key") == {}
+    assert combined.message_timeline_all() == {}
 
 
 def test_tools_tab_gated_to_opencode_sessions_in_combined_view():

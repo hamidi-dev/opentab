@@ -7,7 +7,7 @@ import tempfile
 from unittest.mock import Mock, patch
 
 import opentab as ot
-from opentab.api.mcp import LEGACY_VERSIONS, MODERN_VERSION, McpServer, run_server
+from opentab.api.mcp import LEGACY_VERSIONS, MODERN_VERSION, TOOLS, McpServer, run_server
 from opentab.conversations.reader import ConversationError
 
 from tests._support import _conversation_fixture, _write_jsonl
@@ -54,6 +54,145 @@ def test_mcp_utf8_stream_survives_invalid_bytes_and_surrogate_request_ids():
     assert replies[0]["error"]["code"] == -32700
     assert replies[1]["id"] == "\ud800" and replies[1]["result"] == {}
     assert replies[2]["id"] == 2 and replies[2]["result"] == {}
+
+
+def test_mcp_accounting_and_mutation_tools_forward_exact_arguments():
+    cases = (
+        ("get_session_nodes", {"session": "s"}, "session_nodes", ("s",), {}),
+        (
+            "get_session_turns",
+            {"session": "s", "include_prompts": True, "include_content_keys": True},
+            "session_turns",
+            ("s",),
+            {"include_prompts": True, "include_content_keys": True},
+        ),
+        ("get_session_tools", {"session": "s"}, "session_tools", ("s",), {}),
+        ("get_session_context", {"session": "s"}, "session_context", ("s",), {}),
+        (
+            "get_session_content",
+            {"session": "s", "content_key": "k", "confirm_raw": True},
+            "session_content",
+            ("s", "k"),
+            {},
+        ),
+        (
+            "compare_model",
+            {"session": "s", "target_model": "openai/gpt-5"},
+            "compare_model",
+            ("s", "openai/gpt-5"),
+            {},
+        ),
+        ("get_note", {"session": "s"}, "get_note", ("s",), {}),
+        ("set_note", {"session": "s", "text": "authored"}, "set_note", ("s", "authored"), {}),
+        ("list_preferences", {}, "list_preferences", (), {}),
+        (
+            "update_preference",
+            {"resource": "bookmark", "operation": "add", "value": "s"},
+            "mutate_set",
+            ("bookmark", "add", "s"),
+            {},
+        ),
+        ("list_sources", {}, "list_sources", (), {}),
+    )
+    for name, arguments, method, positional, keywords in cases:
+        service = Mock()
+        getattr(service, method).return_value = {"fixture": name}
+        result = McpServer(_args(), service).handle(
+            _request("tools/call", {"name": "opentab_" + name, "arguments": arguments})
+        )["result"]
+        assert result["isError"] is False, (name, result)
+        assert result["structuredContent"] == {"ok": True, "data": {"fixture": name}}
+        getattr(service, method).assert_called_once_with(*positional, **keywords)
+        assert len(service.mock_calls) == 1
+
+
+def test_mcp_list_pagination_catalog_options_and_reload_are_preserved():
+    service = Mock(_sessions=[1, 2])
+    service.list_sessions.return_value = {"sessions": []}
+    service.list_models.return_value = {"models": []}
+    server = McpServer(_args(), service)
+    server.call_tool("opentab_list_sessions", {"limit": 7, "offset": 3, "project": "/project"})
+    query = service.list_sessions.call_args.args[0]
+    assert (query.limit, query.offset, query.project) == (7, 3, "/project")
+    server.call_tool(
+        "opentab_list_models", {"catalog": True, "catalog_search": "opus", "limit": 8, "offset": 2}
+    )
+    call = service.list_models.call_args
+    assert (call.args[0].limit, call.args[0].offset) == (8, 2)
+    assert call.kwargs == {"catalog": True, "search": "opus", "limit": 8, "offset": 2}
+    result = server.call_tool("opentab_reload", {})
+    assert result["structuredContent"]["data"] == {"reloaded": True, "sessions": 2}
+    service.reload.assert_called_once_with()
+
+
+def test_mcp_rejects_schema_violations_before_constructing_any_service():
+    for tool in TOOLS:
+        schema = tool["inputSchema"]
+        valid = {}
+        for key in schema.get("required", ()):
+            rule = schema["properties"][key]
+            valid[key] = rule.get("enum", ["fixture"])[0] if rule["type"] == "string" else True
+        for key in ("confirm_raw", "confirm_index"):
+            if key in schema["properties"]:
+                valid[key] = True
+        invalid = [{**valid, "unexpected": "value"}]
+        invalid += [
+            {k: v for k, v in valid.items() if k != required}
+            for required in schema.get("required", ())
+            if not required.startswith("confirm_")
+        ]
+        for key, rule in schema["properties"].items():
+            invalid.append({**valid, key: []})
+            if "enum" in rule:
+                invalid.append({**valid, key: "unsupported-choice"})
+            if "minimum" in rule:
+                invalid.append({**valid, key: rule["minimum"] - 1})
+            if "maximum" in rule:
+                invalid.append({**valid, key: rule["maximum"] + 1})
+            if rule.get("type") == "integer":
+                invalid.append({**valid, key: True})
+        with patch(
+            "opentab.api.mcp.OpenTabService.open", side_effect=AssertionError("must stay lazy")
+        ):
+            for arguments in invalid:
+                result = McpServer(_args()).handle(
+                    _request("tools/call", {"name": tool["name"], "arguments": arguments})
+                )["result"]
+                assert result["isError"], (tool["name"], arguments)
+                assert result["structuredContent"]["error"]["code"] in (
+                    "invalid_arguments",
+                    "raw_content_confirmation_required",
+                    "index_confirmation_required",
+                )
+
+
+def test_mcp_malformed_envelopes_and_unexpected_failures_remain_protocol_safe():
+    server = McpServer(_args(), FakeService())
+    for request in (
+        None,
+        [],
+        "request",
+        {},
+        {"jsonrpc": "1.0"},
+        _request(123),
+        _request("ping", request_id=True),
+        _request("ping", request_id=[]),
+    ):
+        assert server.handle(request)["error"]["code"] == -32600
+    assert server.handle({"jsonrpc": "2.0", "method": []}) is None
+    assert server.handle(_request("ping", params=[]))["error"]["code"] == -32602
+    request = _request("ping")
+    request["params"] = None
+    assert server.handle(request)["result"] == {}
+    for name in ([], {}, None):
+        assert server.handle(_request("tools/call", {"name": name}))["error"]["code"] == -32602
+    service = Mock()
+    service.get_session.side_effect = RuntimeError("private details")
+    response = McpServer(_args(), service).handle(
+        _request("tools/call", {"name": "opentab_get_session", "arguments": {"session": "s"}})
+    )
+    assert response["error"] == {"code": -32603, "message": "Internal error"}
+    assert "private details" not in str(response)
 
 
 def test_mcp_added_conversation_readers_use_real_lazy_source_factory_and_confirmations():

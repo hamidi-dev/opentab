@@ -9,6 +9,149 @@ from tests._support import _write_jsonl
 VSCODE_SID = "a66d5e72-2c39-48c0-8514-8eecb3cdbabc"
 
 
+def test_vscode_demo_anonymizes_workflows_and_nodes_and_keeps_unknown_details_empty():
+    with tempfile.TemporaryDirectory() as tmp:
+        user, folder = _vscode_user_dir(
+            tmp,
+            [
+                {
+                    "kind": 0,
+                    "v": {
+                        "sessionId": VSCODE_SID,
+                        "requests": [_vscode_request(completion=50, md_prompt=100, md_output=50)],
+                    },
+                }
+            ],
+        )
+        store = ot.VscodeStore(user, _vscode_args(user))
+        store.demo, store.demo_scale = True, 2.0
+        store.demo_cats = ot.demo.DEMO_ALL
+        rows = store.workflows()
+        assert len(rows) == 1 and rows[0].id == VSCODE_SID
+        assert rows[0].title != "fix the flaky test" and rows[0].directory != folder
+        assert rows[0].total_tokens == 300
+        summary = store.summary(rows)
+        assert summary["tokens"] == 300 and summary["workflows"] == 1
+        node = store.workflow_nodes(VSCODE_SID)[0]
+        assert node["title"] == rows[0].title and node["tokens_total"] == 300
+        assert store.workflow_nodes("missing") == []
+        assert store.message_timeline("missing") == []
+
+
+def test_vscode_journal_nested_set_append_and_malformed_paths():
+    replay = ot.VscodeStore._replay
+    rows = [
+        None,
+        [],
+        {"kind": 0, "v": []},
+        {"kind": 0, "v": {"requests": [], "kept": True}},
+        {"kind": 1, "k": ["requests", 0], "v": {"rounds": []}},
+        {"kind": 1, "k": ["requests", 0, "rounds", 0, "tokens"], "v": 42},
+        {"kind": 1, "k": ["requests", 0, "rounds", 0, "tokens"], "v": 43},
+        {"kind": 2, "k": ["requests", 0, "rounds"], "v": [{"tokens": 7}]},
+        {"kind": 1, "k": ["requests", 1], "v": 0},
+        {"kind": 2, "k": ["requests", 1], "v": ["nested"]},
+        {"kind": 1, "k": ["extra"], "v": "not a list"},
+        {"kind": 2, "k": ["extra"], "v": [1]},
+        {"kind": 2, "v": [{"default_path": True}]},
+        {"kind": 2, "v": "ignored"},
+        {"kind": 99, "v": "ignored"},
+    ]
+    for path in (
+        None,
+        [],
+        "requests",
+        [True],
+        [None],
+        [0, "field"],
+        ["requests", -1, "x"],
+        ["requests", 99, "x"],
+        ["requests", 99],
+        ["requests", "bad-index"],
+    ):
+        rows.extend(
+            [{"kind": 1, "k": path, "v": "invalid"}, {"kind": 2, "k": path, "v": ["invalid"]}]
+        )
+    root = replay(["invalid json", *map(json.dumps, rows)])
+    assert root == {
+        "kept": True,
+        "requests": [
+            {"rounds": [{"tokens": 43}, {"tokens": 7}]},
+            ["nested"],
+            {"default_path": True},
+        ],
+        "extra": [1],
+    }
+
+
+def test_vscode_workspace_metadata_fallback_and_workspace_file_parent():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.VscodeStore(tmp, _vscode_args(tmp))
+        assert store._resolve_project(tmp) == "(unknown)"
+        path = os.path.join(tmp, "workspace.json")
+        for data in ([], {"folder": None}, {"folder": "https://not-a-local-workspace"}):
+            with open(path, "w") as handle:
+                json.dump(data, handle)
+            assert store._resolve_project(tmp) == "(unknown)"
+        with open(path, "w") as handle:
+            json.dump({"workspace": "file://" + os.path.join(tmp, "team.code-workspace")}, handle)
+        assert store._resolve_project(tmp) == tmp
+        assert store.cache_inputs() == [path]
+
+
+def test_vscode_usage_counts_reject_nonfinite_and_oversized_json_numbers():
+    for value in (
+        True,
+        False,
+        None,
+        "10",
+        [],
+        {},
+        -1,
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        1e308,
+        10**400,
+    ):
+        assert ot.VscodeStore._num(value) == 0, repr(value)
+    assert ot.VscodeStore._num(42.9) == 42
+    assert ot.VscodeStore._num(12) == 12
+    with tempfile.TemporaryDirectory() as tmp:
+        user, _ = _vscode_user_dir(
+            tmp,
+            [
+                {
+                    "kind": 0,
+                    "v": {
+                        "sessionId": VSCODE_SID,
+                        "requests": [
+                            _vscode_request(
+                                "bad", completion=float("inf"), md_prompt=float("nan"), md_output=0
+                            ),
+                            _vscode_request("good", completion=7, md_prompt=10, md_output=7),
+                        ],
+                    },
+                }
+            ],
+        )
+        store = ot.VscodeStore(user, _vscode_args(user))
+        assert store.workflows()[0].total_tokens == 17
+        assert store.model_breakdown()[0]["tokens_total"] == 17
+
+
+def test_vscode_model_prefixes_preserve_qualified_models_and_infer_known_vendors():
+    for value, expected in (
+        ("copilot/gemini-2.5-pro", "google/gemini-2.5-pro"),
+        ("copilot/", "unknown"),
+        ("custom/model", "custom/model"),
+        ("unrecognized", "unrecognized"),
+    ):
+        assert ot.VscodeStore._prefix_model(value) == expected
+    for value in (float("inf"), float("nan"), 10**400):
+        assert ot.VscodeStore._ms_to_local(value) == ""
+
+
 def _vscode_args(vscode_dir):
     return type("Args", (), {"demo": False, "vscode_dir": vscode_dir})()
 
