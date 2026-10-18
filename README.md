@@ -4,6 +4,17 @@
 
 <p align="center"><strong>See where your coding agents spent their tokens, time, and money.</strong></p>
 
+<p align="center">
+  <a href="https://github.com/hamidi-dev/opentab/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/hamidi-dev/opentab/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI"></a>
+  <a href="https://github.com/hamidi-dev/opentab/actions/workflows/ci.yml"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fhamidi-dev%2Fopentab%2Fbadges%2Fcoverage.json&style=flat-square" alt="Coverage"></a>
+  <a href="https://pypi.org/project/opentab-ai/"><img src="https://img.shields.io/pypi/v/opentab-ai?style=flat-square&logo=pypi&logoColor=white" alt="PyPI"></a>
+  <a href="https://pepy.tech/projects/opentab-ai"><img src="https://img.shields.io/pepy/dt/opentab-ai?style=flat-square" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/dependencies-0-brightgreen?style=flat-square" alt="Zero dependencies">
+  <img src="https://img.shields.io/badge/telemetry-none-brightgreen?style=flat-square" alt="No telemetry">
+  <a href="LICENSE"><img src="https://img.shields.io/pypi/l/opentab-ai?style=flat-square" alt="MIT license"></a>
+</p>
+
 OpenTab brings the history your tools already keep into one interactive browser.
 Follow a busy month into a project, a session, its subagents, and individual turns.
 See what filled the context window. Compare the same token usage at another model's prices.

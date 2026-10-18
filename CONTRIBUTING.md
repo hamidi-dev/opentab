@@ -72,6 +72,11 @@ python3 run_tests.py
 shellcheck install.sh hooks/pre-push   # when shellcheck is installed
 ```
 
+CI also runs the suite under coverage.py (a CI-only tool, not a dependency). On pushes
+to `main` it force-pushes the total as shields.io endpoint JSON to the orphan `badges`
+branch, which the README's coverage badge reads. To measure locally:
+`coverage run --source=src/opentab run_tests.py && coverage report`.
+
 Fix formatting with `ruff format src/opentab tests run_tests.py`. Note that `ruff.toml`
 deliberately ignores `E501` (long lines): the TUI f-strings build fixed-width columns, so
 don't wrap them to satisfy line length.
