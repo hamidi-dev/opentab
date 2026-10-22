@@ -216,6 +216,7 @@ Free and local models are left out, and a tag marks alpha, beta and deprecated m
 | `Space` | Pin the row to a ★ shortlist shown first in every view; pinning a catalog row pins only that route. Remembered between runs |
 | `Enter` | Show the sessions that used the model, across routes and spellings |
 | `s` (or click a header) | Sort by model, eff, use or a rate |
+| `~` (or click the header again) | Reverse the sort |
 | `f` | Filter by model, vendor or route; matches word starts, so `opus48` and `snt45` work |
 | `r` | Refresh rates from models.dev |
 | `p` / `h` / `l` | Switch views |
