@@ -1492,7 +1492,8 @@ class Renderer:
         segs = [(range_lbl, active if range_lbl != "all time" else base), (rest_bc, base)]
         if sort_by:
             # Display the visible column label, not a shared internal sort key.
-            segs.append((f"  ·  sort: {self.sort_label(sort_by).lower()}", base))
+            direction = " desc" if self.effective_sort_descending() else " asc"
+            segs.append((f"  ·  sort: {self.sort_label(sort_by).lower()}{direction}", base))
         if self.query and not self.filter_active:
             segs.append((f"  ·  filter: {self.query}", active))
         ignored_count = len(self.ignored_projects) + len(self.ignored_sessions)
@@ -6310,10 +6311,12 @@ class Renderer:
         # handle_sort_menu_key).
         options = self.sort_menu_options()
         current = self.effective_sort_by()
+        direction = "descending" if self.effective_sort_descending() else "ascending"
         layout = menus.radio_menu(
             "Order this list by:",
             [(self.sort_label(key), key == current) for key in options],
             self.sort_menu_index,
+            current_suffix=f"  ({direction} · again reverses)",
         )
         self.draw_modal(
             stdscr,

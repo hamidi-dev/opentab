@@ -848,6 +848,14 @@ KEYS: tuple[Key, ...] = (
         active=lambda app: app.sort_menu,
     ),
     Key(
+        id="sort-reverse",
+        ctx=_sort_ctx,
+        actions=("sort_reverse",),
+        summary="reverse the sort order (ascending / descending)",
+        section="here",
+        when=lambda app: in_price_list(app) or (in_main(app) and app.can_sort_current_view()),
+    ),
+    Key(
         id="filter",
         ctx=_sort_ctx,
         actions=("filter*",),
@@ -979,6 +987,14 @@ KEYS: tuple[Key, ...] = (
         when=lambda app: in_trends(app) and app.in_trend_sort_context(),
         chip="sort",
         active=lambda app: app.sort_menu,
+    ),
+    Key(
+        id="trends-sort-reverse",
+        ctx=binding_context,
+        actions=("sort_reverse",),
+        summary="reverse the ranking order",
+        section="here",
+        when=lambda app: in_trends(app) and app.in_trend_sort_context(),
     ),
     Key(
         id="trends-shades",

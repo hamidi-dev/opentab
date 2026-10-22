@@ -5862,9 +5862,60 @@ class App:
         self.sort_menu_index = options.index(current) if current in options else 0
         self.sort_menu = True
 
+    def active_sort_target(self) -> str | None:
+        # The apply_header_sort target for the list the user is acting on, resolved
+        # in effective_sort_by's order so the key and the target always agree.
+        if self.in_prices_sort_context():
+            return "prices"
+        if self.in_trend_sort_context():
+            return "trend"
+        if self.in_harness_sort_context():
+            return "harness"
+        if self.in_project_sort_context():
+            return "project"
+        if self.in_subagent_sort_context():
+            return "subagent"
+        target = self.spend_sort_target()
+        if target:
+            return target
+        return "session" if self.current_sort_options() else None
+
+    def effective_sort_descending(self) -> bool | None:
+        # The on-screen direction of the active list's sort; None off sortable lists.
+        target = self.active_sort_target()
+        key = self.effective_sort_by()
+        if target is None or key is None:
+            return None
+        if target == "prices":
+            reverse = self.prices_sort_reverse
+        elif target == "trend":
+            reverse = self.trend_sort_reverse_for()
+        elif target == "session":
+            reverse = self.session_sort_reverse()
+        else:
+            reverse = getattr(self, f"{target}_sort_reverse")
+        return self.sort_descending(key, reverse)
+
+    def reverse_sort(self) -> None:
+        # The keyboard twin of re-clicking the active column header.
+        if not self.can_sort_current_view():
+            self.notify("sort: choose a sortable table first", "error")
+            return
+        target = self.active_sort_target()
+        key = self.effective_sort_by()
+        if target is None or key is None:
+            self.notify("sort: choose a sortable table first", "error")
+            return
+        self.apply_header_sort(key, target)
+        direction = "descending" if self.effective_sort_descending() else "ascending"
+        self.notice = f"sort: {key.replace('_', ' ')} {direction}"
+
     def apply_sort_choice(self, value: str) -> None:
-        # The `s` picker always lands on a column's natural order; header re-clicks
-        # are where direction gets flipped.
+        # The `s` picker lands on a new column's natural order; choosing the active
+        # column again reverses it, like re-clicking its header.
+        if value == self.effective_sort_by():
+            self.reverse_sort()
+            return
         if self.in_prices_sort_context():
             self.prices_sort = value
             self.prices_sort_reverse = False
@@ -8253,6 +8304,9 @@ class App:
                     # picker would offer belong to a table that isn't on screen.
                     self.open_sort_menu()
                     return True
+                if act == "sort_reverse":
+                    self.reverse_sort()
+                    return True
                 if act in ("down", "up"):
                     n = len(self.trend_ranked_keys())
                     step = 1 if act == "down" else -1
@@ -8406,6 +8460,9 @@ class App:
             return True
         if act == "sort":
             self.open_sort_menu()
+            return True
+        if act == "sort_reverse":
+            self.reverse_sort()
             return True
         if act == "ignore":
             self.toggle_ignore()
@@ -8630,6 +8687,9 @@ class App:
         act = self.keymap.action("prices", key)
         if act == "sort":
             self.open_sort_menu()
+            return True
+        if act == "sort_reverse":
+            self.reverse_sort()
             return True
         if act in ("cycle_view", "tab_next"):
             self.cycle_prices_view()  # the tabs read left-to-right, like Trends
