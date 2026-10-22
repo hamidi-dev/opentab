@@ -1366,6 +1366,16 @@ KEYS: tuple[Key, ...] = (
         active=lambda app: app.show_api_prices,
     ),
     Key(
+        id="chart-metric",
+        ctx=binding_context,
+        actions=("chart_metric",),
+        summary=lambda app: (
+            "chart cost over time" if app.chart_tokens else "chart tokens over time"
+        ),
+        section="global",
+        when=lambda app: in_main(app) or in_trends(app),
+    ),
+    Key(
         id="refresh-machines",
         ctx="main",
         actions=("refresh_machines",),

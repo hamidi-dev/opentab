@@ -504,6 +504,10 @@ class Renderer:
             f"{human_tokens(token_count):>{token_w}} {sessions:>{count_w}} ses"
         )
 
+    def period_bar_value(self, row: YearSummary | MonthSummary | DaySummary) -> float:
+        # The sidebar bars follow the chart metric; the row text keeps both figures.
+        return float(row.tokens) if self.chart_tokens else row.cost
+
     def year_row_text(self, year: YearSummary, marker: str) -> str:
         return self._period_row_text(
             year_label(year.year), marker, year.cost, year.tokens, year.workflows
@@ -2485,7 +2489,7 @@ class Renderer:
             return
 
         # Exclude the synthetic sum from the bar scale.
-        peak = max((yr.cost for yr in rows if yr.year != ALL_YEARS), default=0.0)
+        peak = max((self.period_bar_value(yr) for yr in rows if yr.year != ALL_YEARS), default=0.0)
         bar_cells, text_w = self.bar_lane(w)
         visible = h - 3
         start = max(0, min(self.year_index - visible // 2, max(0, len(rows) - visible)))
@@ -2521,7 +2525,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + w - 1 - bar_cells,
-                    cost_bar(year.cost, peak, bar_cells),
+                    cost_bar(self.period_bar_value(year), peak, bar_cells),
                     curses.color_pair(1),
                 )
 
@@ -2534,7 +2538,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(1))
             return
 
-        peak = max((m.cost for m in rows), default=0.0)
+        peak = max((self.period_bar_value(m) for m in rows), default=0.0)
         bar_cells, text_w = self.bar_lane(w)
         visible = h - 3
         start = max(0, min(self.month_index - visible // 2, max(0, len(rows) - visible)))
@@ -2570,7 +2574,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + w - 1 - bar_cells,
-                    cost_bar(month.cost, peak, bar_cells),
+                    cost_bar(self.period_bar_value(month), peak, bar_cells),
                     curses.color_pair(1),
                 )
 
@@ -3113,7 +3117,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No days in month.", curses.color_pair(1))
             return
 
-        peak = max((d.cost for d in rows), default=0.0)
+        peak = max((self.period_bar_value(d) for d in rows), default=0.0)
         bar_cells, text_w = self.bar_lane(w)
         visible = h - 3
         start = max(0, min(self.day_index - visible // 2, max(0, len(rows) - visible)))
@@ -3147,7 +3151,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + w - 1 - bar_cells,
-                    cost_bar(day.cost, peak, bar_cells),
+                    cost_bar(self.period_bar_value(day), peak, bar_cells),
                     curses.color_pair(1),
                 )
 
@@ -6700,6 +6704,7 @@ class Renderer:
                 height,
                 navigation_keys=self._keys("trends", "down", "up"),
                 selected=self._bar_selection("Daily", data),
+                tokens=self.chart_tokens,
             )
         )
 
@@ -6714,6 +6719,7 @@ class Renderer:
                 height,
                 navigation_keys=self._keys("trends", "down", "up"),
                 selected=self._bar_selection("Weekly", data),
+                tokens=self.chart_tokens,
             )
         )
 
@@ -6725,6 +6731,7 @@ class Renderer:
                 width,
                 height,
                 selected=self._bar_selection("Monthly", data),
+                tokens=self.chart_tokens,
             )
         )
 
@@ -6771,6 +6778,7 @@ class Renderer:
             price_key=self._key("trends", "api_prices"),
             show_api_prices=self.show_api_prices,
             heat_glyphs=heat_glyphs,
+            tokens=self.chart_tokens,
         )
         if layout.calendar:
             geometry = layout.calendar

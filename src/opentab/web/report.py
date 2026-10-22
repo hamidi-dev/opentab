@@ -280,6 +280,7 @@ def build_payload(app: App) -> dict:
         "range": app.range_label(),
         "theme": getattr(app.args, "theme", DEFAULT_THEME) or DEFAULT_THEME,
         "startApi": bool(app.show_api_prices and not store.demo),
+        "startTokens": bool(app.chart_tokens),
         "home": os.path.expanduser("~"),
         "serve": False,
     }

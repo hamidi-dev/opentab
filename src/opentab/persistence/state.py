@@ -178,6 +178,7 @@ def save_state(app: App) -> None:
         "zoom_maximized": app.zoom_maximized,
         "change_side_by_side": app.change_side_by_side,
         "show_api_prices": app.show_api_prices,
+        "chart_tokens": app.chart_tokens,
         "source": app.source_key,
         "theme": app.theme_id,
         "cal_levels": app.cal_levels,
@@ -347,6 +348,9 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     saved_api = state.get("show_api_prices")
     if saved_api is not None and not app.store.demo:
         app.show_api_prices = bool(saved_api)
+    saved_chart_tokens = state.get("chart_tokens")
+    if isinstance(saved_chart_tokens, bool):
+        app.chart_tokens = saved_chart_tokens
     # An explicit non-default CLI theme wins over saved state.
     if getattr(args, "theme", themes.DEFAULT_THEME) in (None, themes.DEFAULT_THEME):
         saved_theme = state.get("theme")

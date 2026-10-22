@@ -103,6 +103,7 @@ Keys match the terminal app, and the mouse works everywhere.
 | `j` / `k`, `1`–`9`, `Tab`, `h` / `l` | Move, jump to a panel, switch tabs |
 | `Esc` | Step back out |
 | `$` | Switch between recorded spend and the estimate ([pricing](pricing.md)) |
+| `#` | Chart tokens instead of cost over time; also the **charts $ / tokens** switch in the header |
 | `w` | Compare a session against one model (see [below](#w--compare-model-rates)) |
 | `T` / `P` | Trends / price table |
 | `R` | Set the date range |

@@ -385,6 +385,8 @@ class App:
         self.loaded = store.workflows()
         # Subscription-heavy installs default to useful API estimates; state may override.
         self.show_api_prices = not store.demo
+        # Time charts (Trends bars/calendar, period sidebar bars) plot tokens instead of cost.
+        self.chart_tokens = False
         # What-if is session-scoped and transient; it must never alter `$` or persisted state.
         self.whatif_model: str | None = None
         self.whatif_menu = False
@@ -3867,6 +3869,14 @@ class App:
             if self.show_api_prices
             else "actual cost"
         )
+
+    def toggle_chart_metric(self) -> None:
+        self.chart_tokens = not self.chart_tokens
+        self.notice = "charts: tokens" if self.chart_tokens else "charts: cost"
+
+    def chart_value(self, workflow: Workflow) -> float:
+        # The quantity time charts plot for one session under the active chart metric.
+        return float(workflow.total_tokens) if self.chart_tokens else workflow.total_cost
 
     def refresh_prices_action(self) -> None:
         if self._price_refresh_job is not None:
@@ -7442,7 +7452,7 @@ class App:
         by_date: dict[str, float] = defaultdict(float)
         for w in self.all_workflows:
             if w.created_at[:4] == year:
-                by_date[w.created_at[:10]] += w.total_cost
+                by_date[w.created_at[:10]] += self.chart_value(w)
         return by_date
 
     def _effective_cursor(self, year: str, by_date: dict[str, float]) -> str | None:
@@ -7482,7 +7492,7 @@ class App:
         by_date: dict[str, float] = defaultdict(float)
         for w in self.all_workflows:
             if w.created_at[:7] == month:
-                by_date[w.created_at[:10]] += w.total_cost
+                by_date[w.created_at[:10]] += self.chart_value(w)
         ndays = int(month_bounds(month)[1][8:10])
         days = [f"{month}-{d:02d}" for d in range(1, ndays + 1)]
         return month, [(d, by_date.get(d, 0.0)) for d in days]
@@ -7497,7 +7507,7 @@ class App:
         by_date: dict[str, float] = defaultdict(float)
         for w in self.all_workflows:
             if week_key(w.created_at) == monday:
-                by_date[w.created_at[:10]] += w.total_cost
+                by_date[w.created_at[:10]] += self.chart_value(w)
         days = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
         return monday, [(d, by_date.get(d, 0.0)) for d in days]
 
@@ -7506,7 +7516,7 @@ class App:
         by_month: dict[str, float] = defaultdict(float)
         for w in self.all_workflows:
             if week_key(w.created_at):  # skip undated rows so month_range never sees ""
-                by_month[w.created_at[:7]] += w.total_cost
+                by_month[w.created_at[:7]] += self.chart_value(w)
         if not by_month:
             return []
         keys = sorted(by_month)
@@ -8354,6 +8364,8 @@ class App:
                     self.cal_cursor = None  # re-anchor the cursor on the new year's peak
             elif act == "api_prices":
                 self.toggle_api_prices()  # re-prices the charts in place, stays open
+            elif act == "chart_metric":
+                self.toggle_chart_metric()
             elif act == "back":
                 self.trends = False  # back (with nothing focused) closes the overlay
             else:
@@ -8539,6 +8551,9 @@ class App:
             return True
         if act == "api_prices":
             self.toggle_api_prices()
+            return True
+        if act == "chart_metric":
+            self.toggle_chart_metric()
             return True
         if act == "hide_prompts":
             self.toggle_hide_prompts()
