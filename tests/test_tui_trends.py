@@ -1316,3 +1316,25 @@ def test_the_trends_tab_row_is_a_full_width_rule_with_no_key_hint():
     assert [r[-1] for r in clicks] == list(range(len(app.trend_tabs)))
     # Centered: the leading rule cells sit left of the first chip.
     assert clicks[0][2] > 2
+
+
+def test_chart_metric_switches_trend_charts_and_period_bars_to_tokens():
+    app = app_with(
+        [
+            workflow("a", "2026-06-03 12:00:00", cost=5, tokens=1_000),
+            workflow("b", "2026-06-04 12:00:00", cost=1, tokens=2_500_000),
+        ]
+    )
+    assert app.trend_daily_data()[1][2] == ("2026-06-03", 5)
+    app.handle_key(None, ord("#"))
+    assert app.chart_tokens and app.notice == "charts: tokens"
+    month, data = app.trend_daily_data()
+    assert dict(data)["2026-06-04"] == 2_500_000
+    lines = app.renderer.trend_daily(80, 16)
+    assert lines[0].startswith("# Daily tokens · 2026-06")
+    assert any("peak 2.5M on 4" in line for line in lines)
+    assert app.renderer.trend_monthly(80, 16)[0] == "# Monthly tokens (tokens per month)"
+    assert app.renderer.period_bar_value(app.months[0]) == 2_501_000
+    app.handle_key(None, ord("#"))
+    assert not app.chart_tokens
+    assert app.renderer.trend_daily(80, 16)[0].startswith("# Daily spend · 2026-06")

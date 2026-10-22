@@ -71,6 +71,7 @@ Click a tab to switch to it, or a column header to sort (click again, or press `
 | `M` | Machine picker (with several machines) |
 | `F` | Pull machine summaries again over SSH (with several machines) |
 | `$` | Estimates: add list-price estimates to recorded spend ([Pricing](pricing.md)) |
+| `#` | Chart tokens instead of cost over time ([Overlays](overlays.md#chart-tokens)) |
 | `T` | Trends ([Overlays](overlays.md#trends)) |
 | `P` | Model prices ([Pricing](pricing.md)) |
 | `C` | Colour theme |

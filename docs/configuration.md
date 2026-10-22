@@ -22,7 +22,7 @@ set.
 | Focused panel and maximized detail pane | The `w` comparison model |
 | Sort order of each table | Hidden prompts (`Ctrl-P`) |
 | Diff layout in [Changes](changes.md) | Machine and harness filters across machines |
-| `$` estimates and the colour theme | |
+| `$` estimates, the `#` chart metric and the colour theme | |
 | Ignored projects and sessions, bookmarks, pinned price rows | |
 | Dismissed warnings and the last release you were shown | |
 

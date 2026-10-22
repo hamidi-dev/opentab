@@ -507,6 +507,8 @@ const ALL_W = DATA.workflows;
 let W = ALL_W;
 let RANGE = { kind: 'all', label: META.range };
 let MODE = META.startApi ? 'api' : 'real';
+// Time charts (month bars, calendars, Trends bars, period sidebar bars) plot cost or tokens.
+let METRIC = META.startTokens ? 'tokens' : 'cost';
 
 // Injected from themes.py so CSS roles and chart ramps share the TUI palette.
 const THEMES = __THEMES__;
@@ -764,6 +766,16 @@ const hDur = s => { s = Math.max(0, Math.floor(s)); if (s < 60) return s + 's';
 const cost = w => MODE === 'api' ? w.api : w.real;
 const rootCost = w => MODE === 'api' ? w.apiRoot : w.realRoot;
 const mCost = r => MODE === 'api' ? r.api : r.real;
+const byTokens = () => METRIC === 'tokens';
+const chartVal = r => byTokens() ? r.tokens : r.cost;
+const wChartVal = w => byTokens() ? w.tokens : cost(w);
+const chartLabel = v => byTokens() ? (v > 0 ? hTok(Math.round(v)) : '') : moneyLabel(v);
+const chartExact = v => byTokens() ? hTok(Math.round(v)) : money(v);
+const chartNoun = () => byTokens() ? 'tokens' : 'spend';
+function setChartMetric(metric) {
+  METRIC = metric;
+  render(false);
+}
 function setCostMode(mode) {
   const focus = toolFocusKey();
   MODE = mode;
@@ -1167,7 +1179,7 @@ function roundTop(x, y, w, hgt, r) {
 }
 function barChart(rows) {
   const VW = 1000, VH = 190, padT = 22, padB = 22, padX = 6;
-  const peak = Math.max(...rows.map(r => r.cost), 1e-9);
+  const peak = Math.max(...rows.map(chartVal), 1e-9);
   const n = rows.length;
   const gap = 2;
   const bw = Math.max(3, Math.min(46, (VW - 2 * padX) / n - gap));
@@ -1176,25 +1188,26 @@ function barChart(rows) {
   const x0 = (VW - (n * step - gap)) / 2;
   const plotH = VH - padT - padB;
   const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, class: 'chart', role: 'img',
-    'aria-label': 'spend by month' });
+    'aria-label': chartNoun() + ' by month' });
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
     svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
-    if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: moneyLabel(peak * f) }));
+    if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: chartLabel(peak * f) }));
   }
   svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
-  const peakIdx = rows.findIndex(r => r.cost === Math.max(...rows.map(q => q.cost)));
+  const peakIdx = rows.findIndex(r => chartVal(r) === Math.max(...rows.map(chartVal)));
   const labelEvery = Math.max(1, Math.ceil(n / 14));
   rows.forEach((r, i) => {
     const x = x0 + i * step;
-    const hgt = Math.max(r.cost > 0 ? 2 : 0, plotH * r.cost / peak);
+    const v = chartVal(r);
+    const hgt = Math.max(v > 0 ? 2 : 0, plotH * v / peak);
     const y = VH - padB - hgt;
-    const g = s('g', { class: 'bargroup', tip: () => monthLabel(r.month) + '\n' + money(r.cost) + ' · ' + r.sessions + ' session' + (r.sessions === 1 ? '' : 's'),
+    const g = s('g', { class: 'bargroup', tip: () => monthLabel(r.month) + '\n' + money(r.cost) + ' · ' + hTok(r.tokens) + ' tokens · ' + r.sessions + ' session' + (r.sessions === 1 ? '' : 's'),
       onclick: () => { go('m', r.month); } });
     g.appendChild(s('rect', { class: 'hit', x, y: padT, width: step, height: VH - padT - padB }));
     if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, 3), fill: thc('accent') }));
-    if (r.cost > 0 && (valueEach || i === peakIdx))
-      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 10, fill: thc('ink2'), text: moneyLabel(r.cost) }));
+    if (v > 0 && (valueEach || i === peakIdx))
+      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 10, fill: thc('ink2'), text: chartLabel(v) }));
     if (i % labelEvery === 0)
       g.appendChild(s('text', { x: x + bw / 2, y: VH - 7, 'text-anchor': 'middle', 'font-size': 9.5, fill: thc('mut'), text: monthLabel(r.month) }));
     svg.appendChild(g);
@@ -1216,12 +1229,12 @@ function calendar(year, byDate, onDay) {
   const last = +year === today.getFullYear() ? today : new Date(+year, 11, 31);
   const start = new Date(first);
   start.setDate(start.getDate() - ((first.getDay() + 6) % 7));
-  const vals = [...byDate.values()].map(d => d.cost).filter(v => v > 0).sort((a, b) => a - b);
+  const vals = [...byDate.values()].map(chartVal).filter(v => v > 0).sort((a, b) => a - b);
   const q = f => vals.length ? vals[Math.min(vals.length - 1, Math.floor(f * vals.length))] : 0;
   const thresholds = [q(0.25), q(0.5), q(0.75), q(0.93)];
   const weeks = Math.ceil(((last - start) / 86400000 + 1) / 7);
   const VW = padL + weeks * STEP, VH = padT + 7 * STEP + 2;
-  const svg = s('svg', { class: 'cal', width: VW, height: VH, viewBox: '0 0 ' + VW + ' ' + VH, role: 'img', 'aria-label': 'daily spend calendar ' + year });
+  const svg = s('svg', { class: 'cal', width: VW, height: VH, viewBox: '0 0 ' + VW + ' ' + VH, role: 'img', 'aria-label': 'daily ' + chartNoun() + ' calendar ' + year });
   [['Mon', 0], ['Wed', 2], ['Fri', 4]].forEach(([lbl, row]) =>
     svg.appendChild(s('text', { x: padL - 6, y: padT + row * STEP + CELL - 2, 'text-anchor': 'end', 'font-size': 9, fill: thc('mut'), text: lbl })));
   let col = 0, lastMonth = -1;
@@ -1235,10 +1248,10 @@ function calendar(year, byDate, onDay) {
       svg.appendChild(s('text', { x: padL + col * STEP, y: padT - 6, 'font-size': 9, fill: thc('mut'), text: MN[lastMonth] }));
     }
     const info = byDate.get(date);
-    const v = info ? info.cost : 0;
+    const v = info ? chartVal(info) : 0;
     const attrs = { x: padL + col * STEP, y: padT + row * STEP, width: CELL, height: CELL, rx: 2,
       fill: TH.heat[heatLevel(v, thresholds)],
-      tip: () => date + '\n' + (info ? money(v) + ' · ' + info.sessions + ' session' + (info.sessions === 1 ? '' : 's') : 'no usage') };
+      tip: () => date + '\n' + (info ? money(info.cost) + ' · ' + hTok(info.tokens) + ' tokens · ' + info.sessions + ' session' + (info.sessions === 1 ? '' : 's') : 'no usage') };
     if (info) { attrs.onclick = () => { onDay(date); }; attrs.style = 'cursor:pointer'; }
     svg.appendChild(s('rect', attrs));
   }
@@ -1358,12 +1371,15 @@ function tabsFor(sc) {
   return base;
 }
 
-function sideRow(sel, onclick, lab, n, costV, peak) {
+// Time rows pass tokens so their figure and bar follow the chart metric together.
+function sideRow(sel, onclick, lab, n, costV, peak, tokens = null) {
+  const v = tokens !== null && byTokens() ? tokens : costV;
+  const label = tokens !== null && byTokens() ? (v > 0 ? hTok(v) : '') : moneyLabel(v);
   return h('div', { class: 'row' + (sel ? ' sel' : ''), onclick },
     h('span', { class: 'lab' }, lab),
     n ? h('span', { class: 'n' }, n) : null,
-    h('span', { class: 'cost' + (costV > 0 ? '' : ' zero') }, moneyLabel(costV) || '·'),
-    h('span', { class: 'tb' }, tbar(costV, peak)));
+    h('span', { class: 'cost' + (v > 0 ? '' : ' zero') }, label || '·'),
+    h('span', { class: 'tb' }, tbar(v, peak)));
 }
 function sidePane(title, focusKey, rows) {
   return h('section', { class: 'pane' + (FOCUS === focusKey ? ' focus' : ''),
@@ -1411,30 +1427,30 @@ function renderSidebar(sc) {
   const selYear = scopeYear(sc);
   if (years.length > 1) {
     const yr = years.map(y => { const g = W.filter(w => w.date.startsWith(y));
-      return { year: y, cost: sum(g, cost), sessions: g.length }; });
-    const yPeak = Math.max(...yr.map(r => r.cost), 0);
+      return { year: y, cost: sum(g, cost), tokens: sum(g, w => w.tokens), sessions: g.length }; });
+    const yPeak = Math.max(...yr.map(chartVal), 0);
     side.appendChild(sidePane('Years', 'years', [
-      sideRow(!selYear, () => go('', ''), '∑ all years', '', sum(W, cost), sum(W, cost)),
+      sideRow(!selYear, () => go('', ''), '∑ all years', '', sum(W, cost), sum(W, wChartVal), sum(W, w => w.tokens)),
       yr.map(r => sideRow(selYear === r.year, () => go('y', r.year),
-        r.year, String(r.sessions), r.cost, yPeak))]));
+        r.year, String(r.sessions), r.cost, yPeak, r.tokens))]));
   }
   const monthSrc = selYear ? W.filter(w => w.date.startsWith(selYear)) : W;
   const months = monthRows(monthSrc).slice().reverse();
-  const mPeak = Math.max(...months.map(r => r.cost), 0);
+  const mPeak = Math.max(...months.map(chartVal), 0);
   const monthRowsUi = [];
   // Keep an all-time route when the Years panel is absent.
   if (years.length <= 1)
-    monthRowsUi.push(sideRow(sc.kind === 'all', () => go('', ''), '∑ all time', '', sum(W, cost), sum(W, cost)));
+    monthRowsUi.push(sideRow(sc.kind === 'all', () => go('', ''), '∑ all time', '', sum(W, cost), sum(W, wChartVal), sum(W, w => w.tokens)));
   months.forEach(r => monthRowsUi.push(sideRow(sc.month === r.month, () => go('m', r.month),
-    r.month, String(r.sessions), r.cost, mPeak)));
+    r.month, String(r.sessions), r.cost, mPeak, r.tokens)));
   side.appendChild(sidePane(selYear ? 'Months · ' + selYear : 'Months', 'months', monthRowsUi));
   const dayMonth = sc.month || (months.length ? months[0].month : null);
   if (dayMonth) {
     const days = dayRows(W.filter(w => w.date.startsWith(dayMonth))).sort((a, b) => b.day < a.day ? -1 : 1);
-    const dPeak = Math.max(...days.map(r => r.cost), 0);
+    const dPeak = Math.max(...days.map(chartVal), 0);
     side.appendChild(sidePane('Days · ' + dayMonth, 'days',
       days.map(r => sideRow(sc.kind === 'd' && sc.day === r.day, () => go('d', r.day),
-        r.day.slice(5), String(r.sessions), r.cost, dPeak))));
+        r.day.slice(5), String(r.sessions), r.cost, dPeak, r.tokens))));
   }
 }
 
@@ -2756,12 +2772,12 @@ function renderOverview(root, sc, ws) {
   root.appendChild(statTiles(ws));
   if (sc.kind === 'all') {
     const months = monthRows(ws);
-    if (months.length) root.appendChild(pane('Spend by month', barChart(months)));
+    if (months.length) root.appendChild(pane((byTokens() ? 'Tokens' : 'Spend') + ' by month', barChart(months)));
     const years = [...new Set(ws.map(w => w.date.slice(0, 4)))].filter(y => /^\d{4}$/.test(y)).sort().reverse();
     if (years.length) {
       const year = VIEW.calYear && years.includes(VIEW.calYear) ? VIEW.calYear : years[0];
       const byDate = new Map(dayRows(ws.filter(w => w.date.startsWith(year))).map(r => [r.day, r]));
-      root.appendChild(pane('Calendar · daily spend',
+      root.appendChild(pane('Calendar · daily ' + chartNoun(),
         years.length > 1 ? h('div', { class: 'ychips' }, years.map(y =>
           h('button', { class: y === year ? 'on' : null, onclick: () => { VIEW.calYear = y; render(false); } }, y))) : null,
         calendar(year, byDate)));
@@ -2769,11 +2785,11 @@ function renderOverview(root, sc, ws) {
   }
   if (sc.kind === 'y') {
     const months = monthRows(ws);
-    if (months.length) root.appendChild(pane('Spend by month', barChart(months)));
+    if (months.length) root.appendChild(pane((byTokens() ? 'Tokens' : 'Spend') + ' by month', barChart(months)));
   }
   if (sc.kind === 'p') {
     const months = monthRows(ws);
-    if (months.length > 1) root.appendChild(pane('Spend by month', barChart(months)));
+    if (months.length > 1) root.appendChild(pane((byTokens() ? 'Tokens' : 'Spend') + ' by month', barChart(months)));
   }
   if (sc.kind === 'M') {
     const meta = MMETA[sc.machine] || {};
@@ -2942,6 +2958,9 @@ function chrome() {
       h('button', { class: MODE === 'real' ? 'on' : null, onclick: () => setCostMode('real') }, 'recorded $'),
       h('button', { class: MODE === 'api' ? 'on' : null, onclick: () => setCostMode('api') }, 'estimates $')));
   }
+  right.appendChild(h('div', { class: 'seg', title: 'Chart cost or tokens over time (#)' },
+    h('button', { class: byTokens() ? null : 'on', onclick: () => setChartMetric('cost') }, 'charts $'),
+    h('button', { class: byTokens() ? 'on' : null, onclick: () => setChartMetric('tokens') }, 'tokens')));
   if (META.demo) { }
   else if (MODE === 'api') right.appendChild(h('span', { class: 'badge est' }, 'estimated · list prices'));
   else if (W.some(w => w.unpriced > 0)) right.appendChild(h('span', { class: 'badge sub' }, '$0 = no recorded cost · press $ to estimate'));
@@ -3027,27 +3046,27 @@ function trendChart(pairs, opts = {}) {
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
     svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
-    if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 11, fill: thc('mut'), text: moneyLabel(peak * f) }));
+    if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 11, fill: thc('mut'), text: chartLabel(peak * f) }));
   }
   svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
   const peakVal = Math.max(...vals), peakIdx = vals.indexOf(peakVal), tickEvery = Math.max(1, Math.ceil(n / 18));
   pairs.forEach((p, i) => {
     const x = x0 + i * step;
     const hgt = Math.max(p.value > 0 ? 2 : 0, plotH * p.value / peak), y = VH - padB - hgt;
-    const g = s('g', { class: 'bg', tip: () => (p.tip || (p.label + '\n' + money(p.value))), onclick: p.nav || null });
+    const g = s('g', { class: 'bg', tip: () => (p.tip || (p.label + '\n' + chartExact(p.value))), onclick: p.nav || null });
     g.appendChild(s('rect', { class: 'hit', x, y: padT, width: step, height: VH - padT - padB }));
     if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, Math.min(3, bw / 2)), fill: thc('accent') }));
     if (p.value > 0 && (valueEach || i === peakIdx))
-      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 11, fill: thc('ink2'), text: moneyLabel(p.value) }));
+      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 11, fill: thc('ink2'), text: chartLabel(p.value) }));
     if (i % tickEvery === 0 || i === n - 1)
       g.appendChild(s('text', { x: x + bw / 2, y: VH - 8, 'text-anchor': 'middle', 'font-size': 10, fill: thc('mut'), text: p.label }));
     svg.appendChild(g);
   });
   const summary = h('div', { class: 'tr-summary' });
   if (total > 0)
-    summary.append(h('span', null, 'peak ', h('b', null, money(peakVal)), ' on ' + pairs[peakIdx].label),
-      h('span', null, 'total ', h('b', null, money(total))), h('span', null, 'avg ', h('b', null, money(total / n))));
-  else summary.append(h('span', { class: 'mut' }, 'no spend in view'));
+    summary.append(h('span', null, 'peak ', h('b', null, chartExact(peakVal)), ' on ' + pairs[peakIdx].label),
+      h('span', null, 'total ', h('b', null, chartExact(total))), h('span', null, 'avg ', h('b', null, chartExact(total / n))));
+  else summary.append(h('span', { class: 'mut' }, 'no ' + chartNoun() + ' in view'));
   return h('div', null, svg, summary);
 }
 function trendNav(label, idx, count, unit) {
@@ -3155,49 +3174,49 @@ function trendDaily() {
   if (!months.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
   const idx = Math.max(0, Math.min(TRENDS.monthIdx, months.length - 1)), month = months[idx];
   const byDay = new Map();
-  W.filter(w => w.date.startsWith(month)).forEach(w => { const d = +w.date.slice(8, 10); byDay.set(d, (byDay.get(d) || 0) + cost(w)); });
+  W.filter(w => w.date.startsWith(month)).forEach(w => { const d = +w.date.slice(8, 10); byDay.set(d, (byDay.get(d) || 0) + wChartVal(w)); });
   // Omit future empty days so an in-progress month does not compress its bars.
   let last = 0;
   for (let d = 1; d <= daysInMonth(month); d++) if ((byDay.get(d) || 0) > 0) last = d;
   const pairs = [];
   for (let d = 1; d <= last; d++) {
     const date = month + '-' + String(d).padStart(2, '0'), v = byDay.get(d) || 0;
-    pairs.push({ label: String(d), value: v, tip: date + '\n' + money(v), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null });
+    pairs.push({ label: String(d), value: v, tip: date + '\n' + chartExact(v), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null });
   }
-  return h('div', null, trendNav('Daily spend · ' + month, idx, months.length, 'month'), trendChart(pairs, { aria: 'daily spend ' + month }));
+  return h('div', null, trendNav('Daily ' + chartNoun() + ' · ' + month, idx, months.length, 'month'), trendChart(pairs, { aria: 'daily ' + chartNoun() + ' ' + month }));
 }
 function trendWeekly() {
   const weeks = trendWeeks();
   if (!weeks.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
   const idx = Math.max(0, Math.min(TRENDS.weekIdx, weeks.length - 1)), monday = weeks[idx];
   const byDate = new Map();
-  W.filter(w => weekMonday(w.date) === monday).forEach(w => { const dd = w.date.slice(0, 10); byDate.set(dd, (byDate.get(dd) || 0) + cost(w)); });
+  W.filter(w => weekMonday(w.date) === monday).forEach(w => { const dd = w.date.slice(0, 10); byDate.set(dd, (byDate.get(dd) || 0) + wChartVal(w)); });
   const pairs = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((nm, i) => {
     const date = addDays(monday, i), v = byDate.get(date) || 0;
-    return { label: nm, value: v, tip: date + '\n' + money(v), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null };
+    return { label: nm, value: v, tip: date + '\n' + chartExact(v), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null };
   });
-  return h('div', null, trendNav('Weekly spend · ' + monday + ' – ' + addDays(monday, 6), idx, weeks.length, 'week'), trendChart(pairs, {}));
+  return h('div', null, trendNav('Weekly ' + chartNoun() + ' · ' + monday + ' – ' + addDays(monday, 6), idx, weeks.length, 'week'), trendChart(pairs, {}));
 }
 function trendMonthly() {
   const rows = monthRows(W);
   if (!rows.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
   const byM = new Map(rows.map(r => [r.month, r]));
   const pairs = monthSpan(rows[0].month, rows[rows.length - 1].month).map(m => {
-    const r = byM.get(m), v = r ? r.cost : 0;
-    return { label: monthLabel(m), value: v, tip: monthLabel(m) + '\n' + money(v), nav: v > 0 ? (() => { closeTrends(); go('m', m); }) : null };
+    const r = byM.get(m), v = r ? chartVal(r) : 0;
+    return { label: monthLabel(m), value: v, tip: monthLabel(m) + '\n' + chartExact(v), nav: v > 0 ? (() => { closeTrends(); go('m', m); }) : null };
   });
-  return h('div', null, h('div', { class: 'tr-nav' }, h('span', { class: 'lbl' }, 'Monthly spend')), trendChart(pairs, {}));
+  return h('div', null, h('div', { class: 'tr-nav' }, h('span', { class: 'lbl' }, 'Monthly ' + chartNoun())), trendChart(pairs, {}));
 }
 function trendCalendar() {
   const years = trendYears();
   if (!years.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
   const idx = Math.max(0, Math.min(TRENDS.yearIdx, years.length - 1)), year = years[idx];
   const byDate = new Map(dayRows(W.filter(w => w.date.startsWith(year))).map(r => [r.day, r]));
-  const total = [...byDate.values()].reduce((a, r) => a + r.cost, 0);
+  const total = [...byDate.values()].reduce((a, r) => a + chartVal(r), 0);
   return h('div', null,
-    trendNav('Spend calendar · ' + year, idx, years.length, 'year'),
+    trendNav((byTokens() ? 'Token' : 'Spend') + ' calendar · ' + year, idx, years.length, 'year'),
     calendar(year, byDate, date => { closeTrends(); go('d', date); }),
-    h('div', { class: 'tr-summary' }, h('span', null, 'total ', h('b', null, money(total))), h('span', { class: 'mut' }, byDate.size + ' active days')));
+    h('div', { class: 'tr-summary' }, h('span', null, 'total ', h('b', null, chartExact(total))), h('span', { class: 'mut' }, byDate.size + ' active days')));
 }
 function trendModels() {
   const rows = modelAgg(W).map(r => ({ name: r.model, cost: mCost(r), runs: r.runs, tokens: r.tokens }))
@@ -3548,6 +3567,7 @@ document.addEventListener('keydown', e => {
       const unit = { Daily: 'month', Weekly: 'week', Calendar: 'year' }[TRENDS.tab];
       if (unit) { stepTrend(unit, (e.key === 'j' || e.key === 'ArrowDown') ? 1 : -1); e.preventDefault(); }
     } else if (e.key === '$' && !META.demo) { MODE = MODE === 'api' ? 'real' : 'api'; render(false); e.preventDefault(); }
+    else if (e.key === '#') { setChartMetric(byTokens() ? 'cost' : 'tokens'); e.preventDefault(); }
     else if (e.key === 'P') { openPrices(); e.preventDefault(); }
     else if (e.key === 'C') { openTheme(); e.preventDefault(); }
     return;
@@ -3607,6 +3627,8 @@ document.addEventListener('keydown', e => {
     else if (sc.kind === 'y' || sc.kind === 'p' || sc.kind === 'M') go('', '');
   } else if (e.key === '$' && !META.demo) {
     setCostMode(MODE === 'api' ? 'real' : 'api');
+  } else if (e.key === '#') {
+    setChartMetric(byTokens() ? 'cost' : 'tokens');
   } else if (e.key === 'w') {
     // Demo scaling hides absolute values but preserves the comparison ratio.
     toggleWhatif();

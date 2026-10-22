@@ -977,3 +977,23 @@ def test_the_date_range_is_never_saved_or_restored():
     assert restored.range_days is None and restored.range_months is None
     assert restored.custom_since is None and restored.custom_until is None
     assert restored.sort_by == "cost"  # the rest of the file still restores
+
+
+def test_chart_metric_is_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.chart_tokens = True
+    old_xdg = os.environ.get("XDG_STATE_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_STATE_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            assert not restored.chart_tokens
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = old_xdg
+
+    assert restored.chart_tokens

@@ -12,6 +12,7 @@ toggles: estimates, themes, demo mode and hiding your prompts.
 | `W` | [What's New](#whats-new) |
 | `N` | [Notifications](#notifications) |
 | `$` | [Estimates](#estimates) on / off |
+| `#` | [Chart tokens](#chart-tokens) instead of cost |
 | `w` | [Compare a session at another model's prices](#compare-model) |
 | `C` | [Colour theme](#themes) |
 | `D` | [Demo mode](#demo-mode) |
@@ -35,6 +36,7 @@ Trends charts spend over the active date range, and ranks what it went to.
 | Arrows | Pick a bar or day in a focused chart |
 | `s` | Sort a ranking |
 | `~` | Reverse a ranking |
+| `#` | [Chart tokens](#chart-tokens) instead of cost |
 | `Esc` | Back, then close |
 
 `Enter` on a ranked row opens its sessions. A model opens its **Economics** and
@@ -71,6 +73,18 @@ Subscriptions often record `$0.00`. `$` switches from **Recorded** to **Recorded
 pricing that usage at API list rates and labeling it an estimate. Press it again for the
 recorded spend. OpenTab remembers the
 choice. See [Pricing](pricing.md).
+
+## Chart tokens
+
+`#` makes the charts over time show tokens instead of cost: the Trends Daily, Weekly
+and Monthly bars, the Calendar heatmap and the bars beside Years, Months and Days.
+Tables and rankings already show both. Press it again for cost. OpenTab remembers the
+choice, and the web report starts with it.
+
+Use it when cost stops being comparable over time. After moving from pay-per-token
+providers to a flat subscription, recorded spend shows almost nothing for the
+subscription months, while estimates dwarf the earlier usage. Token counts stay
+comparable.
 
 ## Compare model
 

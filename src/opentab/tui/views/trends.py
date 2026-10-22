@@ -71,8 +71,10 @@ class TrendsLayout:
     calendar: CalendarGeometry | None = None
 
 
-def _chart(title: str, pairs, width: int, height: int, *, keys=None, selected=None) -> TrendsLayout:
-    chart = bar_chart(pairs, width, height - 2, keys=keys, selected=selected)
+def _chart(
+    title: str, pairs, width: int, height: int, *, keys=None, selected=None, tokens=False
+) -> TrendsLayout:
+    chart = bar_chart(pairs, width, height - 2, keys=keys, selected=selected, tokens=tokens)
     return TrendsLayout(
         (title, "", *chart.lines),
         bar_slots=chart.slots,
@@ -89,17 +91,25 @@ def daily_layout(
     *,
     navigation_keys: str,
     selected: str | None = None,
+    tokens: bool = False,
 ) -> TrendsLayout:
+    noun = "tokens" if tokens else "spend"
     if month is None:
-        return TrendsLayout(("# Daily spend", "", "No spend in the active range."))
+        return TrendsLayout((f"# Daily {noun}", "", "No spend in the active range."))
     pairs = [(str(int(day[8:10])), value) for day, value in data]
-    title = f"# Daily spend · {month}"
+    title = f"# Daily {noun} · {month}"
     if len(months) > 1:
         title += (
             f"   ({months.index(month) + 1}/{len(months)} — {navigation_keys} older/newer month)"
         )
     return _chart(
-        title, pairs, width, height, keys=[day for day, _value in data], selected=selected
+        title,
+        pairs,
+        width,
+        height,
+        keys=[day for day, _value in data],
+        selected=selected,
+        tokens=tokens,
     )
 
 
@@ -112,25 +122,46 @@ def weekly_layout(
     *,
     navigation_keys: str,
     selected: str | None = None,
+    tokens: bool = False,
 ) -> TrendsLayout:
+    noun = "tokens" if tokens else "spend"
     if monday is None:
-        return TrendsLayout(("# Weekly spend", "", "No spend in the active range."))
+        return TrendsLayout((f"# Weekly {noun}", "", "No spend in the active range."))
     names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     pairs = [(names[index], value) for index, (_day, value) in enumerate(data)]
-    title = f"# Weekly spend · {monday} – {data[-1][0]}"
+    title = f"# Weekly {noun} · {monday} – {data[-1][0]}"
     if len(weeks) > 1:
         title += f"   ({weeks.index(monday) + 1}/{len(weeks)} — {navigation_keys} older/newer week)"
     return _chart(
-        title, pairs, width, height, keys=[day for day, _value in data], selected=selected
+        title,
+        pairs,
+        width,
+        height,
+        keys=[day for day, _value in data],
+        selected=selected,
+        tokens=tokens,
     )
 
 
 def monthly_layout(
-    data: Sequence[tuple[str, float]], width: int, height: int, *, selected: str | None = None
+    data: Sequence[tuple[str, float]],
+    width: int,
+    height: int,
+    *,
+    selected: str | None = None,
+    tokens: bool = False,
 ) -> TrendsLayout:
+    noun, unit = ("tokens", "tokens") if tokens else ("spend", "cost")
     if not data:
-        return TrendsLayout(("# Monthly spend", "", "No spend in the active range."))
-    return _chart("# Monthly spend (cost per month)", data, width, height, selected=selected)
+        return TrendsLayout((f"# Monthly {noun}", "", "No spend in the active range."))
+    return _chart(
+        f"# Monthly {noun} ({unit} per month)",
+        data,
+        width,
+        height,
+        selected=selected,
+        tokens=tokens,
+    )
 
 
 def ranked_row_budget(height: int, count: int, notes: int = 0) -> int:
@@ -446,7 +477,11 @@ def calendar_layout(
     price_key: str,
     show_api_prices: bool,
     heat_glyphs: Sequence[str],
+    tokens: bool = False,
 ) -> TrendsLayout:
+    def exact(value: float) -> str:
+        return human_tokens(round(value)) if tokens else money(value)
+
     if year is None:
         text = "No spend in the active range."
         return TrendsLayout((text,), spans=(SemanticSpan(0, 0, len(text), "muted"),))
@@ -479,7 +514,7 @@ def calendar_layout(
         if text and role != "normal":
             spans.append(SemanticSpan(line, column, len(text), role, value))
 
-    title = f"Spend calendar · {year}"
+    title = f"{'Token' if tokens else 'Spend'} calendar · {year}"
     if year_count > 1:
         title += f"   ({year_index + 1}/{year_count} — {navigation_keys} older/newer year)"
     put(0, max(0, (width - len(title)) // 2), title, "title")
@@ -520,11 +555,12 @@ def calendar_layout(
         bounds = [math.expm1(math.log1p(peak) * index / levels) for index in range(levels + 1)]
         for level in range(levels + 1):
             legend.append((heat_glyphs[level], "heat", level))
-            label = (
-                f" $0{separator}"
-                if level == 0
-                else f" ≤{heat_band_label(bounds[level])}{separator}"
-            )
+            if level == 0:
+                label = f" {'0' if tokens else '$0'}{separator}"
+            elif tokens:
+                label = f" ≤{human_tokens(round(bounds[level]))}{separator}"
+            else:
+                label = f" ≤{heat_band_label(bounds[level])}{separator}"
             legend.append((label, "muted", 0))
     else:
         legend.append(("Less ", "muted", 0))
@@ -539,14 +575,15 @@ def calendar_layout(
         peak_date = max(by_date, key=by_date.__getitem__)
         info = [
             (
-                f"total {money(total)}   peak {money(peak)} on {peak_date}   {active} active days",
+                f"total {exact(total)}   peak {exact(peak)} on {peak_date}   {active} active days",
                 "normal",
             )
         ]
     elif sessions:
-        info = [(f"{sessions} sessions, no recorded spend this year", "normal")]
+        what = "tokens" if tokens else "recorded spend"
+        info = [(f"{sessions} sessions, no {what} this year", "normal")]
     else:
-        info = [("no spend this year", "normal")]
+        info = [(f"no {'tokens' if tokens else 'spend'} this year", "normal")]
     if focused and cursor:
         date = datetime.strptime(cursor, "%Y-%m-%d")
         day_sessions = sessions_by_date.get(cursor, 0)
@@ -555,7 +592,7 @@ def calendar_layout(
             noun = "session" if day_sessions == 1 else "sessions"
             info.append(
                 (
-                    f"{label}{money(by_date.get(cursor, 0.0))}   {day_sessions} {noun}   {select_key} opens",
+                    f"{label}{exact(by_date.get(cursor, 0.0))}   {day_sessions} {noun}   {select_key} opens",
                     "normal",
                 )
             )
@@ -569,7 +606,7 @@ def calendar_layout(
                 (f"Press {select_key} to navigate the calendar", "accent"),
             )
         )
-    if total == 0 and sessions and not show_api_prices:
+    if total == 0 and sessions and not show_api_prices and not tokens:
         info.append((f"{price_key} prices subscription/credit usage at API list rates", "normal"))
     for offset, (text, role) in enumerate(info):
         line = legend_y + 1 + offset

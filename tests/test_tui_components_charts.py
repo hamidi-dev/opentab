@@ -43,3 +43,12 @@ def test_positioned_labels_return_color_spans_and_placed_indices():
         (0, 4, 0),
         (11, 4, 2),
     ]
+
+
+def test_bar_chart_token_mode_labels_values_as_token_counts():
+    layout = bar_chart([("Mon", 1_500.0), ("Tue", 2_000_000.0)], 40, 12, tokens=True)
+    assert any("2.0M" in line for line in layout.lines)
+    assert any("peak 2.0M on Tue" in line and "total 2.0M" in line for line in layout.lines)
+    assert not any("$" in line for line in layout.lines)
+    zero = bar_chart([("Mon", 0.0)], 40, 10, tokens=True)
+    assert any("no tokens in view" in line for line in zero.lines)

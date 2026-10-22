@@ -3499,3 +3499,37 @@ assert.equal(trendRenders, before + 1);
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_web_chart_metric_starts_from_the_tui_and_formats_tokens_in_shipped_js():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert ot.build_payload(app)["meta"]["startTokens"] is False
+    app.chart_tokens = True
+    assert ot.build_payload(app)["meta"]["startTokens"] is True
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript behavior check: Node.js is not installed (required in CI)")
+        return
+    source = _js_source()
+    start = source.index("const money = v =>")
+    helpers = source[start : source.index("const pct = ", start)]
+    start = source.index("const cost = w =>")
+    shipped = source[start : source.index("function setChartMetric(", start)]
+    harness = (
+        "let MODE = 'real', METRIC = 'cost';\n"
+        + helpers
+        + shipped
+        + r"""
+const row = {cost: 2.5, tokens: 1234567}, w = {real: 3, api: 4, tokens: 1500};
+const out = {cost: [chartVal(row), wChartVal(w), chartLabel(2.5), chartExact(2.5), chartNoun()]};
+METRIC = 'tokens';
+out.tokens = [chartVal(row), wChartVal(w), chartLabel(1234567), chartExact(1500), chartNoun(),
+  chartLabel(0)];
+console.log(JSON.stringify(out));
+"""
+    )
+    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    actual = json.loads(result.stdout)
+    assert actual["cost"] == [2.5, 3, "$2.50", "$2.50", "spend"]
+    assert actual["tokens"] == [1234567, 1500, "1.2M", "1.5k", "tokens", ""]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from opentab.presentation.formatting import money, money_label
+from opentab.presentation.formatting import human_tokens, money, money_label
 from opentab.presentation.heatmap import BLOCKS_UP
 
 
@@ -26,8 +26,13 @@ def bar_chart(
     *,
     keys: Sequence[str] | None = None,
     selected: str | None = None,
+    tokens: bool = False,
 ) -> BarChartLayout:
-    """Lay out a vertical spend chart and its local hit geometry."""
+    """Lay out a vertical spend (or token) chart and its local hit geometry."""
+
+    def exact(value: float) -> str:
+        return human_tokens(round(value)) if tokens else money(value)
+
     if not pairs or height < 5:
         return BarChartLayout(("Not enough room to chart.",))
     margin = 1
@@ -74,8 +79,8 @@ def bar_chart(
             tops.append((index, rows_n - filled + 1, value))
 
     def place_value(index: int, top_row: int, value: float) -> None:
-        labels = [money_label(value)]
-        if 1 <= value < 1000:
+        labels = [human_tokens(round(value))] if tokens else [money_label(value)]
+        if not tokens and 1 <= value < 1000:
             labels.append(f"${value:.0f}")
         labels = [label for pos, label in enumerate(labels) if label and label not in labels[:pos]]
         if not labels:
@@ -122,11 +127,11 @@ def bar_chart(
         marker = [" "] * total_w
         center = min(x0_of(selected_index) + bar_w // 2, total_w - 1)
         marker[center] = "▲"
-        text = f" {selected} · {money(shown[selected_index][1])}"
+        text = f" {selected} · {exact(shown[selected_index][1])}"
         if center + 1 + len(text) <= total_w:
             start = center + 1
         else:
-            text = f"{selected} · {money(shown[selected_index][1])} "
+            text = f"{selected} · {exact(shown[selected_index][1])} "
             start = max(0, center - len(text))
         for offset, char in enumerate(text):
             if 0 <= start + offset < total_w and start + offset != center:
@@ -136,11 +141,11 @@ def bar_chart(
     if total:
         peak_label = max(shown, key=lambda item: item[1])[0]
         lines.append(
-            f"{' ' * margin}peak {money(peak)} on {peak_label}    "
-            f"total {money(total)}    avg {money(total / len(shown))}"
+            f"{' ' * margin}peak {exact(peak)} on {peak_label}    "
+            f"total {exact(total)}    avg {exact(total / len(shown))}"
         )
     else:
-        lines.append(f"{' ' * margin}no spend in view")
+        lines.append(f"{' ' * margin}{'no tokens' if tokens else 'no spend'} in view")
     if len(shown) < len(pairs):
         lines.append(f"{' ' * margin}(most recent {len(shown)} of {len(pairs)} — widen for more)")
     return BarChartLayout(tuple(lines), slots, click_rows)
