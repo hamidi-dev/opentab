@@ -1,0 +1,2 @@
+# The curl one-liner: one short URL, the script itself stays on main (never a stale copy).
+/install.sh https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh 302

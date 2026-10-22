@@ -2,7 +2,7 @@
 # Install opentab (the `opentab` command).
 #
 #   From a checkout:    ./install.sh
-#   Remote one-liner:   curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh | bash
+#   Remote one-liner:   curl -fsSL https://opentab.hamidi.dev/install.sh | bash
 #
 # opentab is a Python package (PyPI: opentab-ai) that installs the `opentab`
 # command. It needs Python 3.9+ and is stdlib-only at runtime; on native Windows

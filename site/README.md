@@ -47,7 +47,9 @@ button is hovered or focused, so its download has a head start.
 No page contacts a third party: fonts (`fonts.css`) and libraries are self-hosted,
 and the docs browser loads this repo's screenshots locally and turns any other
 image into a link. Every CSP in `_headers` is same-origin. `404.html` uses
-root-absolute links because Pages serves it at the missing path.
+root-absolute links because Pages serves it at the missing path. `_redirects` sends
+`/install.sh` to the script on `main` (302), so the curl one-liner stays short and
+current.
 
 Visits are counted without cookies or identifiers. `count.js` sends one beacon per
 page view to the site's own `/hit` (skipped in frames, automated browsers and under Global Privacy Control or Do Not Track);
