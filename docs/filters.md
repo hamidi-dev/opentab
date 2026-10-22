@@ -64,8 +64,10 @@ Press `f` or `/` and type. The list narrows as you type.
 
 ## Sort a list
 
-Press `s` for the sort picker, or click a column header (again to reverse). Each table
-remembers its own sort, and the selected row stays under the cursor.
+Press `s` for the sort picker, or click a column header. To reverse the order, press `~`,
+choose the active column again in the picker, or click its header again. The header's
+`sort:` note shows the direction. Each table remembers its own sort, and the selected
+row stays under the cursor.
 
 | List | Sort by |
 |------|---------|

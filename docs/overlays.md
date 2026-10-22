@@ -34,6 +34,7 @@ Trends charts spend over the active date range, and ranks what it went to.
 | `Enter` | On a chart: focus it, then drill into the picked bar or day |
 | Arrows | Pick a bar or day in a focused chart |
 | `s` | Sort a ranking |
+| `~` | Reverse a ranking |
 | `Esc` | Back, then close |
 
 `Enter` on a ranked row opens its sessions. A model opens its **Economics** and
