@@ -56,7 +56,7 @@ The PyPI package is **`opentab-ai`**; the command is **`opentab`**.
 ```sh
 brew install hamidi-dev/tap/opentab         # Homebrew (macOS / Linux)
 pip install --user opentab-ai               # pip
-curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh | bash
+curl -fsSL https://opentab.hamidi.dev/install.sh | bash
 ```
 
 Upgrade with `pipx upgrade opentab-ai`, `brew upgrade opentab`, or
