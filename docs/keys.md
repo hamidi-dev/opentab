@@ -43,7 +43,7 @@ compaction.
 
 The **Models** and **Harnesses** detail tables support `s` sorting by name, cost,
 total tokens, message/session count, and individual token categories. Click a
-column header to sort; click it again to reverse. Each table remembers its sort
+column header to sort; click it again (or press `~`) to reverse. Each table remembers its sort
 independently, and reordering keeps the selected model or harness under the cursor.
 
 | Key | Action |
@@ -280,7 +280,8 @@ harnesses are detected; the browse mode remains available with a single source.
 | `Ctrl-F` | Search retained conversation text in the current local catalog; available from the main views and supported overlays |
 | `R` | Date-range picker: type `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` straight away, or `Tab` to presets and From / To dates |
 | `a` | Back to all time, keeping the current selection where possible |
-| `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`). Sessions offer **Start Date** (`created_at`, default) and **Last Activity** (`ended_at`, including subagent activity where tracked), also in the **Days** pane. Day membership follows the session's start date; Last Activity ranks those sessions by their latest activity, falling back to the start when unavailable. The Date column follows whichever is active, and its header shows "Last act" under the latter. In Days it shows the activity time for same-day activity, or the date for activity on a later day. Projects offer the matching pair: **Recency** (the newest session's *start*) and **Last Activity** (the newest activity in any of the project's sessions, subagents included) |
+| `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`). Choosing the active column again reverses it; the picker and the header's `sort:` note show the direction. Sessions offer **Start Date** (`created_at`, default) and **Last Activity** (`ended_at`, including subagent activity where tracked), also in the **Days** pane. Day membership follows the session's start date; Last Activity ranks those sessions by their latest activity, falling back to the start when unavailable. The Date column follows whichever is active, and its header shows "Last act" under the latter. In Days it shows the activity time for same-day activity, or the date for activity on a later day. Projects offer the matching pair: **Recency** (the newest session's *start*) and **Last Activity** (the newest activity in any of the project's sessions, subagents included) |
+| `~` | Reverse the visible list's sort (ascending ↔ descending) — the keyboard twin of clicking the active column header again. Also on Trends rankings and the `P` price table |
 | `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**) and projects. Sessions rank by match quality; projects keep the selected column sort. Model lists (`P`, `w`) match word-anchored (letters may scatter inside a word, a new word only joins at its first letter — `opus48` works, `opus` no longer drags in `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**), routes by substring. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
 | `x` | Clear the filter |
 
@@ -375,7 +376,7 @@ copies the original text. The remappable action is `[main] copy_conversation`.
 
 | Key | Action |
 |-----|--------|
-| `T` | Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Projects · Harnesses. `h`/`l` tabs · `j`/`k` page months/weeks/years. On the charts and Calendar: `Enter` focuses, arrows pick a bar/day, `Enter` drills in, `Esc` back. On rankings: `j`/`k` pick · `s` sort · `Enter` drill. Models opens Economics / Sessions; other rows open Sessions directly |
+| `T` | Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Projects · Harnesses. `h`/`l` tabs · `j`/`k` page months/weeks/years. On the charts and Calendar: `Enter` focuses, arrows pick a bar/day, `Enter` drills in, `Esc` back. On rankings: `j`/`k` pick · `s` sort · `~` reverse · `Enter` drill. Models opens Economics / Sessions; other rows open Sessions directly |
 | `P` | Model prices — the table behind the `$` estimate; see [Pricing](pricing.md) for the views, sorting, and pinning |
 | `W` | What's New — offline highlights for this and earlier bundled releases. `h`/← goes newer; `l`/→ goes older, without wrapping. `j`/`k`, ↑/↓, paging and `g`/`G` scroll. `o` opens the full GitHub release currently shown; `Esc`, `q`, or `W` closes. Reopening starts at the installed release; opening from Help returns to Help |
 | `$` | Toggle what-if prices — what unpriced usage would cost at API list rates |

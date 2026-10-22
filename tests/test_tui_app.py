@@ -6069,3 +6069,26 @@ def test_dollar_reanchors_the_harness_sidebar_after_costs_reorder():
     assert app.selected_harness_summary is not None
     assert app.selected_harness_summary.name == "B"
     assert [row.name for row in app.harnesses[1:]] == ["A", "B"]
+
+
+def test_reverse_sort_key_and_picker_flip_the_active_list_direction():
+    app = app_with(
+        [
+            workflow("cheap", "2026-06-01 12:00:00", cost=1, directory="/tmp/a"),
+            workflow("dear", "2026-06-02 12:00:00", cost=9, directory="/tmp/b"),
+        ]
+    )
+    app.browse_mode = "projects"
+    assert app.in_project_sort_context()
+    assert app.effective_sort_descending() is True
+    app.handle_key(None, ord("~"))
+    assert app.project_sort_by == "cost" and app.project_sort_reverse is True
+    assert app.effective_sort_descending() is False
+    assert [p.directory for p in app.projects] == ["/tmp/a", "/tmp/b"]
+    # Choosing the active column in the `s` picker reverses it, like a header re-click.
+    app.apply_sort_choice("cost")
+    assert app.project_sort_reverse is False
+    # A different column still lands on its natural order.
+    app.project_sort_reverse = True
+    app.apply_sort_choice("tokens")
+    assert app.project_sort_by == "tokens" and app.project_sort_reverse is False
