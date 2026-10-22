@@ -1,6 +1,33 @@
 {
   "releases": [
     {
+      "version": "1.32.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Reverse the active sort from the keyboard in lists, Trends rankings and the price table; the header shows the direction.", "availability": "tui", "hint": {"text": "Choosing the active column again in the sort picker also reverses it", "binding": {"context": "main", "action": "sort_reverse"}}},
+            {"text": "Keep a static HTML report small: per-session Turns, Tools and Context load from a details folder when opened.", "availability": "web", "hint": {"text": "Run opentab web --html report.html --details-dir details, then serve the folder over HTTP"}}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Session diffs open side by side by default.", "availability": "tui"},
+            {"text": "Start faster on a cold cache: harnesses are parsed in parallel."}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "Imported CSV and JSONL usage is grouped and ordered correctly, and one unreadable record no longer drops the rest."},
+            {"text": "Turns lists a mid-prompt compaction under its prompt, and a range such as 30d now moves with the date when OpenTab stays open past midnight."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.32.0"
+    },
+    {
       "version": "1.31.0",
       "sections": [
         {
