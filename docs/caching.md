@@ -69,8 +69,8 @@ Events cover:
   `usage.batch_result` report its time and projected/fallback counts. Batch SQL and
   compact decoding contribute to the native summary's fetch/decode totals; they
   are not attributed to individual `usage.slow_row` events.
-  `scan_mode: combined_full` identifies an empty, all-history member-strategy build:
-  `usage.scan_page` combines metadata and bounded JSON extraction per rowid page,
+  `scan_mode: combined_full` identifies an empty, all-history build (path or member
+  strategy): `usage.scan_page` combines metadata and bounded JSON extraction per rowid page,
   and `usage.scan_fallback` records a page retried through the per-row validator.
   Its SQL work is included in `payload_fetch_ms`, rather than a separate metadata
   scan. `metadata_changed` retains metadata-only validation and keyed changed-row
@@ -205,14 +205,28 @@ older-runtime allocation is unresolved. Neither runtime discards accounting fiel
 The source cell's JSON is validated even when most of its content is discarded.
 SQLite's source mapping and page cache are bounded to 64 MiB and 16 MiB per reader.
 
-An empty all-history build using the member strategy reads metadata and bounded
-accounting fields together in rowid-keyset pages. This avoids a separate message
+An empty all-history build reads metadata and bounded accounting fields together in
+rowid-keyset pages, with either the path projection (1,024 rows per page) or the
+member strategy. This avoids a separate message
 table scan followed by payload lookups. Each page limits both row count and retained
 compact output; malformed JSON or an oversized compact page falls back before any
 partial page is adopted. Oversized source cells retain the existing per-row path.
 All pages share the revision refresh's read snapshot. Restored/in-memory rows and
 scoped reads keep metadata validation followed by changed-payload reads, so a full
 rebuild optimization never forces unchanged bodies into an incremental refresh.
+
+With the path projection and at least 4,096 messages, that empty build runs in
+parallel instead (`usage.parallel_scan`). Four threads each open their own read-only
+connection and project a rowid range with the whole `usage_columns` projection
+folded into one SQL expression over the bare body, so SQLite parses each body once
+and every step stays in C, where `sqlite3` releases the GIL. More threads got slower
+than one on a 12-core Mac (SQLite's allocator mutex). The bare projection equals the
+full one only for valid JSON objects, which a non-null role proves; other rows, and
+oversized or non-text cells, take the single-row path. The workers read their own
+snapshots, so a projected row is adopted only when its metadata matches this
+connection's snapshot and it is more than 2 s older than the refresh, the same margin
+reuse applies; a malformed body that aborts a range is isolated by bisection. On the
+67k-message, 8.3 GB reference database the empty build fell from 3.6 s to 1.4 s.
 
 Pricing-bucket validation fuses numeric checks and accumulation, retaining the same
 array shapes, finiteness checks, ownership subsets, aggregate reconciliation and
@@ -303,6 +317,9 @@ escaped-key lookup probe. Without that capability or Python's Blob API, SQLite
 3.35+ instead uses filtered `json_each` member iteration: it handles escaped
 top-level names even on SQLite 3.37, and Python normalizes only the kept values.
 First duplicate keys (including nested ones) retain the full-reader behavior.
+SQLite's JSON parse cache spans only one result expression, so the path projection
+returns the `$.time` type and the extracted fields in one value: a second column
+would parse every body twice.
 At least eight changed rows are projected together, up to 64 per batch in rowid
 order, rather than fetching each full payload separately. Both metadata and payloads
 use the same connection/read snapshot, including when another connection commits.

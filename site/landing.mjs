@@ -42,6 +42,7 @@ const readout = econ.querySelector("[data-readout]");
 const charts = econ.querySelector("[data-econ-charts]");
 const legend = econ.querySelector("[data-legend]");
 
+// A full API-list-rate repricing of the showcase's buckets, not the report's recorded spend.
 function validate(data) {
   const validNumber = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
   if (!data || data.basis !== "API list-price estimate" || !validNumber(data.tokens) ||

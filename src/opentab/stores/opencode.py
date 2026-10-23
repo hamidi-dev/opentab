@@ -217,7 +217,7 @@ class Store:
         self.conn.create_function("opentab_cost_residual", 2, _cost_residual, deterministic=True)
         self._tune(self.conn)
         self.has_v2 = install_views(self.conn)
-        self._usage_cache = UsageCache(db) if self.has_v2 else None
+        self._usage_cache = UsageCache(db, self._reader) if self.has_v2 else None
         self.session_columns = self._table_columns("session")
         self.message_columns = self._table_columns("message")
         self.supports_tool_breakdown = self._table_exists("part")
@@ -242,6 +242,13 @@ class Store:
                 streamed_usage=hasattr(self.conn, "blobopen"),
                 changes=self.supports_session_changes,
             )
+
+    def _reader(self) -> sqlite3.Connection:
+        """Another read-only connection, tuned like ``conn`` (parallel usage scans)."""
+        uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        self._tune(conn)
+        return conn
 
     @staticmethod
     def _tune(conn: sqlite3.Connection) -> None:
@@ -746,30 +753,43 @@ class Store:
         # at API list prices -- both in App._load_model_cache.
         models = {}
         fields = ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
-        for result in self.conn.execute(sql, [workflow_id] if workflow_id else []):
-            part = dict(result)
-            infer = copilot_cache_write_model(part["model_name"])
-            for prefix in ("", "root_", "unpriced_", "root_unpriced_"):
-                value = part.pop(prefix + "zero_write_input")
-                part[prefix + "inferred_cache_write"] = value if infer else 0
-            key = (part["root_id"], part["model_name"])
-            row = models.setdefault(key, {"root_id": key[0], "model_name": key[1], "pricing": []})
-            row["pricing"].append(
-                {
-                    "context": part["context_tokens"],
-                    "tok": [part.get(k, 0) for k in fields],
-                    "root_tok": [part.get("root_" + k, 0) for k in fields],
-                    "unpriced": [part.get("unpriced_" + k, 0) for k in fields],
-                    "root_unpriced": [part.get("root_unpriced_" + k, 0) for k in fields],
-                    **{
-                        prefix + "inferred_cache_write": part[prefix + "inferred_cache_write"]
-                        for prefix in ("", "root_", "unpriced_", "root_unpriced_")
-                    },
-                }
-            )
-            for name, value in part.items():
-                if name not in ("root_id", "model_name", "context_tokens"):
-                    row[name] = row.get(name, 0) + value
+        prefixes = ("", "root_", "unpriced_", "root_unpriced_")
+        cursor = self.conn.execute(sql, [workflow_id] if workflow_id else [])
+        # Positional access: a dict per result row cost ~3M lookups on 57k buckets.
+        # Totals keep the result column order, then the inferred writes, as before.
+        names = [d[0] for d in cursor.description]
+        at = {name: i for i, name in enumerate(names)}
+        tok_at = [[at.get(prefix + k) for k in fields] for prefix in prefixes]
+        zero_at = [at[prefix + "zero_write_input"] for prefix in prefixes]
+        inferred_names = [prefix + "inferred_cache_write" for prefix in prefixes]
+        summed = [
+            (name, i)
+            for i, name in enumerate(names)
+            if name not in ("root_id", "model_name", "context_tokens")
+            and not name.endswith("zero_write_input")
+        ]
+        root_at, model_at, context_at = at["root_id"], at["model_name"], at["context_tokens"]
+        infers: dict[str, bool] = {}
+        for result in cursor:
+            part = tuple(result)
+            model_name = part[model_at]
+            infer = infers.get(model_name)
+            if infer is None:
+                infer = infers[model_name] = bool(copilot_cache_write_model(model_name))
+            inferred = [part[i] if infer else 0 for i in zero_at]
+            key = (part[root_at], model_name)
+            row = models.get(key)
+            if row is None:
+                row = models[key] = {"root_id": key[0], "model_name": key[1], "pricing": []}
+            bucket = {"context": part[context_at]}
+            for label, positions in zip(("tok", "root_tok", "unpriced", "root_unpriced"), tok_at):
+                bucket[label] = [0 if i is None else part[i] for i in positions]
+            bucket.update(zip(inferred_names, inferred))
+            row["pricing"].append(bucket)
+            for name, i in summed:
+                row[name] = row.get(name, 0) + part[i]
+            for name, value in zip(inferred_names, inferred):
+                row[name] = row.get(name, 0) + value
         return list(models.values())
 
     @debug.timed("opencode.model_cache_token")

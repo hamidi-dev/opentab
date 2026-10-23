@@ -394,13 +394,19 @@ def _detail_views(
     return {"message": message_sql, "part": part_sql}
 
 
-def usage_columns(native: bool) -> list[str]:
-    """Shared projection for source views and compact accounting-only rows."""
-    safe = "case when json_valid(m.data) then m.data else '{}' end"
+def usage_columns(native: bool, *, bare: bool = False) -> list[str]:
+    """Shared projection for source views and compact accounting-only rows.
+
+    ``bare`` reads unqualified columns and drops the ``safe`` wrapper, so every JSON
+    call takes ``data`` itself and SQLite parses each body once. It equals the full
+    projection only for valid JSON objects, which a non-null native role proves.
+    """
+    m = "" if bare else "m."
+    safe = f"{m}data" if bare else "case when json_valid(m.data) then m.data else '{}' end"
     role = (
-        "case when not json_valid(m.data) then null "
-        "when json_type(m.data) != 'object' then null "
-        "when m.type = 'compaction' then 'assistant' else m.type end"
+        f"case when not json_valid({m}data) then null "
+        f"when json_type({m}data) != 'object' then null "
+        f"when {m}type = 'compaction' then 'assistant' else {m}type end"
         if native
         else f"json_extract({safe}, '$.role')"
     )
@@ -413,12 +419,12 @@ def usage_columns(native: bool) -> list[str]:
         timestamp = (
             f"case when json_type({safe}, '$.time') is null "
             f"or json_type({safe}, '$.time') = 'object' "
-            f"then coalesce({timestamp}, m.time_created) end"
+            f"then coalesce({timestamp}, {m}time_created) end"
         )
     columns = [
-        "m.rowid as rowid",
-        "m.id",
-        "m.session_id",
+        f"{m}rowid as rowid",
+        f"{m}id",
+        f"{m}session_id",
         f"{role} as role",
         f"{timestamp} as time_created",
         f"coalesce(json_extract({safe}, '{provider}'), 'unknown') || '/' || "
