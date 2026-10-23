@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 
 from opentab import diagnostics as debug
@@ -25,13 +26,16 @@ _NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _SPACE = re.compile(r"[ \t\r\n]*")
 _KEEP = {"role", "providerID", "modelID", "model", "time", "tokens", "cost"}
 _FIELDS = ("role", "providerID", "modelID", "model", "time", "tokens", "cost")
-_SCALAR_SQL = (
-    "select case when typeof(data)='text' and json_valid(data) and json_type(data)='object' "
-    "then json_extract(data,"
+# SQLite's JSON parse cache only spans one result expression: a second column
+# re-parses the whole body. So the $.time type (missing vs explicit null) rides
+# in front of the extracted array, split on a unit separator json_type never emits.
+_SCALAR_EXPR = (
+    "case when typeof(data)='text' and json_valid(data) and json_type(data)='object' "
+    "then coalesce(json_type(data,'$.time'),'') || char(31) || json_extract(data,"
     + ",".join("'$." + key + "'" for key in _FIELDS)
-    + ") end, json_type(case when json_valid(data) then data else '{}' end, '$.time') "
-    "from main.session_message where rowid=?"
+    + ") end"
 )
+_SCALAR_SQL = "select " + _SCALAR_EXPR + " from main.session_message where rowid=?"
 # json_each decodes member names even on JSON1 versions whose path lookup cannot
 # match escaped keys. Bound the source BEFORE JSON parsing, and keep
 # discarded content inside SQLite. MATERIALIZED requires SQLite 3.35+; older
@@ -93,6 +97,46 @@ _MEMBER_SCAN_SQL = (
     + _MEMBER_OBJECT
     + " from main.session_message {where} order by rowid limit {limit}) order by rowid"
 )
+# The path-projection twin of _MEMBER_SCAN_SQL. Oversized and non-text/blob cells
+# (which blobopen streams or rejects) come back unprojected for _read_usage.
+_SCALAR_BOUND = "typeof(data) in ('text','blob') and length(cast(data as blob))<=?1"
+_SCALAR_SCAN_SQL = (
+    "select "
+    + _METADATA_COLUMNS
+    + ",length(cast(data as blob)),"
+    + _SCALAR_BOUND
+    + ",case when "
+    + _SCALAR_BOUND
+    + " then "
+    + _SCALAR_EXPR
+    + " end from main.session_message {where} order by rowid limit {limit}"
+)
+_SCAN_BATCH = 1024
+# The whole native projection as ONE expression over bare columns: SQLite's JSON
+# parse cache spans a single expression, so each body is parsed once, and all of
+# the work stays in C, where sqlite3 releases the GIL. Rows SQLite must not parse
+# (oversized, non-text) are filtered out and take the single-connection path.
+_FUSED_SQL = (
+    "select "
+    + _METADATA_COLUMNS
+    + ",json_array("
+    + ",".join(column.rsplit(" as ", 1)[0] for column in usage_columns(True, bare=True)[3:])
+    + ") from main.session_message where typeof(data)='text' "
+    "and length(cast(data as blob))<=?1 and rowid between ?2 and ?3"
+)
+# Threads scale until SQLite's global allocator mutex saturates; past ~6 the scan
+# got slower than one thread on a 12-performance-core Mac.
+_SCAN_THREADS = 4
+_PARALLEL_MIN_ROWS = 4096
+
+
+class _Projected:
+    """Usage values a parallel worker already projected for one metadata row."""
+
+    __slots__ = ("values",)
+
+    def __init__(self, values):
+        self.values = values
 
 
 def _first_keys(pairs):
@@ -105,6 +149,22 @@ def _first_keys(pairs):
 
 def _invalid_constant(value):
     raise ValueError(value)
+
+
+def _compact_scalar(scalar) -> str:
+    """Compact one ``_SCALAR_EXPR`` result; ValueError keeps the full-read validator."""
+    if scalar is None:
+        return "null"
+    time_type, raw = scalar.split("\x1f", 1)
+    fields = dict(
+        zip(
+            _FIELDS,
+            json.loads(raw, object_pairs_hook=_first_keys, parse_constant=_invalid_constant),
+        )
+    )
+    if not time_type:
+        fields.pop("time")
+    return json.dumps(fields, allow_nan=False)
 
 
 def _string_end(text: str, start: int) -> int:
@@ -429,24 +489,9 @@ def _read_usage(conn, rowid, tracing, sql_projection=False):
             # streaming validation. Preserve missing versus explicit-null time:
             # only an absent time object allows the native timestamp fallback.
             try:
-                raw, time_type = conn.execute(_SCALAR_SQL, [rowid]).fetchone()
+                scalar = conn.execute(_SCALAR_SQL, [rowid]).fetchone()[0]
                 fetched = time.perf_counter() if tracing else 0
-                if raw is None:
-                    compact = "null"
-                else:
-                    fields = dict(
-                        zip(
-                            _FIELDS,
-                            json.loads(
-                                raw,
-                                object_pairs_hook=_first_keys,
-                                parse_constant=_invalid_constant,
-                            ),
-                        )
-                    )
-                    if time_type is None:
-                        fields.pop("time")
-                    compact = json.dumps(fields, allow_nan=False)
+                compact = _compact_scalar(scalar)
                 return compact, size, (fetched - started) * 1000, False, True
             except (sqlite3.OperationalError, ValueError, UnicodeError, RecursionError):
                 # Non-finite numbers and runtime-specific JSON/UTF handling keep
@@ -555,8 +600,10 @@ def _read_usage_batch(conn, rowids, tracing, timings):
 class UsageCache:
     """One bounded set of numeric rows, replaced on each refresh (never raw text)."""
 
-    def __init__(self, db: str):
+    def __init__(self, db: str, connect=None):
         self.db = db
+        # A factory for extra read-only connections; without one, scans stay serial.
+        self._connect = connect
         self.rows: dict[int, tuple] = {}
         self.ready = False
         self.scope = None
@@ -715,6 +762,150 @@ class UsageCache:
                 return
             last = page[-1][0][0]
 
+    def _parallel_rows(self, conn, tracing, timings, started):
+        """Fused projection over rowid ranges on separate read-only connections.
+
+        Workers read their own snapshots, so a result is adopted only when its
+        metadata equals this connection's snapshot and the row is older than the
+        refresh by the margin _reusable uses. Every other row, and every row whose
+        body is not a valid JSON object, takes the established single-row path.
+        """
+        threads = min(_SCAN_THREADS, os.cpu_count() or 1)
+        count = conn.execute("select count(*) from main.session_message").fetchone()[0]
+        if threads < 2 or count < _PARALLEL_MIN_ROWS:
+            yield from self._full_scalar_rows(conn, tracing, timings)
+            return
+        meta = conn.execute(
+            "select " + _METADATA_COLUMNS + " from main.session_message order by rowid"
+        ).fetchall()
+        if not meta:
+            return
+        step = -(-len(meta) // (threads * 4))
+        ranges = [
+            (meta[i][0], meta[min(i + step, len(meta)) - 1][0]) for i in range(0, len(meta), step)
+        ]
+        tick = time.perf_counter() if tracing else 0
+        found = {}
+        with debug.span("usage.parallel_scan", threads=threads, ranges=len(ranges)):
+            with ThreadPoolExecutor(threads) as pool:
+                for part in pool.map(self._fused_range, ranges):
+                    found.update(part)
+        if tracing:
+            timings[0] += (time.perf_counter() - tick) * 1000
+            debug.event("usage.parallel_result", projected=len(found), rows=len(meta))
+        stable = started - 2000
+        for row in meta:
+            stamp = tuple(row)
+            hit = found.get(stamp[0])
+            if (
+                hit is not None
+                and hit[0] == stamp
+                and isinstance(stamp[5], (int, float))
+                and 0 < stamp[5] < stable
+            ):
+                yield row, _Projected(hit[1]), True
+            else:
+                yield row, None, False
+
+    def _fused_range(self, bounds) -> dict:
+        out = {}
+        try:
+            reader = self._connect()
+        except sqlite3.Error:
+            return out
+        try:
+            self._fused_into(reader, bounds[0], bounds[1], out)
+        finally:
+            reader.close()
+        return out
+
+    def _fused_into(self, reader, lo, hi, out) -> None:
+        try:
+            rows = reader.execute(_FUSED_SQL, [_DECODE_LIMIT, lo, hi]).fetchall()
+        except sqlite3.OperationalError as exc:
+            # One malformed body aborts the statement: bisect to keep the others.
+            if "json" in str(exc).lower() and lo < hi:
+                mid = lo + (hi - lo) // 2
+                self._fused_into(reader, lo, mid, out)
+                self._fused_into(reader, mid + 1, hi, out)
+            return
+        for row in rows:
+            stamp = tuple(row[:7])
+            try:
+                projected = json.loads(row[7])
+            except (ValueError, RecursionError):
+                continue
+            # A null role means not a valid JSON object; only the full
+            # projection's '{}' fallback decides those rows.
+            if projected[0] is not None:
+                out[stamp[0]] = (stamp, (stamp[0], stamp[1], stamp[2], *projected))
+
+    def _full_scalar_rows(self, conn, tracing, timings):
+        """Path-projection keyset scan for an empty all-history build.
+
+        Replaces a Blob open and a point query per row. A row whose projection
+        fails falls back to the full-read validator, as in _read_usage; a page
+        that fails retries every row individually. Shares prepare()'s snapshot.
+        """
+        last = None
+        while True:
+            where = "" if last is None else "where rowid>?2"
+            params = [_DECODE_LIMIT] if last is None else [_DECODE_LIMIT, last]
+            sql = _SCALAR_SCAN_SQL.replace("{where}", where).replace("{limit}", str(_SCAN_BATCH))
+            page = []
+            cursor = None
+            kept = 0
+            decode_ms = 0.0
+            started = time.perf_counter() if tracing else 0
+            with debug.span("usage.scan_page", limit=_SCAN_BATCH):
+                try:
+                    cursor = conn.execute(sql, params)
+                    for row in cursor:
+                        stamp = tuple(row[:7])
+                        size, ok, scalar = row[7:]
+                        if not ok:
+                            page.append((stamp, None, False))
+                            continue
+                        tick = time.perf_counter() if tracing else 0
+                        try:
+                            compact = _compact_scalar(scalar)
+                        except (ValueError, UnicodeError, RecursionError):
+                            page.append((stamp, None, True))
+                            continue
+                        finally:
+                            if tracing:
+                                decode_ms += (time.perf_counter() - tick) * 1000
+                        kept += len(compact)
+                        if kept > _DECODE_LIMIT:
+                            raise ValueError("compact page limit")
+                        page.append((stamp, (compact, size or 0), True))
+                except (sqlite3.OperationalError, ValueError, UnicodeError, RecursionError):
+                    page = [
+                        (tuple(row), None, False)
+                        for row in conn.execute(
+                            "select "
+                            + _METADATA_COLUMNS
+                            + " from main.session_message "
+                            + where.replace("?2", "?")
+                            + " order by rowid limit "
+                            + str(_SCAN_BATCH),
+                            params[1:],
+                        )
+                    ]
+                    debug.event("usage.scan_fallback", rows=len(page))
+                finally:
+                    if cursor is not None:
+                        cursor.close()
+            if tracing:
+                timings[0] += (time.perf_counter() - started) * 1000 - decode_ms
+                timings[1] += decode_ms
+            if not page:
+                return
+            yield from page
+            if len(page) < _SCAN_BATCH:
+                return
+            last = page[-1][0][0]
+
     @debug.timed("usage.prepare", activity=True)
     def prepare(
         self, conn: sqlite3.Connection, legacy: bool, refresh: bool = False, scope=None
@@ -752,7 +943,7 @@ class UsageCache:
             )
             if not self._sql_projection and sqlite3.sqlite_version_info >= (3, 35, 0):
                 self._sql_projection = "members"
-        full_scan = not self.rows and scope is None and self._sql_projection == "members"
+        full_scan = not self.rows and scope is None and self._sql_projection in ("members", True)
         debug.event(
             "usage.decode_strategy",
             scan_mode="combined_full" if full_scan else "metadata_changed",
@@ -810,7 +1001,12 @@ class UsageCache:
             )
             # No data/JSON/length(data) here: don't visit overflow pages on a hit.
             if full_scan:
-                native = self._full_native_rows(conn, tracing, batch_timings)
+                if self._sql_projection is not True:
+                    native = self._full_native_rows(conn, tracing, batch_timings)
+                elif self._connect is not None:
+                    native = self._parallel_rows(conn, tracing, batch_timings, started)
+                else:
+                    native = self._full_scalar_rows(conn, tracing, batch_timings)
             else:
                 metadata = debug.query_rows(
                     conn,
@@ -822,7 +1018,12 @@ class UsageCache:
             for row, prefetched, attempted in native:
                 stamp = tuple(row)
                 old = self.rows.get(stamp[0])
-                if self._reusable(stamp, cutoff):
+                if type(prefetched) is _Projected:
+                    values = prefetched.values
+                    if tracing:
+                        decoded += 1
+                        projected_rows += 1
+                elif self._reusable(stamp, cutoff):
                     values = old[1]
                     reused += 1
                 else:

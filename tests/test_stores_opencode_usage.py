@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import patch
@@ -574,6 +575,233 @@ def test_opencode_usage_full_scan_bounds_json_and_compact_pages_before_fallback(
             # kept fields exceed the cap is retried without losing any accounting.
             assert sizes and max(sizes) <= 1024
             assert fallback.call_count == 9
+
+
+def _path_projection_supported(conn) -> bool:
+    return (
+        hasattr(conn, "blobopen")
+        and conn.execute("select json_extract(?, '$.model')", ['{"\\u006dodel":1}']).fetchone()[0]
+        == 1
+    )
+
+
+_EDGE_BODIES = [
+    '{"content":[{"private":"' + "x" * 4096 + '"}],"tokens":{"input":7},"cost":1.5}',
+    '{"tokens":{"input":null,"input":8},"tokens":{"input":9},"model":{"id":"first","id":"last"}}',
+    '{"mod\\u0065l":{"id":"escaped"},"cost":-0.0}',
+    '{"model":{"id":"a\\u0000b","providerID":"\\ud83d\\ude00"},"tokens":{"input":9007199254740993}}',
+    '{"cost":1e999,"tokens":{"input":7}}',
+    '{"tokens":{"input":true,"cache":{"read":false}},"time":[null,1]}',
+    '{"time":null,"tokens":{"input":3}}',
+    '{"time":{"created":77},"tokens":{"input":4}}',
+    '{"content":NaN,"tokens":{"input":5}}',
+    '{"content":[1,],"cost":5}',
+    '{"tokens":{"input":7}} trailing',
+    ' \t\r\n{"tokens":{"input":9}} \n',
+    "{}",
+    "[]",
+    "null",
+    "42",
+    None,
+    b'{"tokens":{"input":5}}',
+]
+
+
+def test_opencode_usage_path_full_scan_matches_per_row_reader_on_edge_cases():
+    raw_cases = _EDGE_BODIES
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return  # older runtimes use the member scan, covered above
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        for i, raw in enumerate(raw_cases):
+            writer.execute(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                _message(str(i), "root", "assistant", i + 1, {}),
+            )
+            writer.execute("update session_message set data=? where id=?", [raw, str(i)])
+        writer.commit()
+        baseline = Store(store.db, argparse.Namespace(demo=False))
+        try:
+            baseline._usage_cache._sql_projection = False
+            baseline._usage_cache.prepare(baseline.conn, False)
+            expected = dict(baseline._usage_cache.rows)
+        finally:
+            baseline.conn.close()
+        queries = []
+        store.conn.set_trace_callback(queries.append)
+        store._usage_cache._sql_projection = True
+        with patch("opentab.stores.opencode_usage._DECODE_LIMIT", 1024), patch(
+            "opentab.stores.opencode_usage._SCAN_BATCH", 4
+        ), patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as fallback:
+            store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.rows == expected
+        scans = [q for q in queries if q.startswith("select rowid,id,session_id,type,time_created")]
+        assert len(scans) == 5  # keyset pages of four, no separate metadata scan
+        # Only rows the scan cannot project are reread one at a time: the
+        # oversized body (streamed, never parsed by SQLite), NULL and 1e999.
+        assert fallback.call_count == 3
+
+
+def test_opencode_usage_path_full_scan_pages_share_one_snapshot():
+    from opentab.stores.opencode_usage import _compact_scalar
+
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        writer.execute("pragma journal_mode=wal")
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root")
+        )
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(str(i), "root", "assistant", i + 1, {"tokens": {"input": i + 1}})
+                for i in range(129)
+            ],
+        )
+        writer.commit()
+        baseline = Store(store.db, argparse.Namespace(demo=False))
+        try:
+            baseline._usage_cache._sql_projection = False
+            baseline._usage_cache.prepare(baseline.conn, False)
+            expected = dict(baseline._usage_cache.rows)
+        finally:
+            baseline.conn.close()
+        wrote = False
+
+        def concurrent_write(scalar):
+            nonlocal wrote
+            if not wrote:
+                writer.execute(
+                    "update session_message set data=?,time_updated=time_updated+1000 where id='128'",
+                    ['{"tokens":{"input":777}}'],
+                )
+                writer.commit()
+                wrote = True
+            return _compact_scalar(scalar)
+
+        store._usage_cache._sql_projection = True
+        with patch("opentab.stores.opencode_usage._SCAN_BATCH", 64), patch(
+            "opentab.stores.opencode_usage._compact_scalar", side_effect=concurrent_write
+        ):
+            store._usage_cache.prepare(store.conn, False)
+        assert wrote and store._usage_cache.rows == expected
+        store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.reused == 128
+        assert store._usage_cache.rows != expected
+
+
+def _edge_store(writer, bodies, kinds=None, updated=None):
+    writer.execute("insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("root"))
+    for i, raw in enumerate(bodies):
+        kind = (kinds or {}).get(i, "assistant")
+        writer.execute(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            _message(str(i), "root", kind, i + 1, {}, updated=updated),
+        )
+        writer.execute("update session_message set data=? where id=?", [raw, str(i)])
+    writer.commit()
+
+
+def _per_row_reference(db):
+    baseline = Store(db, argparse.Namespace(demo=False))
+    try:
+        baseline._usage_cache._sql_projection = False
+        baseline._usage_cache.prepare(baseline.conn, False)
+        return dict(baseline._usage_cache.rows)
+    finally:
+        baseline.conn.close()
+
+
+def test_opencode_usage_parallel_scan_matches_per_row_reader_on_edge_cases():
+    from opentab.stores import opencode_usage
+
+    bodies = [
+        *_EDGE_BODIES,
+        "{tokens:{input:5}}",  # JSON5: SQLite reads it, json_valid rejects it
+        '{"content":"unterminated',
+        '{"type":"x","tokens":{"input":11}}',
+    ]
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        _edge_store(writer, bodies, kinds={len(bodies) - 1: "compaction"})
+        expected = _per_row_reference(store.db)
+        fused = []
+        real = opencode_usage.UsageCache._fused_into
+
+        def spy(self, reader, lo, hi, out):
+            fused.append((lo, hi))
+            return real(self, reader, lo, hi, out)
+
+        store._usage_cache._sql_projection = True
+        with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+            opencode_usage, "_SCAN_THREADS", 2
+        ), patch.object(opencode_usage, "_DECODE_LIMIT", 1024), patch.object(
+            opencode_usage.UsageCache, "_fused_into", spy
+        ), patch.object(opencode_usage.os, "cpu_count", return_value=4):
+            store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.rows == expected
+        # The malformed bodies forced bisection rather than dropping whole ranges.
+        assert len(fused) > 8
+
+
+def test_opencode_usage_parallel_scan_keeps_this_connections_snapshot():
+    from opentab.stores import opencode_usage
+
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        writer.execute("pragma journal_mode=wal")
+        _edge_store(writer, [json.dumps({"tokens": {"input": i + 1}}) for i in range(40)])
+        expected = _per_row_reference(store.db)
+        real = opencode_usage.UsageCache._fused_range
+        wrote = False
+
+        def write_first(self, bounds):
+            nonlocal wrote
+            if not wrote:
+                wrote = True
+                with closing(sqlite3.connect(store.db)) as other:  # this is a worker thread
+                    other.execute(
+                        "update session_message set data=?,time_updated=time_updated+1 where id='39'",
+                        ['{"tokens":{"input":777}}'],
+                    )
+                    other.commit()
+            return real(self, bounds)
+
+        store._usage_cache._sql_projection = True
+        with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+            opencode_usage, "_SCAN_THREADS", 2
+        ), patch.object(opencode_usage.os, "cpu_count", return_value=4), patch.object(
+            opencode_usage.UsageCache, "_fused_range", write_first
+        ):
+            store._usage_cache.prepare(store.conn, False)
+        assert wrote and store._usage_cache.rows == expected
+
+
+def test_opencode_usage_parallel_scan_rereads_rows_newer_than_the_refresh():
+    import time as clock
+
+    from opentab.stores import opencode_usage
+
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        now = int(clock.time() * 1000)
+        _edge_store(writer, [json.dumps({"tokens": {"input": 1}})] * 10, updated=now)
+        expected = _per_row_reference(store.db)
+        store._usage_cache._sql_projection = True
+        with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+            opencode_usage, "_SCAN_THREADS", 2
+        ), patch.object(opencode_usage.os, "cpu_count", return_value=4), patch(
+            "opentab.stores.opencode_usage._read_usage", wraps=_read_usage
+        ) as single:
+            store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.rows == expected
+        assert single.call_count == 10  # too recent to trust another snapshot's copy
 
 
 def test_opencode_usage_scoped_first_read_never_uses_full_scan():
