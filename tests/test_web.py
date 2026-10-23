@@ -3515,6 +3515,8 @@ def test_web_chart_metric_starts_from_the_tui_and_formats_tokens_in_shipped_js()
     helpers = source[start : source.index("const pct = ", start)]
     start = source.index("const cost = w =>")
     shipped = source[start : source.index("function setChartMetric(", start)]
+    start = source.index("const periodTip = ")
+    shipped += source[start : source.index("\n", start) + 1]
     harness = (
         "let MODE = 'real', METRIC = 'cost';\n"
         + helpers
@@ -3525,11 +3527,14 @@ const out = {cost: [chartVal(row), wChartVal(w), chartLabel(2.5), chartExact(2.5
 METRIC = 'tokens';
 out.tokens = [chartVal(row), wChartVal(w), chartLabel(1234567), chartExact(1500), chartNoun(),
   chartLabel(0)];
+out.tip = [periodTip('2026-06-01', row), periodTip('2026-06-02', undefined)];
 console.log(JSON.stringify(out));
 """
     )
     result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     actual = json.loads(result.stdout)
+    # Trends tooltips keep both figures whichever metric the bars plot.
+    assert actual["tip"] == ["2026-06-01\n$2.50 · 1.2M tokens", "2026-06-02\nno usage"]
     assert actual["cost"] == [2.5, 3, "$2.50", "$2.50", "spend"]
     assert actual["tokens"] == [1234567, 1500, "1.2M", "1.5k", "tokens", ""]

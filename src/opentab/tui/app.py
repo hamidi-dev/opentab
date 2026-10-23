@@ -8074,6 +8074,9 @@ class App:
         # swaps real/demo data under them in place, Ctrl-C still quits. None = not one
         # of these. `context` is the sub-state that asked, so its own overrides win.
         act = self.keymap.action(context, key)
+        if act == "chart_metric":
+            self.toggle_chart_metric()  # a drill keeps its list; the charts follow on return
+            return True
         if act == "close":
             self.trends = False
             self.trend_drill = None
@@ -8364,8 +8367,6 @@ class App:
                     self.cal_cursor = None  # re-anchor the cursor on the new year's peak
             elif act == "api_prices":
                 self.toggle_api_prices()  # re-prices the charts in place, stays open
-            elif act == "chart_metric":
-                self.toggle_chart_metric()
             elif act == "back":
                 self.trends = False  # back (with nothing focused) closes the overlay
             else:

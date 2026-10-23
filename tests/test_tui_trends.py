@@ -1338,3 +1338,18 @@ def test_chart_metric_switches_trend_charts_and_period_bars_to_tokens():
     app.handle_key(None, ord("#"))
     assert not app.chart_tokens
     assert app.renderer.trend_daily(80, 16)[0].startswith("# Daily spend · 2026-06")
+
+
+def test_chart_metric_key_works_inside_a_trends_drill_and_names_empty_ranges():
+    app = app_with([workflow("a", "2026-06-03 12:00:00", directory="/tmp/a")])
+    app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != "Projects":
+        app.handle_key(None, ord("l"))
+    app.handle_key(None, 10)
+    assert app.trend_drill is not None
+    app.handle_key(None, ord("#"))
+    assert app.chart_tokens and app.trends and app.trend_drill is not None
+    from opentab.tui.views import trends as trend_views
+
+    empty = trend_views.daily_layout(None, [], [], 80, 16, navigation_keys="j/k", tokens=True)
+    assert empty.lines == ("# Daily tokens", "", "No tokens in the active range.")
