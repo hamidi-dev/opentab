@@ -3169,47 +3169,49 @@ function openTrendSession(id) {
   TRENDS.open = false;
   location.hash = to;
 }
+// Bars follow the chart metric; tooltips always carry both figures.
+const periodTip = (label, r) => label + '\n' + (r ? money(r.cost) + ' · ' + hTok(r.tokens) + ' tokens' : 'no usage');
+const trendEmpty = () => h('div', { class: 'hint' }, 'No ' + chartNoun() + ' in the active range.');
 function trendDaily() {
   const months = trendMonths();
-  if (!months.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
+  if (!months.length) return trendEmpty();
   const idx = Math.max(0, Math.min(TRENDS.monthIdx, months.length - 1)), month = months[idx];
-  const byDay = new Map();
-  W.filter(w => w.date.startsWith(month)).forEach(w => { const d = +w.date.slice(8, 10); byDay.set(d, (byDay.get(d) || 0) + wChartVal(w)); });
+  const byDay = new Map(dayRows(W.filter(w => w.date.startsWith(month))).map(r => [+r.day.slice(8, 10), r]));
+  const dayVal = d => byDay.has(d) ? chartVal(byDay.get(d)) : 0;
   // Omit future empty days so an in-progress month does not compress its bars.
   let last = 0;
-  for (let d = 1; d <= daysInMonth(month); d++) if ((byDay.get(d) || 0) > 0) last = d;
+  for (let d = 1; d <= daysInMonth(month); d++) if (dayVal(d) > 0) last = d;
   const pairs = [];
   for (let d = 1; d <= last; d++) {
-    const date = month + '-' + String(d).padStart(2, '0'), v = byDay.get(d) || 0;
-    pairs.push({ label: String(d), value: v, tip: date + '\n' + chartExact(v), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null });
+    const date = month + '-' + String(d).padStart(2, '0'), v = dayVal(d);
+    pairs.push({ label: String(d), value: v, tip: periodTip(date, byDay.get(d)), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null });
   }
   return h('div', null, trendNav('Daily ' + chartNoun() + ' · ' + month, idx, months.length, 'month'), trendChart(pairs, { aria: 'daily ' + chartNoun() + ' ' + month }));
 }
 function trendWeekly() {
   const weeks = trendWeeks();
-  if (!weeks.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
+  if (!weeks.length) return trendEmpty();
   const idx = Math.max(0, Math.min(TRENDS.weekIdx, weeks.length - 1)), monday = weeks[idx];
-  const byDate = new Map();
-  W.filter(w => weekMonday(w.date) === monday).forEach(w => { const dd = w.date.slice(0, 10); byDate.set(dd, (byDate.get(dd) || 0) + wChartVal(w)); });
+  const byDate = new Map(dayRows(W.filter(w => weekMonday(w.date) === monday)).map(r => [r.day, r]));
   const pairs = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((nm, i) => {
-    const date = addDays(monday, i), v = byDate.get(date) || 0;
-    return { label: nm, value: v, tip: date + '\n' + chartExact(v), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null };
+    const date = addDays(monday, i), r = byDate.get(date), v = r ? chartVal(r) : 0;
+    return { label: nm, value: v, tip: periodTip(date, r), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null };
   });
   return h('div', null, trendNav('Weekly ' + chartNoun() + ' · ' + monday + ' – ' + addDays(monday, 6), idx, weeks.length, 'week'), trendChart(pairs, {}));
 }
 function trendMonthly() {
   const rows = monthRows(W);
-  if (!rows.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
+  if (!rows.length) return trendEmpty();
   const byM = new Map(rows.map(r => [r.month, r]));
   const pairs = monthSpan(rows[0].month, rows[rows.length - 1].month).map(m => {
     const r = byM.get(m), v = r ? chartVal(r) : 0;
-    return { label: monthLabel(m), value: v, tip: monthLabel(m) + '\n' + chartExact(v), nav: v > 0 ? (() => { closeTrends(); go('m', m); }) : null };
+    return { label: monthLabel(m), value: v, tip: periodTip(monthLabel(m), r), nav: v > 0 ? (() => { closeTrends(); go('m', m); }) : null };
   });
   return h('div', null, h('div', { class: 'tr-nav' }, h('span', { class: 'lbl' }, 'Monthly ' + chartNoun())), trendChart(pairs, {}));
 }
 function trendCalendar() {
   const years = trendYears();
-  if (!years.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
+  if (!years.length) return trendEmpty();
   const idx = Math.max(0, Math.min(TRENDS.yearIdx, years.length - 1)), year = years[idx];
   const byDate = new Map(dayRows(W.filter(w => w.date.startsWith(year))).map(r => [r.day, r]));
   const total = [...byDate.values()].reduce((a, r) => a + chartVal(r), 0);

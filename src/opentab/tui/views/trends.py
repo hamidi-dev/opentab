@@ -95,7 +95,7 @@ def daily_layout(
 ) -> TrendsLayout:
     noun = "tokens" if tokens else "spend"
     if month is None:
-        return TrendsLayout((f"# Daily {noun}", "", "No spend in the active range."))
+        return TrendsLayout((f"# Daily {noun}", "", f"No {noun} in the active range."))
     pairs = [(str(int(day[8:10])), value) for day, value in data]
     title = f"# Daily {noun} · {month}"
     if len(months) > 1:
@@ -126,7 +126,7 @@ def weekly_layout(
 ) -> TrendsLayout:
     noun = "tokens" if tokens else "spend"
     if monday is None:
-        return TrendsLayout((f"# Weekly {noun}", "", "No spend in the active range."))
+        return TrendsLayout((f"# Weekly {noun}", "", f"No {noun} in the active range."))
     names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     pairs = [(names[index], value) for index, (_day, value) in enumerate(data)]
     title = f"# Weekly {noun} · {monday} – {data[-1][0]}"
@@ -153,7 +153,7 @@ def monthly_layout(
 ) -> TrendsLayout:
     noun, unit = ("tokens", "tokens") if tokens else ("spend", "cost")
     if not data:
-        return TrendsLayout((f"# Monthly {noun}", "", "No spend in the active range."))
+        return TrendsLayout((f"# Monthly {noun}", "", f"No {noun} in the active range."))
     return _chart(
         f"# Monthly {noun} ({unit} per month)",
         data,
@@ -483,7 +483,7 @@ def calendar_layout(
         return human_tokens(round(value)) if tokens else money(value)
 
     if year is None:
-        text = "No spend in the active range."
+        text = f"No {'tokens' if tokens else 'spend'} in the active range."
         return TrendsLayout((text,), spans=(SemanticSpan(0, 0, len(text), "muted"),))
     if height < 13 or width < 24:
         text = "Not enough room for the calendar."
