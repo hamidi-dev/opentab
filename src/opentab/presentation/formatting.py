@@ -8,9 +8,9 @@ import unicodedata
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
-# Require human_tokens' decimal form and reject model-tag/money boundaries; token paint
-# runs after money paint and must not overpaint compact dollar labels.
-TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.\-$])\d+\.\d+[kMB](?![A-Za-z0-9_\-])")
+# Match human_tokens and the whole-unit chart labels (``266M``) but reject model-tag/money
+# boundaries; token paint runs after money paint and must not overpaint compact dollar labels.
+TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.\-$])\d+(?:\.\d+)?[kMB](?![A-Za-z0-9_\-])")
 # Include compact ``k`` amounts without consuming a following identifier.
 MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?(?:k(?![A-Za-z]))?")
 # Selected rows redraw these foreground bars without A_REVERSE to avoid highlight holes.
@@ -184,6 +184,17 @@ def human_tokens(value: int) -> str:
     if value >= 1_000:
         return f"{value / 1_000:.1f}k"
     return str(value)
+
+
+def token_label(value: float) -> str:
+    # Chart labels drop the decimal from 10 units up, like ``money_label``, so they fit a bar.
+    if value <= 0:
+        return ""
+    for size, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if value >= size * 0.9995:
+            scaled = value / size
+            return f"{scaled:.1f}{suffix}" if scaled < 9.95 else f"{scaled:.0f}{suffix}"
+    return f"{value:.0f}"
 
 
 def human_duration(seconds: float) -> str:

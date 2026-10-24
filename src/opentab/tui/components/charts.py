@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from opentab.presentation.formatting import human_tokens, money, money_label
+from opentab.presentation.formatting import human_tokens, money, money_label, token_label
 from opentab.presentation.heatmap import BLOCKS_UP
 
 
@@ -79,7 +79,7 @@ def bar_chart(
             tops.append((index, rows_n - filled + 1, value))
 
     def place_value(index: int, top_row: int, value: float) -> None:
-        labels = [human_tokens(round(value))] if tokens else [money_label(value)]
+        labels = [token_label(value)] if tokens else [money_label(value)]
         if not tokens and 1 <= value < 1000:
             labels.append(f"${value:.0f}")
         labels = [label for pos, label in enumerate(labels) if label and label not in labels[:pos]]
