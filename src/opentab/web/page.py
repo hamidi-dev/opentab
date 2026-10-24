@@ -756,6 +756,12 @@ const moneyLabel = v => v <= 0 ? '' : v < 0.005 ? '<$.01' : v < 10 ? '$' + v.toF
 // Switch units before rounding to match formatting.human_tokens at boundaries.
 const hTok = v => v >= 999.95e9 ? (v / 1e12).toFixed(1) + 'T' : v >= 999.95e6 ? (v / 1e9).toFixed(1) + 'B'
   : v >= 999.95e3 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v);
+// Chart labels drop the decimal from 10 units up, like formatting.token_label.
+const tokLabel = v => { if (v <= 0) return '';
+  for (const [size, suffix] of [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']]) {
+    if (v >= size * 0.9995) { const x = v / size; return (x < 9.95 ? x.toFixed(1) : String(Math.round(x))) + suffix; }
+  }
+  return String(Math.round(v)); };
 const pct = (p, w) => w <= 0 ? '-' : (p > 0 && 100 * p / w < 1) ? '<1%' : Math.round(100 * p / w) + '%';
 // Keep duration units and zero-remainder handling aligned with the TUI.
 const hDur = s => { s = Math.max(0, Math.floor(s)); if (s < 60) return s + 's';
@@ -769,7 +775,7 @@ const mCost = r => MODE === 'api' ? r.api : r.real;
 const byTokens = () => METRIC === 'tokens';
 const chartVal = r => byTokens() ? r.tokens : r.cost;
 const wChartVal = w => byTokens() ? w.tokens : cost(w);
-const chartLabel = v => byTokens() ? (v > 0 ? hTok(Math.round(v)) : '') : moneyLabel(v);
+const chartLabel = v => byTokens() ? tokLabel(v) : moneyLabel(v);
 const chartExact = v => byTokens() ? hTok(Math.round(v)) : money(v);
 const chartNoun = () => byTokens() ? 'tokens' : 'spend';
 function setChartMetric(metric) {

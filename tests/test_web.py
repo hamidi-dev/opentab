@@ -3527,6 +3527,7 @@ const out = {cost: [chartVal(row), wChartVal(w), chartLabel(2.5), chartExact(2.5
 METRIC = 'tokens';
 out.tokens = [chartVal(row), wChartVal(w), chartLabel(1234567), chartExact(1500), chartNoun(),
   chartLabel(0)];
+out.labels = [41.4e6, 265.7e6, 999.4e6, 999.6e6, 9.96e6, 999, 3e9].map(chartLabel);
 out.tip = [periodTip('2026-06-01', row), periodTip('2026-06-02', undefined)];
 console.log(JSON.stringify(out));
 """
@@ -3538,3 +3539,7 @@ console.log(JSON.stringify(out));
     assert actual["tip"] == ["2026-06-01\n$2.50 · 1.2M tokens", "2026-06-02\nno usage"]
     assert actual["cost"] == [2.5, 3, "$2.50", "$2.50", "spend"]
     assert actual["tokens"] == [1234567, 1500, "1.2M", "1.5k", "tokens", ""]
+    from opentab.presentation.formatting import token_label
+
+    values = [41.4e6, 265.7e6, 999.4e6, 999.6e6, 9.96e6, 999, 3e9]
+    assert actual["labels"] == [token_label(v) for v in values]

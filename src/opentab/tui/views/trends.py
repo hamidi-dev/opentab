@@ -8,7 +8,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Union
 
-from opentab.presentation.formatting import human_tokens, money, pad, pct, short_path, shorten
+from opentab.presentation.formatting import (
+    human_tokens,
+    money,
+    pad,
+    pct,
+    short_path,
+    shorten,
+    token_label,
+)
 from opentab.presentation.heatmap import calendar_cells, heat_band_label, heat_level
 from opentab.tui.components.boxes import BOX_CHROME, ruled_box, sectioned_box
 from opentab.tui.components.charts import bar_chart
@@ -558,7 +566,7 @@ def calendar_layout(
             if level == 0:
                 label = f" {'0' if tokens else '$0'}{separator}"
             elif tokens:
-                label = f" ≤{human_tokens(round(bounds[level]))}{separator}"
+                label = f" ≤{token_label(bounds[level])}{separator}"
             else:
                 label = f" ≤{heat_band_label(bounds[level])}{separator}"
             legend.append((label, "muted", 0))

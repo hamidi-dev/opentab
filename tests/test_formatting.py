@@ -102,6 +102,9 @@ def test_token_pattern_never_clobbers_a_money_k_label():
     # a real, unprefixed token figure still matches (that colouring is intended)
     assert TOKEN_PATTERN.search(" 1.2k ").group(0) == "1.2k"
     assert TOKEN_PATTERN.search("35.0B").group(0) == "35.0B"
+    assert TOKEN_PATTERN.search(" 266M ").group(0) == "266M"
+    assert TOKEN_PATTERN.search("$4k") is None
+    assert TOKEN_PATTERN.search("gpt-4o-128k") is None
 
 
 def test_display_width_counts_terminal_cells():
@@ -223,6 +226,24 @@ def test_human_tokens_never_exceeds_six_characters():
     # Nothing anywhere in the range outgrows the cell.
     for v in (0, 1, 999, 1_000, 12_345, 999_949, 999_950, 1_000_000, 123_456_789, 10**12):
         assert len(ot.human_tokens(v)) <= 6, (v, ot.human_tokens(v))
+
+
+def test_token_label_drops_decimals_from_ten_units_like_money_label():
+    from opentab.presentation.formatting import token_label
+
+    assert token_label(0) == ""
+    assert token_label(999) == "999"
+    assert token_label(1_500) == "1.5k"
+    assert token_label(6_100_000) == "6.1M"
+    assert token_label(41_400_000) == "41M"
+    assert token_label(265_700_000) == "266M"
+    assert token_label(3_000_000_000) == "3.0B"
+    # Units switch before rounding would print ``1000M``.
+    assert token_label(999_400_000) == "999M"
+    assert token_label(999_600_000) == "1.0B"
+    assert token_label(9_960_000) == "10M"
+    for v in (1, 999, 12_345, 999_949, 123_456_789, 10**12, 10**14):
+        assert len(token_label(v)) <= 4, (v, token_label(v))
 
 
 def test_wrap_cells_indent_never_overflows_the_width_it_was_given():
