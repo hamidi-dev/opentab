@@ -17,12 +17,16 @@ import sqlite3
 import tempfile
 from dataclasses import asdict
 
+from opentab import __version__
 from opentab import diagnostics as debug
 from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
 CACHE_VERSION = 22  # Copilot: AI-credit spend, JetBrains fixes, desktop child sessions
+# Beside each cache: the digest this release wrote it with. A match proves the rows
+# are the ones its own parse produced, so the per-row pricing check is skipped.
+TRUST_SUFFIX = ".trust"
 
 
 # Required because cache readers index these fields directly.
@@ -74,6 +78,19 @@ class CachedStore:
 
     def __getattr__(self, name):
         return getattr(self._store, name)
+
+    @staticmethod
+    def _trust_stamp(text: str) -> dict:
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
+        return {"version": CACHE_VERSION, "opentab": __version__, "sha1": digest}
+
+    def _trusted(self, text: str) -> bool:
+        try:
+            with open(self._path + TRUST_SUFFIX, encoding="utf-8") as fh:
+                stamp = json.load(fh)
+        except (OSError, ValueError):
+            return False
+        return stamp == self._trust_stamp(text)
 
     def _install_accounting_loader(self) -> None:
         loader = getattr(self._store, "set_accounting_cache_loader", None)
@@ -164,6 +181,8 @@ class CachedStore:
                 info["characters"] = len(text)
             with debug.span("cache.decode"):
                 data = json.loads(text)
+            with debug.span("cache.trust"):
+                trusted = self._trusted(text)
             del text
         except FileNotFoundError:
             return self._reject("disk", "missing")
@@ -171,10 +190,10 @@ class CachedStore:
             return self._reject("disk", "unreadable")
         except ValueError:
             return self._reject("disk", "invalid_json")
-        return self._validate(data)
+        return self._validate(data, trusted)
 
     @debug.timed("cache.validate")
-    def _validate(self, data) -> dict | None:
+    def _validate(self, data, trusted: bool = False) -> dict | None:
         if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
             return self._reject("disk", "version_or_shape")
         if not isinstance(data.get("workflows"), list) or not isinstance(
@@ -185,8 +204,11 @@ class CachedStore:
         if not all(isinstance(row, dict) for row in data["workflows"]):
             return self._reject("disk", "workflow_shape")
         # Validate direct-index fields before the hit path loses its reparse fallback.
+        # Pricing buckets are the expensive part; a trusted file skips only those.
         if not all(
-            isinstance(row, dict) and MODEL_ROW_KEYS <= row.keys() and valid_pricing(row)
+            isinstance(row, dict)
+            and MODEL_ROW_KEYS <= row.keys()
+            and (trusted or valid_pricing(row))
             for row in data["model_breakdown"]
         ):
             return self._reject("disk", "model_shape")
@@ -196,7 +218,10 @@ class CachedStore:
         if not isinstance(data.get("provenance"), dict):
             data["provenance"] = {}  # readable, just not spliceable: full parse on a miss
         self._debug(
-            "cache.loaded", workflows=len(data["workflows"]), models=len(data["model_breakdown"])
+            "cache.loaded",
+            workflows=len(data["workflows"]),
+            models=len(data["model_breakdown"]),
+            trusted=trusted,
         )
         return data
 
@@ -243,7 +268,13 @@ class CachedStore:
                             "cache.accounting_write_skipped", reason="all_native_rows_reused"
                         )
                     payload["accounting_external"] = "sqlite-v1"
-            self._write_json(self._path, payload)
+            text = self._write_json(self._path, payload)
+            try:
+                # Written second: a crash in between leaves a stale digest, which fails
+                # to match and costs one full validation, never trust in other rows.
+                self._write_text(self._path + TRUST_SUFFIX, json.dumps(self._trust_stamp(text)))
+            except OSError:
+                pass
             self._disk = payload
             self._fresh_wf = None
             self._fresh_models = None
@@ -252,13 +283,18 @@ class CachedStore:
         except (OSError, sqlite3.Error) as exc:
             self._debug("cache.write_failed", error_type=type(exc).__name__)
 
-    @staticmethod
-    def _write_json(path: str, payload) -> None:
+    @classmethod
+    def _write_json(cls, path: str, payload) -> str:
         # dumps uses the C encoder. dump's Python generator/write per scalar made
         # an unchanged 55k-row accounting snapshot cost over a second on WSL.
         with debug.span("cache.encode") as info:
             text = json.dumps(payload, separators=(",", ":"))
             info["characters"] = len(text)
+        cls._write_text(path, text)
+        return text
+
+    @staticmethod
+    def _write_text(path: str, text: str) -> None:
         fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", dir=os.path.dirname(path))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -361,7 +397,7 @@ class CachedStore:
         if path is not None and path != self._path:
             old, self._path = self._path, path
             if old is not None and not self.persistent:
-                for stale in (old, old + ".usage.sqlite3"):
+                for stale in (old, old + ".usage.sqlite3", old + TRUST_SUFFIX):
                     try:
                         os.unlink(stale)
                     except OSError:
