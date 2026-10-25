@@ -1199,3 +1199,43 @@ def test_date_pinned_claude_fast_mode_uses_the_unpinned_fast_card():
     assert ot.pricing.model_price("claude-sonnet-4-5-20250929-fast") == ot.pricing.model_price(
         "claude-sonnet-4-5-20250929"
     )
+
+
+def test_parsed_catalog_cache_matches_a_fresh_parse_and_follows_its_source():
+    import glob
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        source = os.path.join(tmp, "prices.json")
+        catalog = {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "providers": {"anthropic": {"models": {"claude-x": {"cost": [3, 15, 0.3, 3.75]}}}},
+        }
+        with open(source, "w") as fh:
+            json.dump(catalog, fh)
+
+        def read():
+            with open(source) as fh:
+                return json.load(fh)
+
+        fresh = pricing._parse_catalog(read())
+        written = pricing._parse_catalog_file(source, "fetched", read)
+        cached = pricing._parse_catalog_file(source, "fetched", lambda: 1 / 0)  # no re-parse
+        for layer in (written, cached):
+            assert list(layer) == list(fresh) and layer[0].tiers == fresh[0].tiers
+            assert isinstance(layer[0], pricing._Prices)
+        # An edited source (new size/mtime) is parsed again; the stale copy is dropped.
+        catalog["providers"]["anthropic"]["models"]["claude-y"] = {"cost": [1, 5, 0.1, 1.25]}
+        with open(source, "w") as fh:
+            json.dump(catalog, fh)
+        os.utime(source, ns=(1, 1))
+        changed = pricing._parse_catalog_file(source, "fetched", read)
+        assert "claude-y" in changed[0]
+        assert len(glob.glob(os.path.join(tmp, "opentab", "catalog", "fetched-*"))) == 1
+        # A damaged parsed copy is ignored rather than trusted.
+        (path,) = glob.glob(os.path.join(tmp, "opentab", "catalog", "fetched-*"))
+        with open(path, "wb") as fh:
+            fh.write(b"\x00garbage")
+        assert "claude-y" in pricing._parse_catalog_file(source, "fetched", read)[0]
