@@ -128,6 +128,49 @@ _FUSED_SQL = (
 # got slower than one thread on a 12-performance-core Mac.
 _SCAN_THREADS = 4
 _PARALLEL_MIN_ROWS = 4096
+# JSON number texts whose REAL/INTEGER value must survive json_array unchanged. Older
+# SQLite renders REAL with 15 significant digits there (0.12345678901234567 came back
+# as 0.123456789012346 on 3.51), so the fused path runs only where it round-trips.
+# Not probed: json_array writes -0.0 as 0.0 on every version. OpenCode serializes
+# with JSON.stringify, which never emits a negative zero, so its bodies cannot hold one.
+_ROUND_TRIP_PROBES = (
+    "0.12345678901234567",
+    "0.30000000000000004",
+    "123456789.12345678",
+    "1e-7",
+    "5e-324",
+    "2.2250738585072014e-308",
+    "1.7976931348623157e308",
+    "1e999",
+    "9223372036854775807",
+    "9223372036854775808",
+    "-9223372036854775809",
+    "4.35",
+)
+_ROUND_TRIPS: dict[str, bool] = {}
+
+
+def _fused_values_exact(conn) -> bool:
+    """True when json_array returns every probe value exactly (per SQLite library)."""
+    version = sqlite3.sqlite_version
+    if version not in _ROUND_TRIPS:
+        exact = True
+        try:
+            for text in _ROUND_TRIP_PROBES:
+                value, rendered = conn.execute(
+                    "select x, json_array(x) from (select json_extract(?, '$') as x)", [text]
+                ).fetchone()
+                back = json.loads(rendered)[0]
+                if type(back) is not type(value) or repr(back) != repr(value):
+                    exact = False
+                    break
+        except (sqlite3.Error, ValueError, TypeError, IndexError):
+            exact = False
+        _ROUND_TRIPS[version] = exact
+    return _ROUND_TRIPS[version]
+
+
+_SCALARS = (str, int, float, type(None))
 
 
 class _Projected:
@@ -762,50 +805,82 @@ class UsageCache:
                 return
             last = page[-1][0][0]
 
-    def _parallel_rows(self, conn, tracing, timings, started):
+    def _sentinel(self):
+        """(connection, data_version) read before prepare() opens its snapshot, or None.
+
+        data_version on an idle connection changes only when another connection
+        commits, so an unchanged value after the workers finish proves that the
+        main snapshot and every worker snapshot are one and the same state.
+        """
+        try:
+            reader = self._connect()
+        except sqlite3.Error:
+            return None
+        try:
+            return reader, reader.execute("pragma data_version").fetchone()[0]
+        except sqlite3.Error:
+            reader.close()
+            return None
+
+    def _parallel_rows(self, conn, tracing, timings, sentinel):
         """Fused projection over rowid ranges on separate read-only connections.
 
-        Workers read their own snapshots, so a result is adopted only when its
-        metadata equals this connection's snapshot and the row is older than the
-        refresh by the margin _reusable uses. Every other row, and every row whose
-        body is not a valid JSON object, takes the established single-row path.
+        Results count only if no commit landed between the sentinel's first read
+        (before this connection's snapshot) and the end of the scan; otherwise the
+        single-connection scan runs on this snapshot instead. Rows whose body is not
+        a valid JSON object, or whose values are not plain scalars, take the
+        established single-row path.
         """
-        threads = min(_SCAN_THREADS, os.cpu_count() or 1)
-        count = conn.execute("select count(*) from main.session_message").fetchone()[0]
-        if threads < 2 or count < _PARALLEL_MIN_ROWS:
-            yield from self._full_scalar_rows(conn, tracing, timings)
-            return
-        meta = conn.execute(
-            "select " + _METADATA_COLUMNS + " from main.session_message order by rowid"
-        ).fetchall()
-        if not meta:
-            return
-        step = -(-len(meta) // (threads * 4))
-        ranges = [
-            (meta[i][0], meta[min(i + step, len(meta)) - 1][0]) for i in range(0, len(meta), step)
-        ]
-        tick = time.perf_counter() if tracing else 0
-        found = {}
-        with debug.span("usage.parallel_scan", threads=threads, ranges=len(ranges)):
-            with ThreadPoolExecutor(threads) as pool:
-                for part in pool.map(self._fused_range, ranges):
-                    found.update(part)
-        if tracing:
-            timings[0] += (time.perf_counter() - tick) * 1000
-            debug.event("usage.parallel_result", projected=len(found), rows=len(meta))
-        stable = started - 2000
-        for row in meta:
-            stamp = tuple(row)
-            hit = found.get(stamp[0])
+        try:
+            threads = min(_SCAN_THREADS, os.cpu_count() or 1)
+            count = conn.execute("select count(*) from main.session_message").fetchone()[0]
             if (
-                hit is not None
-                and hit[0] == stamp
-                and isinstance(stamp[5], (int, float))
-                and 0 < stamp[5] < stable
+                sentinel is None
+                or threads < 2
+                or count < _PARALLEL_MIN_ROWS
+                or not _fused_values_exact(conn)
             ):
-                yield row, _Projected(hit[1]), True
-            else:
-                yield row, None, False
+                yield from self._full_scalar_rows(conn, tracing, timings)
+                return
+            meta = conn.execute(
+                "select " + _METADATA_COLUMNS + " from main.session_message order by rowid"
+            ).fetchall()
+            if not meta:
+                return
+            step = -(-len(meta) // (threads * 4))
+            ranges = [
+                (meta[i][0], meta[min(i + step, len(meta)) - 1][0])
+                for i in range(0, len(meta), step)
+            ]
+            tick = time.perf_counter() if tracing else 0
+            found = {}
+            with debug.span("usage.parallel_scan", threads=threads, ranges=len(ranges)):
+                with ThreadPoolExecutor(threads) as pool:
+                    for part in pool.map(self._fused_range, ranges):
+                        found.update(part)
+            try:
+                unchanged = sentinel[0].execute("pragma data_version").fetchone()[0] == sentinel[1]
+            except sqlite3.Error:
+                unchanged = False
+            if tracing:
+                timings[0] += (time.perf_counter() - tick) * 1000
+                debug.event(
+                    "usage.parallel_result", projected=len(found), rows=len(meta), adopted=unchanged
+                )
+            if not unchanged:
+                # Equal metadata cannot prove an equal body: OpenCode may rewrite one
+                # without touching its revision columns. Read this snapshot instead.
+                yield from self._full_scalar_rows(conn, tracing, timings)
+                return
+            for row in meta:
+                hit = found.get(row[0])
+                if hit is not None and hit[0] == tuple(row):
+                    yield row, _Projected(hit[1]), True
+                else:
+                    yield row, None, False
+        finally:
+            if sentinel is not None:
+                sentinel[0].close()
 
     def _fused_range(self, bounds) -> dict:
         out = {}
@@ -836,8 +911,10 @@ class UsageCache:
             except (ValueError, RecursionError):
                 continue
             # A null role means not a valid JSON object; only the full
-            # projection's '{}' fallback decides those rows.
-            if projected[0] is not None:
+            # projection's '{}' fallback decides those rows. A composite field
+            # (an object where a count belongs) is JSON TEXT in the full projection
+            # but a nested value here, so it also takes the single-row path.
+            if projected[0] is not None and all(type(v) in _SCALARS for v in projected):
                 out[stamp[0]] = (stamp, (stamp[0], stamp[1], stamp[2], *projected))
 
     def _full_scalar_rows(self, conn, tracing, timings):
@@ -971,6 +1048,9 @@ class UsageCache:
             if scope is not None
             else ""
         )
+        parallel = full_scan and self._sql_projection is True and self._connect is not None
+        # Read BEFORE the snapshot below opens, so any later commit is detected.
+        sentinel = self._sentinel() if parallel else None
         # One read snapshot covers revisions and the changed payloads they identify.
         conn.execute("savepoint opentab_usage_refresh")
         try:
@@ -1003,8 +1083,8 @@ class UsageCache:
             if full_scan:
                 if self._sql_projection is not True:
                     native = self._full_native_rows(conn, tracing, batch_timings)
-                elif self._connect is not None:
-                    native = self._parallel_rows(conn, tracing, batch_timings, started)
+                elif parallel:
+                    native = self._parallel_rows(conn, tracing, batch_timings, sentinel)
                 else:
                     native = self._full_scalar_rows(conn, tracing, batch_timings)
             else:
@@ -1172,3 +1252,6 @@ class UsageCache:
             conn.execute("rollback to opentab_usage_refresh")
             conn.execute("release opentab_usage_refresh")
             raise
+        finally:
+            if sentinel is not None:
+                sentinel[0].close()  # also closed by the scan; a second close is a no-op

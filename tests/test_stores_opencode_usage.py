@@ -766,7 +766,8 @@ def test_opencode_usage_parallel_scan_keeps_this_connections_snapshot():
                 wrote = True
                 with closing(sqlite3.connect(store.db)) as other:  # this is a worker thread
                     other.execute(
-                        "update session_message set data=?,time_updated=time_updated+1 where id='39'",
+                        # Metadata untouched: equal stamps must not pass a changed body.
+                        "update session_message set data=? where id='39'",
                         ['{"tokens":{"input":777}}'],
                     )
                     other.commit()
@@ -782,7 +783,7 @@ def test_opencode_usage_parallel_scan_keeps_this_connections_snapshot():
         assert wrote and store._usage_cache.rows == expected
 
 
-def test_opencode_usage_parallel_scan_rereads_rows_newer_than_the_refresh():
+def test_opencode_usage_parallel_scan_adopts_recent_rows_from_a_proven_snapshot():
     import time as clock
 
     from opentab.stores import opencode_usage
@@ -801,7 +802,62 @@ def test_opencode_usage_parallel_scan_rereads_rows_newer_than_the_refresh():
         ) as single:
             store._usage_cache.prepare(store.conn, False)
         assert store._usage_cache.rows == expected
-        assert single.call_count == 10  # too recent to trust another snapshot's copy
+        # No commit landed during the scan, so even rows written just now are adopted.
+        assert single.call_count == 0
+
+
+def test_opencode_usage_parallel_scan_keeps_composite_fields_on_the_single_row_path():
+    from opentab.stores import opencode_usage
+
+    bodies = [
+        json.dumps({"tokens": {"input": {"n": 7}}}),
+        json.dumps({"cost": [1, 2], "tokens": {"input": 3}}),
+        json.dumps({"time": {"created": {"at": 5}}, "tokens": {"input": 4}}),
+        json.dumps({"tokens": {"input": 2}}),
+    ]
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        _edge_store(writer, bodies)
+        expected = _per_row_reference(store.db)
+        store._usage_cache._sql_projection = True
+        with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+            opencode_usage, "_SCAN_THREADS", 2
+        ), patch.object(opencode_usage.os, "cpu_count", return_value=4), patch(
+            "opentab.stores.opencode_usage._read_usage", wraps=_read_usage
+        ) as single:
+            store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.rows == expected  # binding a dict used to raise here
+        assert single.call_count == 3
+
+
+def test_opencode_usage_parallel_scan_needs_exact_real_round_trips():
+    from opentab.stores import opencode_usage
+
+    class FifteenDigits:
+        # What SQLite 3.51 did: json_array rendered REAL with 15 significant digits.
+        def execute(self, sql, params):
+            value = json.loads(params[0])
+            rendered = json.dumps([float("%.15g" % value) if isinstance(value, float) else value])
+            return type("Cursor", (), {"fetchone": lambda self: (value, rendered)})()
+
+    with patch.dict(opencode_usage._ROUND_TRIPS, clear=True), patch.object(
+        opencode_usage.sqlite3, "sqlite_version", "3.51.0-test"
+    ):
+        assert opencode_usage._fused_values_exact(FifteenDigits()) is False
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        _edge_store(writer, [json.dumps({"cost": 0.12345678901234567, "tokens": {"input": 1}})])
+        expected = _per_row_reference(store.db)
+        store._usage_cache._sql_projection = True
+        with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+            opencode_usage, "_fused_values_exact", return_value=False
+        ), patch.object(
+            opencode_usage.UsageCache, "_fused_range", side_effect=AssertionError("fused")
+        ):
+            store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.rows == expected
 
 
 def test_opencode_usage_scoped_first_read_never_uses_full_scan():
