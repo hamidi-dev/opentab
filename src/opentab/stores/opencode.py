@@ -124,6 +124,14 @@ def _process_timeline(
     return out
 
 
+def _file_identity(path: str) -> tuple | None:
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino
+
+
 class _ChangeRequest:
     """A frozen worker request that owns every SQLite connection it opens."""
 
@@ -212,7 +220,12 @@ class Store:
         # Enforce the read-only database contract at connection level.
         uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
         # CombinedStore may move this connection between threads, never use it concurrently.
+        before = _file_identity(db)
         self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        # The file this connection holds; None when it changed while connecting.
+        self._opened_identity = (
+            before if before is not None and before == _file_identity(db) else None
+        )
         self.conn.row_factory = sqlite3.Row
         self.conn.create_function("opentab_cost_residual", 2, _cost_residual, deterministic=True)
         self._tune(self.conn)
@@ -244,9 +257,19 @@ class Store:
             )
 
     def _reader(self) -> sqlite3.Connection:
-        """Another read-only connection, tuned like ``conn`` (parallel usage scans)."""
+        """Another read-only connection on the very file ``conn`` holds (parallel scans).
+
+        The path may name a different file by now (a replaced database): refuse rather
+        than let workers and the sentinel read another file than the main snapshot.
+        """
         uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
+        before = _file_identity(self.db)
         conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        if self._opened_identity is None or not (
+            before == _file_identity(self.db) == self._opened_identity
+        ):
+            conn.close()
+            raise sqlite3.OperationalError("database file replaced since the store opened it")
         self._tune(conn)
         return conn
 

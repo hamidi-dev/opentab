@@ -836,6 +836,30 @@ def test_opencode_usage_parallel_scan_never_runs_under_an_already_open_snapshot(
         store.conn.rollback()
 
 
+def test_opencode_usage_parallel_scan_reads_only_the_file_the_store_opened():
+    import shutil
+
+    from opentab.stores import opencode_usage
+
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        _edge_store(writer, [json.dumps({"tokens": {"input": 1}})] * 8)
+        expected = _per_row_reference(store.db)
+        # Another file with identical metadata and different bodies takes the path.
+        other = store.db + ".next"
+        shutil.copy2(store.db, other)
+        with sqlite3.connect(other) as rewrite:
+            rewrite.execute("update session_message set data=?", ['{"tokens":{"input":777}}'])
+        os.replace(other, store.db)
+        store._usage_cache._sql_projection = True
+        with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+            opencode_usage, "_SCAN_THREADS", 2
+        ), patch.object(opencode_usage.os, "cpu_count", return_value=4):
+            store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.rows == expected  # the opened file's 1, never 777
+
+
 def test_opencode_usage_parallel_scan_keeps_composite_fields_on_the_single_row_path():
     from opentab.stores import opencode_usage
 
