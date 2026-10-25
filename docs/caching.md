@@ -246,10 +246,14 @@ stamp or a crash between the two atomic writes means the full check runs (about
 
 Model rows are about 97% of a rollup's decode time, and the TUI needs none of them
 before its first paint. So they live in a `.models` sidecar that is written first,
-and the cache pins its SHA-1. Workflows decode eagerly; `model_breakdown()` reads and
-checks the sidecar on first use (`cache.models_read`). A sidecar whose digest does
-not match is never adopted; one that matches but fails validation makes the hit path
-parse afresh and rewrite the whole cache. An inline `model_breakdown` (an older
+whose first line is the SHA-1 of its rows, which the cache pins. The warm read checks
+that line and keeps the sidecar open; `model_breakdown()` decodes it on first use
+(`cache.models_read`) and verifies the whole digest. Another process replacing the
+cache in between therefore cannot hand this run rows of a different generation than
+the workflows it already served (POSIX keeps the old file readable; on Windows the
+replace fails until the handle is released, so that write is skipped). A sidecar of
+another generation rejects the whole cache at read time; one that fails its digest or
+validation makes the hit path parse afresh and rewrite the whole cache. An inline `model_breakdown` (an older
 writer or a fixture) is still accepted and checked eagerly. Warm first paint on the
 reference corpus fell from about 515 ms to 185 ms.
 

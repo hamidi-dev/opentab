@@ -1153,18 +1153,27 @@ def test_cached_store_skips_pricing_checks_only_for_its_own_unchanged_file():
         assert warm.workflows() and warm.served_from_cache
         assert warm.model_breakdown() == rows
 
-        # A sidecar that no longer matches the cache's pinned digest is never adopted.
-        damaged_rows = json.loads(original_models)
+        # Another generation's sidecar (its own first line) rejects the whole cache, so
+        # workflows and model rows always come from one parse.
+        pinned, body = original_models.split("\n", 1)
+        damaged_rows = json.loads(body)
         damaged_rows[0]["pricing"][0]["tok"][0] = -1
         damaged_text = json.dumps(damaged_rows, separators=(",", ":"))
-        files(models=damaged_text)
+        damaged_pin = hashlib.sha1(damaged_text.encode()).hexdigest()
+        files(models=damaged_pin + "\n" + damaged_text)
         stale, models, checks = load()
-        assert models is None and checks == 0
+        assert stale._disk is None and models is None and checks == 0
+        # Rows edited under the right first line fail the full digest instead.
+        files(models=pinned + "\n" + damaged_text)
+        edited, models, checks = load()
+        assert edited._disk is not None and models is None and checks == 0
 
         # Re-pinning it edits the cache itself, so the digest fails and the check runs.
         blob = json.loads(original)
-        blob["models_external"]["sha1"] = hashlib.sha1(damaged_text.encode()).hexdigest()
-        files(main=json.dumps(blob, separators=(",", ":")))
+        blob["models_external"]["sha1"] = damaged_pin
+        files(
+            main=json.dumps(blob, separators=(",", ":")), models=damaged_pin + "\n" + damaged_text
+        )
         damaged, models, checks = load()
         assert models is None and checks > 0
         # The hit path then parses afresh and replaces the whole cache.
@@ -1180,6 +1189,46 @@ def test_cached_store_skips_pricing_checks_only_for_its_own_unchanged_file():
         os.unlink(path + TRUST_SUFFIX)
         unstamped, models, checks = load()
         assert checks > 0 and models == rows
+
+
+def test_cached_store_model_rows_stay_with_the_generation_it_served():
+    from unittest.mock import patch
+
+    from tests._support import _claude_msg, _usage, _write_jsonl
+
+    if os.name == "nt":
+        return  # Windows refuses to replace a file another handle holds open
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        root = os.path.join(tmp, "projects")
+        os.makedirs(root)
+        transcript = os.path.join(root, "s1.jsonl")
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+
+        def record(tokens):
+            _write_jsonl(
+                transcript,
+                [
+                    _claude_msg(
+                        "s1", "claude-sonnet-4-5", _usage(tokens, 0, 0, 0), uuid="a", cwd=tmp
+                    )
+                ],
+            )
+
+        def store():
+            return ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+
+        record(1)
+        first = store()
+        first.workflows()
+        old_rows = first.model_breakdown()
+        reader = store()  # a warm launch: workflows served, model rows not yet decoded
+        assert reader.workflows()[0].total_tokens == 1 and reader.served_from_cache
+        record(777)  # meanwhile another process re-parses and replaces the cache
+        writer = store()
+        writer.workflows()
+        assert writer.model_breakdown() != old_rows
+        # The deferred model scan still describes the workflows this reader served.
+        assert reader.model_breakdown() == old_rows
 
 
 def test_cached_store_incremental_flag_is_per_call_not_sticky():
