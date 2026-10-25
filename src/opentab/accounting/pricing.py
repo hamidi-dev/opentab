@@ -451,14 +451,18 @@ _PARSER_DIGEST: str | None = None
 
 
 def _parser_digest() -> str:
-    # The parser's own source is part of every parsed catalog's identity.
+    """SHA-1 of this module's source, part of every parsed catalog's identity, or "".
+
+    Read through the module's loader so zipped installs identify their parser too;
+    "" (unidentifiable) disables the parsed-catalog cache rather than sharing one.
+    """
     global _PARSER_DIGEST
     if _PARSER_DIGEST is None:
         try:
-            with open(__file__, "rb") as fh:
-                _PARSER_DIGEST = hashlib.sha1(fh.read()).hexdigest()
-        except OSError:
-            _PARSER_DIGEST = ""
+            source = __loader__.get_data(__file__)  # noqa: F821 -- set by the import system
+        except Exception:  # noqa: BLE001 -- any loader without get_data: no identity, no cache
+            source = None
+        _PARSER_DIGEST = hashlib.sha1(source).hexdigest() if source else ""
     return _PARSER_DIGEST
 
 
@@ -474,6 +478,12 @@ def _layer_shaped(layer) -> bool:
     )
 
 
+def _decode_catalog(raw: bytes):
+    # Strict UTF-8 text, as the old text-mode reads were: json.loads(bytes) would also
+    # accept a BOM or UTF-16, turning a catalog that used to be rejected into rates.
+    return json.loads(raw.decode("utf-8"))
+
+
 def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
     """_parse_catalog(json.loads(raw)) through a marshal cache.
 
@@ -485,6 +495,8 @@ def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
     """
     import marshal
 
+    if not _parser_digest():
+        return _parse_catalog(_decode_catalog(raw))
     key = json.dumps(
         [
             kind,
@@ -509,7 +521,7 @@ def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
             return (out, *layer[2:])
     except (OSError, EOFError, ValueError, TypeError):
         pass
-    parsed = _parse_catalog(json.loads(raw))
+    parsed = _parse_catalog(_decode_catalog(raw))
     try:
         os.makedirs(folder, exist_ok=True)
         payload = marshal.dumps((dict(parsed[0]), getattr(parsed[0], "tiers", {}), *parsed[1:]))
