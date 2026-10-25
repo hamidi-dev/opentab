@@ -2534,3 +2534,109 @@ def test_claude_fast_mode_is_split_out_because_it_bills_at_its_own_rate():
         assert ot.model_price("anthropic/claude-haiku-4-5-fast") == ot.model_price(
             "anthropic/claude-haiku-4-5"
         )
+
+
+def _canonical(value):
+    # Order-preserving for dicts and lists (insertion order is part of the contract);
+    # sets compare as sorted members; dict subclasses keep their attributes.
+    if isinstance(value, dict):
+        extra = sorted(vars(value).items()) if hasattr(value, "__dict__") else None
+        return ["dict", [[_canonical(k), _canonical(v)] for k, v in value.items()], extra]
+    if isinstance(value, (set, frozenset)):
+        return ["set", sorted(json.dumps(_canonical(v), sort_keys=True) for v in value)]
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def _pool_corpus(root):
+    def assistant(sid, uid, *, mid=None, req=None, side=False, parent=None, ts=None):
+        return _claude_msg(
+            sid,
+            "claude-sonnet-4-5",
+            _usage(100, 20, 300, 40, cw1h=10),
+            uuid=uid,
+            cwd=str(root),
+            mid=mid,
+            req=req,
+            side=side,
+            parent=parent,
+            ts=ts,
+            tools=["Bash"],
+        )
+
+    def user(sid, text, uid):
+        return dict(_claude_user(text, cwd=str(root), uuid=uid), sessionId=sid)
+
+    a, b, c = root / "project-a", root / "project-b", root / "project-c"
+    for d in (a, b, c, a / "s1" / "subagents"):
+        d.mkdir(parents=True, exist_ok=True)
+    s1 = [user("s1", "first prompt", "s1-u"), assistant("s1", "s1-a", mid="m1", req="r1")]
+    _write_jsonl(a / "s1.jsonl", s1 + [assistant("s1", "s1-b", ts="2026-06-10T19:00:00Z")])
+    _write_jsonl(
+        a / "s1" / "subagents" / "agent-x.jsonl",
+        [assistant("s1", "s1-side", side=True, parent="s1-a")],
+    )
+    # Resumed under a second slug: same session id and a shared dedup key.
+    _write_jsonl(b / "s1.jsonl", s1 + [assistant("s1", "s1-c", ts="2026-06-11T08:00:00Z")])
+    s2 = [user("s2", "second", "s2-u"), assistant("s2", "s2-a", mid="m2", req="r2")]
+    _write_jsonl(a / "s2.jsonl", s2)
+    # A background replay of s2, sorted last so s2 claims its calls first.
+    _write_jsonl(a / "bg.jsonl", s2 + [{"sessionId": "bg", "sessionKind": "background"}])
+    # Two sessions sharing only a dedup key: entangled through the key alone.
+    _write_jsonl(a / "s3.jsonl", [assistant("s3", "s3-a", mid="shared", req="rq")])
+    _write_jsonl(c / "s4.jsonl", [assistant("s4", "s4-a", mid="shared", req="rq")])
+    with open(c / "s5.jsonl", "w") as fh:
+        fh.write("not json\n" + json.dumps(user("s5", "alone", "s5-u")) + "\n")
+    (c / "empty.jsonl").write_text("")
+
+
+def _parse_state(root, **env):
+    from dataclasses import asdict
+
+    with patch.dict(os.environ, env):
+        store = ot.ClaudeStore(str(root), _claude_args())
+        rows = [asdict(w) for w in store.workflows()]
+        models = store.model_breakdown()
+    return rows, models, _canonical(list(store._sessions.items()))
+
+
+def test_claude_pool_parse_equals_the_serial_parse_including_entangled_groups():
+    from opentab.stores import loader
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _pool_corpus(root)
+        serial = _parse_state(root, OPENTAB_LOADER_PROCESSES="0")
+        pools = []
+
+        def spy(*args, **kwargs):
+            result = real(*args, **kwargs)
+            pools.append(result is not None)
+            return result
+
+        real = loader.run_pool
+        with patch.object(loader, "MIN_PARSE_BYTES", 0), patch.object(
+            loader, "run_pool", side_effect=spy
+        ), patch.object(loader.os, "cpu_count", return_value=4):
+            pooled = _parse_state(root, OPENTAB_LOADER_PROCESSES="1")
+        # One pass over the owner groups, then one over the three entangled sets.
+        assert pools == [True, True]
+        assert pooled == serial
+        tokens = {w["id"]: w["total_tokens"] for w in serial[0]}
+        # The shared call counts once, for whichever of s3/s4 glob listed first.
+        assert bool(tokens.get("s3")) != bool(tokens.get("s4"))
+
+
+def test_claude_pool_failure_falls_back_to_the_serial_parse():
+    from opentab.stores import loader
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _pool_corpus(root)
+        serial = _parse_state(root, OPENTAB_LOADER_PROCESSES="0")
+        with patch.object(loader, "MIN_PARSE_BYTES", 0), patch.object(
+            loader, "run_pool", return_value=None
+        ) as pool:
+            assert _parse_state(root, OPENTAB_LOADER_PROCESSES="1") == serial
+        assert pool.called

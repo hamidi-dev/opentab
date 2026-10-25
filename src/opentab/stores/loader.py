@@ -193,3 +193,122 @@ def _child_main() -> None:
         send(result)
     finally:
         conn.close()
+
+
+# A pool for one backend's own parse: the same import-nothing boot, with a job list.
+_POOL_BOOT = (
+    "import pickle,sys\n"
+    "sys.path[:] = pickle.load(sys.stdin.buffer)\n"
+    "from opentab.stores.loader import _pool_main\n"
+    "_pool_main()\n"
+)
+
+
+def pool_workers(jobs: int) -> int:
+    """Processes for a parse pool: the read override, else one per core (at most 12)."""
+    override = os.environ.get("OPENTAB_MAX_WORKERS")
+    if override:
+        try:
+            return max(1, min(jobs, int(override)))
+        except ValueError:
+            pass
+    return max(1, min(jobs, os.cpu_count() or 1, 12))
+
+
+def run_pool(func, jobs: list, weights: list, workers: int, on_result=None) -> list | None:
+    """``[func(job) for job in jobs]`` across ``workers`` child processes, or None.
+
+    ``func`` must be a module-level function: children import it by name. Jobs are
+    dealt largest first to the least loaded child, by ``weights``. ``on_result(i)``
+    runs as each job completes (progress). None on any spawn, pickling or child
+    failure: the caller then parses in-process, so a pool can only ever save time.
+    """
+    import pickle
+    import subprocess
+
+    if not enabled() or workers < 2 or len(jobs) < 2:
+        return None
+    loads = [[0, []] for _ in range(workers)]
+    for i in sorted(range(len(jobs)), key=lambda i: -weights[i]):
+        least = min(loads, key=lambda load: load[0])
+        least[0] += weights[i]
+        least[1].append(i)
+    target = (func.__module__, func.__qualname__)
+    results: list = [None] * len(jobs)
+    finished = [False] * workers
+    procs = []
+    lock = threading.Lock()
+
+    def collect(slot: int, proc) -> None:
+        while True:
+            try:
+                kind, *rest = pickle.load(proc.stdout)
+            except (EOFError, OSError, pickle.UnpicklingError, ValueError, AttributeError):
+                return
+            if kind == "result":
+                results[rest[0]] = rest[1]
+                if on_result is not None:
+                    with lock:
+                        on_result(rest[0])
+            else:
+                finished[slot] = kind == "done"
+                if kind != "done":
+                    debug.event("loader.pool_child_failed", error_type=rest[0])
+                return
+
+    with debug.span("loader.pool", jobs=len(jobs), workers=workers) as info:
+        readers = []
+        try:
+            for slot, (_, mine) in enumerate(loads):
+                if not mine:
+                    finished[slot] = True
+                    continue
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", _POOL_BOOT],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                )
+                procs.append(proc)
+                pickle.dump(list(sys.path), proc.stdin)
+                pickle.dump((target, [(i, jobs[i]) for i in mine]), proc.stdin)
+                proc.stdin.close()
+                reader = threading.Thread(
+                    target=collect, args=(slot, proc), name="opentab-pool", daemon=True
+                )
+                reader.start()
+                readers.append(reader)
+        except (OSError, TypeError, ValueError, pickle.PicklingError, AttributeError) as exc:
+            debug.event("loader.pool_spawn_failed", error_type=type(exc).__name__)
+        for reader in readers:
+            reader.join()
+        ok = len(readers) == sum(1 for _, mine in loads if mine) and all(finished)
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+            proc.stdout.close()
+            proc.wait()
+        info["ok"] = ok
+    return results if ok else None
+
+
+def _pool_main() -> None:
+    import importlib
+    import pickle
+
+    (module, name), jobs = pickle.load(sys.stdin.buffer)
+    conn = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+    try:
+        func = importlib.import_module(module)
+        for part in name.split("."):
+            func = getattr(func, part)
+        for i, job in jobs:
+            pickle.dump(("result", i, func(job)), conn, protocol=pickle.HIGHEST_PROTOCOL)
+        result = ("done",)
+    except BaseException as exc:
+        result = ("error", type(exc).__name__)
+    try:
+        pickle.dump(result, conn)
+    finally:
+        conn.close()
