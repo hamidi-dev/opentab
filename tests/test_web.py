@@ -2163,7 +2163,10 @@ def test_web_server_is_hardened_against_csrf_and_dns_rebinding():
     try:
         # Every response carries the lockdown headers (self-contained page: inline
         # JS/CSS, data: favicon, fetch back to this server only).
-        resp = urllib.request.urlopen(base + "/")
+        # Drain the page: the single-threaded server blocks in sendall once an unread
+        # body (~880 kB) outgrows the loopback buffers, and every later request hangs.
+        with urllib.request.urlopen(base + "/") as resp:
+            resp.read()
         csp = resp.headers["Content-Security-Policy"]
         assert csp.startswith("default-src 'none'")
         assert "connect-src 'self'" in csp and "img-src data:" in csp
