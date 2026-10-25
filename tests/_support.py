@@ -14,7 +14,7 @@ from unittest.mock import patch
 import opentab as ot
 
 
-def sqlite_caps_cte_cursors() -> bool:
+def sqlite_caps_cte_cursors(connect=sqlite3.connect) -> bool:
     """Whether this SQLite rejects a CTE reference past 1000 cursors (3.54.1)."""
     # A balanced AND tree keeps the expression shallow, so a lowered expression-depth
     # limit cannot fail the probe for another reason while the cursor cap still applies.
@@ -23,7 +23,7 @@ def sqlite_caps_cte_cursors() -> bool:
         terms = [f"({' and '.join(terms[i : i + 2])})" for i in range(0, len(terms), 2)]
     sql = "with recursive t(x) as (select 1 union select x from t where 0) select 1 where "
     sql += terms[0]
-    conn = sqlite3.connect(":memory:")
+    conn = connect(":memory:")
     try:
         conn.execute(sql).fetchall()
     except sqlite3.OperationalError as exc:
