@@ -447,63 +447,83 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
     return prices, limits, providers, meta, {bare: r[0] for bare, r in rank.items()}
 
 
-def _parsed_path(source: str, kind: str) -> str | None:
-    # A parsed catalog is valid for exactly this source file, this parser and this
-    # interpreter (marshal's format is version-specific); any change re-parses.
-    try:
-        src, code = os.stat(source), os.stat(__file__)
-    except OSError:
-        return None
+_PARSER_DIGEST: str | None = None
+
+
+def _parser_digest() -> str:
+    # The parser's own source is part of every parsed catalog's identity.
+    global _PARSER_DIGEST
+    if _PARSER_DIGEST is None:
+        try:
+            with open(__file__, "rb") as fh:
+                _PARSER_DIGEST = hashlib.sha1(fh.read()).hexdigest()
+        except OSError:
+            _PARSER_DIGEST = ""
+    return _PARSER_DIGEST
+
+
+def _layer_shaped(layer) -> bool:
+    # A decodable payload can still be the wrong structure; never adopt one.
+    return (
+        isinstance(layer, tuple)
+        and len(layer) == 6
+        and isinstance(layer[0], dict)
+        and isinstance(layer[1], dict)
+        and all(isinstance(layer[i], dict) for i in (2, 3, 5))
+        and (layer[4] is None or isinstance(layer[4], dict))
+    )
+
+
+def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
+    """_parse_catalog(json.loads(raw)) through a marshal cache.
+
+    Parsing costs ~20 ms per catalog on every status poll. The parsed copy is keyed on
+    the SHA-1 of the source bytes, the parser's source, the release and the Python
+    version (marshal's format is version-specific), and carries a digest of its own
+    payload, so neither an edit that keeps size and mtime nor a corrupted file is ever
+    served. marshal holds only plain values; it executes nothing.
+    """
+    import marshal
+
     key = json.dumps(
         [
             kind,
             __version__,
             list(sys.version_info[:2]),
-            src.st_size,
-            src.st_mtime_ns,
-            code.st_size,
-            code.st_mtime_ns,
+            _parser_digest(),
+            hashlib.sha1(raw).hexdigest(),
         ]
     )
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-    return os.path.join(paths.cache_dir(), "catalog", f"{kind}-{digest}.marshal")
-
-
-def _parse_catalog_file(source: str, kind: str, read) -> tuple:
-    """_parse_catalog(read()) through a marshal cache: ~130 ms of parsing per status poll.
-
-    marshal holds only plain values (it executes nothing); the file sits beside the
-    other rebuildable caches and is written atomically, best-effort.
-    """
-    import marshal
-
-    cached = _parsed_path(source, kind)
-    if cached is not None:
-        try:
-            with open(cached, "rb") as fh:
-                # loads(read()): marshal.load on a file object was ~10x slower here.
-                prices, tiers, *rest = marshal.loads(fh.read())
+    name = f"{kind}-{hashlib.sha1(key.encode('utf-8')).hexdigest()[:16]}.marshal"
+    folder = os.path.join(paths.cache_dir(), "catalog")
+    cached = os.path.join(folder, name)
+    try:
+        with open(cached, "rb") as fh:
+            blob = fh.read()
+        # loads(read()): marshal.load on a file object was ~10x slower here.
+        layer = marshal.loads(blob[20:]) if hashlib.sha1(blob[20:]).digest() == blob[:20] else None
+        if _layer_shaped(layer):
             out = _Prices()
-            out.update(prices)
-            out.tiers = tiers
-            return (out, *rest)
-        except (OSError, EOFError, ValueError, TypeError):
-            pass
-    layer = _parse_catalog(read())
-    if cached is not None:
-        try:
-            os.makedirs(os.path.dirname(cached), exist_ok=True)
-            fd, tmp = tempfile.mkstemp(prefix="catalog.", dir=os.path.dirname(cached))
-            with os.fdopen(fd, "wb") as fh:
-                marshal.dump((dict(layer[0]), getattr(layer[0], "tiers", {}), *layer[1:]), fh)
-            os.replace(tmp, cached)
-            for name in os.listdir(os.path.dirname(cached)):
-                # Superseded parses (an old source or release) are dead weight.
-                if name.startswith(kind + "-") and name != os.path.basename(cached):
-                    os.unlink(os.path.join(os.path.dirname(cached), name))
-        except (OSError, ValueError):
-            pass
-    return layer
+            out.update(layer[0])
+            out.tiers = layer[1]
+            return (out, *layer[2:])
+    except (OSError, EOFError, ValueError, TypeError):
+        pass
+    parsed = _parse_catalog(json.loads(raw))
+    try:
+        os.makedirs(folder, exist_ok=True)
+        payload = marshal.dumps((dict(parsed[0]), getattr(parsed[0], "tiers", {}), *parsed[1:]))
+        fd, tmp = tempfile.mkstemp(prefix="catalog.", dir=folder)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(hashlib.sha1(payload).digest() + payload)
+        os.replace(tmp, cached)
+        for other in os.listdir(folder):
+            # Superseded parses (an old source or release) are dead weight.
+            if other.startswith(kind + "-") and other != name:
+                os.unlink(os.path.join(folder, other))
+    except (OSError, ValueError):
+        pass
+    return parsed
 
 
 def _load_bundled() -> tuple[dict, dict, dict, dict | None, dict]:
@@ -513,15 +533,8 @@ def _load_bundled() -> tuple[dict, dict, dict, dict | None, dict]:
         try:
             from importlib.resources import files
 
-            resource = files("opentab").joinpath("data").joinpath("models.json")
-            if isinstance(resource, os.PathLike):
-                _BUNDLED = _parse_catalog_file(
-                    os.fspath(resource),
-                    "bundled",
-                    lambda: json.loads(resource.read_text("utf-8")),
-                )
-            else:  # zipped install: no file to key a parsed copy on
-                _BUNDLED = _parse_catalog(json.loads(resource.read_text("utf-8")))
+            raw = files("opentab").joinpath("data").joinpath("models.json").read_bytes()
+            _BUNDLED = _parse_catalog_bytes(raw, "bundled")
         except Exception:  # noqa: BLE001 -- packaging-dependent (zip/dir/missing), all non-fatal
             _BUNDLED = ({}, {}, {}, None, {})
     return _BUNDLED
@@ -530,14 +543,9 @@ def _load_bundled() -> tuple[dict, dict, dict, dict | None, dict]:
 def _load_price_cache() -> tuple[dict, dict, dict, dict | None, dict]:
     global _PRICE_CACHE
     if _PRICE_CACHE is None:
-        path = price_cache_path()
-
-        def read():
-            with open(path) as fh:
-                return json.load(fh)
-
         try:
-            _PRICE_CACHE = _parse_catalog_file(path, "fetched", read)
+            with open(price_cache_path(), "rb") as fh:
+                _PRICE_CACHE = _parse_catalog_bytes(fh.read(), "fetched")
         except (OSError, ValueError):
             _PRICE_CACHE = ({}, {}, {}, None, {})
     return _PRICE_CACHE
