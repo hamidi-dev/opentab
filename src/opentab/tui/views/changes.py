@@ -453,7 +453,7 @@ def diff_layout(
         mode = "Side-by-side" if split else "Unified (narrow window)" if side_by_side else "Unified"
         lines.append(ChangeLine(mode, "meta"))
         lines.extend(_render_patch(patch, path, width, split, glyphs or TABLE_GLYPHS_ASCII))
-    elif diff is not None:
+    elif diff is not None and "patch" in diff:
         lines.extend(
             ChangeLine(part, "empty")
             for part in format_block("The recorded change has no textual difference.", "", width, 1)

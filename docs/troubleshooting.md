@@ -134,3 +134,13 @@ Older fleet summaries may hold only totals.
 Re-export on the source machine if its records still exist. Turn traces and notes are
 TUI and CLI/MCP only, never in the browser. See
 [the live browser](web.md#served-live) and [remote turns](machines.md#read-a-remote-turn).
+
+## OpenCode Changes say SQLite cannot run the query
+
+**Cause**: SQLite 3.54.1 rejects queries that reference a CTE after opening 1000
+cursors. The Changes tab's scoped reads on current OpenCode databases cross that cap.
+SQLite reverted it in later releases; cost, tokens and turns are unaffected.
+
+**Fix**: update SQLite, or run OpenTab with a Python that links another version.
+`opentab doctor` shows which SQLite your Python uses. Homebrew Python links Homebrew's
+SQLite, so `brew upgrade sqlite` fixes it once a newer release is out.

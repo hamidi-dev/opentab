@@ -1,3 +1,4 @@
+import functools
 import hashlib
 import json
 import os
@@ -10,6 +11,37 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import opentab as ot
+
+
+def sqlite_caps_cte_cursors() -> bool:
+    """Whether this SQLite rejects a CTE reference past 1000 cursors (3.54.1)."""
+    sql = "with recursive t(x) as (select 1 union select x from t where 0) select 1 where "
+    sql += " and ".join(["1 in (select x from t)"] * 600)
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(sql).fetchall()
+    except sqlite3.OperationalError as exc:
+        return str(exc) == "VIEWs and/or subqueries nested too deep"
+    finally:
+        conn.close()
+    return False
+
+
+SQLITE_CAPS_CTE_CURSORS = sqlite_caps_cte_cursors()
+
+
+def needs_uncapped_sqlite(fn):
+    """Run a scoped Changes test only where SQLite can execute its queries.
+
+    The capped build's own outcome is asserted by a dedicated test instead.
+    """
+
+    @functools.wraps(fn)
+    def wrapper():
+        if not SQLITE_CAPS_CTE_CURSORS:
+            fn()
+
+    return wrapper
 
 
 @contextmanager

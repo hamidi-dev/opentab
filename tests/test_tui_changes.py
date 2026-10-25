@@ -505,6 +505,15 @@ def test_changes_show_tool_evidence_move_source_and_write_without_fabricated_dif
     assert "The completed write records a path, but no before/after diff." in lines
 
 
+def test_changes_show_an_unreadable_diff_reason_without_claiming_no_difference():
+    from opentab.tui.views.changes import diff_layout
+
+    file = _data()["files"][0]
+    lines = diff_layout(file, 0, {"truncated": False, "limitation": "SQLite cannot run it."}, 80)
+    assert "SQLite cannot run it." in lines
+    assert "The recorded change has no textual difference." not in lines
+
+
 def test_changes_render_overlapping_snapshot_and_tool_records_without_combined_counts():
     from opentab.tui.views.changes import diff_layout, files_layout
 

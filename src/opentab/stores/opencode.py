@@ -81,6 +81,20 @@ CHANGE_LIMITATIONS = [
     "Reverted changes remain in retained history.",
     "Shell/formatter changes and missing metadata may not be captured.",
 ]
+# SQLite 3.54.1 rejects a CTE reference once a statement holds 1000 cursors, which
+# the scoped v2 Changes queries exceed. Upstream reverted the cap for 3.54.x and
+# replaced it in 3.55, so name the cause instead of reshaping the queries.
+SQLITE_CTE_CAP_ERROR = "VIEWs and/or subqueries nested too deep"
+
+
+def _sqlite_cte_cap(exc: BaseException) -> str | None:
+    if isinstance(exc, sqlite3.OperationalError) and str(exc) == SQLITE_CTE_CAP_ERROR:
+        return (
+            f"SQLite {sqlite3.sqlite_version} cannot run this query (an upstream SQLite bug, "
+            "fixed in later releases). Update SQLite, or run OpenTab with a Python that "
+            "links another SQLite version."
+        )
+    return None
 
 
 def _process_timeline(
@@ -2008,6 +2022,10 @@ class Store:
                 debug.event("opencode.changes_rejected", reason="source_changed")
                 return result
         except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError) as exc:
+            if capped := _sqlite_cte_cap(exc):
+                result["limitations"].append(capped)
+                debug.event("opencode.changes_rejected", reason="sqlite_cte_cap")
+                return result
             debug.event("opencode.changes_read_failed", error_type=type(exc).__name__)
             raise ValueError("Could not read recorded change summaries.") from None
 
@@ -2243,6 +2261,10 @@ class Store:
                 )
                 return None
         except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError) as exc:
+            if capped := _sqlite_cte_cap(exc):
+                debug.event("opencode.change_diff_rejected", reason="sqlite_cte_cap")
+                # No "patch" key: the view shows the reason, not an empty difference.
+                return {"truncated": False, "limitation": capped}
             debug.event(
                 "opencode.change_diff_rejected", reason="read_error", error_type=type(exc).__name__
             )
