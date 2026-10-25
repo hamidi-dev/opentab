@@ -7,6 +7,7 @@ import socket
 import sqlite3
 import tempfile
 import threading
+import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -31,15 +32,16 @@ SQLITE_CAPS_CTE_CURSORS = sqlite_caps_cte_cursors()
 
 
 def needs_uncapped_sqlite(fn):
-    """Run a scoped Changes test only where SQLite can execute its queries.
+    """Skip a scoped Changes test where SQLite cannot execute its queries.
 
     The capped build's own outcome is asserted by a dedicated test instead.
     """
 
     @functools.wraps(fn)
     def wrapper():
-        if not SQLITE_CAPS_CTE_CURSORS:
-            fn()
+        if SQLITE_CAPS_CTE_CURSORS:
+            raise unittest.SkipTest(f"SQLite {sqlite3.sqlite_version} caps CTE cursors")
+        fn()
 
     return wrapper
 

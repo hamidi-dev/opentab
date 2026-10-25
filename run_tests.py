@@ -14,6 +14,7 @@ import importlib
 import os
 import sys
 import traceback
+import unittest
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TESTS = os.path.join(ROOT, "tests")
@@ -45,16 +46,21 @@ def main(argv):
         cases = [(n, f) for n, f in cases if any(a in n for a in argv)]
         if not cases:
             raise SystemExit(f"no test matches {argv}")
-    failures = 0
+    failures = skipped = 0
     for name, fn in cases:
         try:
             fn()
             print(f"ok   {name}")
+        except unittest.SkipTest as exc:
+            # Only a test that cannot run here skips; it must never read as a pass.
+            skipped += 1
+            print(f"skip {name}: {exc}")
         except Exception:
             failures += 1
             print(f"FAIL {name}")
             traceback.print_exc()
-    print(f"\n{len(cases) - failures}/{len(cases)} passed")
+    summary = f"{len(cases) - failures - skipped}/{len(cases)} passed"
+    print(f"\n{summary}, {skipped} skipped" if skipped else f"\n{summary}")
     return 1 if failures else 0
 
 

@@ -91,8 +91,8 @@ def _sqlite_cte_cap(exc: BaseException) -> str | None:
     if isinstance(exc, sqlite3.OperationalError) and str(exc) == SQLITE_CTE_CAP_ERROR:
         return (
             f"SQLite {sqlite3.sqlite_version} cannot run this query (an upstream SQLite bug, "
-            "fixed in later releases). Update SQLite, or run OpenTab with a Python that "
-            "links another SQLite version."
+            "reverted for its next release). Run OpenTab with a Python that links another "
+            "SQLite version, or update SQLite once a fixed release ships."
         )
     return None
 

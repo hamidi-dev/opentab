@@ -1280,6 +1280,21 @@ def test_parsed_catalog_cache_follows_the_parser_and_rejects_non_utf8_text():
             raise AssertionError("accepted a catalog the text read refused")
 
 
+def test_parsed_catalog_cache_leaves_no_partial_copy_when_the_write_fails():
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    raw = json.dumps(
+        {"fetched_at": "2099", "providers": {"x": {"models": {"m": {"cost": [1, 2, 3, 4]}}}}}
+    ).encode()
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        # A full disk or a target held open on Windows fails the replace.
+        with patch.object(pricing.os, "replace", side_effect=PermissionError("held open")):
+            assert pricing._parse_catalog_bytes(raw, "fetched")[0]["m"][0] == 1.0
+        assert os.listdir(os.path.join(tmp, "opentab", "catalog")) == []
+
+
 def test_parser_digest_reads_the_source_through_the_module_loader():
     import hashlib as _hashlib
     from unittest.mock import patch
