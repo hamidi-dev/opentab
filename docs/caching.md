@@ -221,11 +221,16 @@ connection and project a rowid range with the whole `usage_columns` projection
 folded into one SQL expression over the bare body, so SQLite parses each body once
 and every step stays in C, where `sqlite3` releases the GIL. More threads got slower
 than one on a 12-core Mac (SQLite's allocator mutex). The bare projection equals the
-full one only for valid JSON objects, which a non-null role proves; other rows, and
-oversized or non-text cells, take the single-row path. The workers read their own
-snapshots, so a projected row is adopted only when its metadata matches this
-connection's snapshot and it is more than 2 s older than the refresh, the same margin
-reuse applies; a malformed body that aborts a range is isolated by bisection. On the
+full one only for valid JSON objects, which a non-null role proves; other rows,
+values that are not plain scalars (an object where a count belongs is JSON text in
+the full projection), and oversized or non-text cells take the single-row path. The
+workers read their own snapshots, and equal metadata cannot prove an equal body, so a
+sentinel connection reads `pragma data_version` before this connection's snapshot
+opens and again after the workers finish: any commit in between discards the parallel
+results for the single-connection scan of this snapshot. The fused path also runs only
+where `json_array` returns REAL values exactly (a runtime probe; SQLite 3.51 rendered
+15 significant digits). It writes `-0.0` as `0.0`, which OpenCode's `JSON.stringify`
+never produces. A malformed body that aborts a range is isolated by bisection. On the
 67k-message, 8.3 GB reference database the empty build fell from 3.6 s to 1.4 s.
 
 Pricing-bucket validation fuses numeric checks and accumulation, retaining the same
