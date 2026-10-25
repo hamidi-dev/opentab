@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from opentab.accounting.pricing import is_copilot_model
 from opentab.accounting.tiers import node_api_cost, row_api_delta
@@ -67,7 +68,6 @@ from opentab.stores.gemini import (
     gemini_retention,
 )
 from opentab.tui import bindings
-from opentab.tui.app import App
 from opentab.util import (
     git_root,
     init_color_allowed,
@@ -76,6 +76,9 @@ from opentab.util import (
     resolve_range_bounds,
     unicode_screen,
 )
+
+if TYPE_CHECKING:
+    from opentab.tui.app import App  # the TUI loads only for the commands that draw it
 
 # The implicit `tui` command keeps the complete legacy surface. Subcommands register
 # only the global options they use; root defaults still provide one complete namespace.
@@ -477,7 +480,24 @@ def _add_command_global_args(
         parser._optionals._add_action(action)
 
 
-def _build_parser() -> argparse.ArgumentParser:
+# The machine-facing commands live in api.json_cli. Their ~25 parsers cost ~40 ms to
+# build, so other commands (the TUI, the `cost` status-bar poll) skip them.
+_MACHINE_COMMANDS = frozenset(
+    {
+        "usage",
+        "sessions",
+        "conversations",
+        "models",
+        "sources",
+        "notes",
+        "bookmarks",
+        "ignore",
+        "mcp",
+    }
+)
+
+
+def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
     # A shared argparse parent would reuse Action objects, so hiding help on one verb
     # would affect the others. This probe only identifies global destinations.
     probe = argparse.ArgumentParser(add_help=False)
@@ -866,9 +886,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the machine name(s) to forget",
     )
     # Keep the machine-facing command tree out of this already large compatibility parser.
-    from opentab.api.json_cli import add_parsers
+    if machine:
+        from opentab.api.json_cli import add_parsers
 
-    add_parsers(subs, _add_global_args)
+        add_parsers(subs, _add_global_args)
     guides = {
         tui: (
             "Your AI-coding spend, in the terminal. Bare opentab opens this view.\n"
@@ -1070,8 +1091,13 @@ def _validate_web_args(parser: argparse.ArgumentParser, args: argparse.Namespace
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     raw = list(sys.argv[1:] if argv is None else argv)
-    parser = _build_parser()
     normalized = _normalize_argv(raw)
+    # Root help, --version and the machine commands need the whole command tree.
+    parser = _build_parser(
+        machine=not normalized
+        or normalized[0] in _MACHINE_COMMANDS
+        or normalized[0].startswith("-")
+    )
     args = parser.parse_args(normalized)
     _validate_demo_cats(parser, args)
     _validate_remote_files(parser, args)
@@ -2204,6 +2230,8 @@ def web_command(args: argparse.Namespace) -> int:
     store, loading = sources.make_store(args, source_key)
     sys.stderr.write(loading)
     sys.stderr.flush()
+    from opentab.tui.app import App
+
     app = App(store, args, source_key=source_key)
     app.allow_price_prompt = False
     if source_key == "remote":
@@ -2248,17 +2276,7 @@ def _run(args: argparse.Namespace) -> int:
         from opentab.cli.launch import launch_command
 
         return launch_command(args)
-    if getattr(args, "command", None) in {
-        "usage",
-        "sessions",
-        "conversations",
-        "models",
-        "sources",
-        "notes",
-        "bookmarks",
-        "ignore",
-        "mcp",
-    }:
+    if getattr(args, "command", None) in _MACHINE_COMMANDS:
         from opentab.api.json_cli import command
 
         return command(args)
@@ -2338,6 +2356,8 @@ def _run(args: argparse.Namespace) -> int:
             if getattr(store, "combined", False)
             else progress.task(getattr(store, "source_name", "") or source_key)
         )
+        from opentab.tui.app import App
+
         with row as tracked:
             app = App(store, args, source_key=source_key, keymap=bindings.load_user_keymap())
             if tracked is not None:

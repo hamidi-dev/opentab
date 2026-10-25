@@ -72,7 +72,7 @@ def test_cached_launch_is_headless_unique_and_argv_safe():
                 picker.sources, "available_sources", side_effect=AssertionError("scanned")
             ), patch.object(
                 picker.sources, "make_store", side_effect=AssertionError("built store")
-            ), patch.object(cli, "App", side_effect=AssertionError("TUI")), patch.object(
+            ), patch("opentab.tui.app.App", side_effect=AssertionError("TUI")), patch.object(
                 picker.shutil, "which", side_effect=lambda name: "/bin/" + name
             ), patch.object(picker.subprocess, "run", side_effect=fake_fzf), patch.object(
                 picker.os, "execv"

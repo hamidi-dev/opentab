@@ -339,7 +339,9 @@ def test_cost_parser_keeps_service_mcp_index_and_http_server_lazy():
         "blocked = {'opentab.api.service', 'opentab.api.mcp', "
         "'opentab.conversations.index', 'opentab.cli.doctor', 'http.server'};"
         "assert blocked.isdisjoint(sys.modules), sorted(blocked & sys.modules.keys());"
-        "assert 'opentab.api.json_cli' in sys.modules"
+        # The status-bar poll builds no machine-command parsers and no TUI either.
+        "assert 'opentab.api.json_cli' not in sys.modules;"
+        "assert 'opentab.tui.app' not in sys.modules"
     )
     src = os.path.dirname(os.path.dirname(os.path.abspath(ot.__file__)))
     result = subprocess.run(
