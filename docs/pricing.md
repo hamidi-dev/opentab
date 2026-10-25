@@ -234,7 +234,10 @@ opentab --refresh-models
 Or press `r` inside `P`. The fetch runs in the background, so you can keep navigating,
 and the current data is repriced when it finishes. Rates are saved to
 `~/.cache/opentab/prices.json`; OpenTab uses whichever of that file and the bundled
-snapshot is newer. The source line in `P` says which one is in use.
+snapshot is newer. The source line in `P` says which one is in use. Each catalog's
+parsed form is kept beside the caches (`catalog/*.marshal`), keyed on that file's
+size and mtime, `pricing.py`, the release and the Python version, so a status-bar
+poll does not re-parse 2 MB of rates; any change parses afresh.
 
 When OpenTab finds models it has no price for, it offers the fetch **once** at startup:
 `y` now, `n` not now, `d` never. Your answer is remembered, except with `--no-state`
