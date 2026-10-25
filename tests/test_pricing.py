@@ -1244,3 +1244,37 @@ def test_parsed_catalog_cache_matches_a_fresh_parse_and_follows_its_content():
             fh.write(hashlib.sha1(bad).digest() + bad)
         layer = pricing._parse_catalog_bytes(edited, "fetched")
         assert len(layer) == 5 and layer[0]["claude-x"][0] == 9.0
+
+
+def test_parsed_catalog_cache_follows_the_parser_and_rejects_non_utf8_text():
+    import glob
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    raw = json.dumps(
+        {"fetched_at": "2099", "providers": {"x": {"models": {"m": {"cost": [1, 2, 3, 4]}}}}}
+    ).encode()
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        folder = os.path.join(tmp, "opentab", "catalog")
+        with patch.object(pricing, "_PARSER_DIGEST", "parser-a"):
+            pricing._parse_catalog_bytes(raw, "fetched")
+        # A different parser (same release, Python and bytes) never reuses that parse.
+        with patch.object(pricing, "_PARSER_DIGEST", "parser-b"), patch.object(
+            pricing, "_parse_catalog", wraps=pricing._parse_catalog
+        ) as parse:
+            pricing._parse_catalog_bytes(raw, "fetched")
+        assert parse.call_count == 1
+        # An unidentifiable parser (a loader without get_data) parses and caches nothing.
+        for name in os.listdir(folder):
+            os.unlink(os.path.join(folder, name))
+        with patch.object(pricing, "_PARSER_DIGEST", ""):
+            assert pricing._parse_catalog_bytes(raw, "fetched")[0]["m"][0] == 1.0
+        assert not glob.glob(os.path.join(folder, "*"))
+        # Text the old strict UTF-8 reads rejected stays rejected, whatever the cache.
+        for encoded in (b"\xef\xbb\xbf" + raw, raw.decode().encode("utf-16")):
+            try:
+                pricing._parse_catalog_bytes(encoded, "fetched")
+            except ValueError:
+                continue
+            raise AssertionError("accepted a catalog the text read refused")
