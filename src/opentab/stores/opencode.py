@@ -125,11 +125,13 @@ def _process_timeline(
 
 
 def _file_identity(path: str) -> tuple | None:
+    # None when the file system cannot name the file: inode 0 (some network and FAT
+    # file systems) would make every file look the same.
     try:
         info = os.stat(path)
     except OSError:
         return None
-    return info.st_dev, info.st_ino
+    return (info.st_dev, info.st_ino) if info.st_ino else None
 
 
 class _ChangeRequest:

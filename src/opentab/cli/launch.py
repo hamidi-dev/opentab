@@ -21,7 +21,13 @@ from opentab.launch import resume_argv
 from opentab.persistence import paths
 from opentab.persistence.state import load_state, state_path
 from opentab.presentation.formatting import display_width, pad, shorten
-from opentab.stores.cached import CACHE_VERSION, MODEL_ROW_KEYS, CachedStore, cache_path
+from opentab.stores.cached import (
+    CACHE_VERSION,
+    MODEL_ROW_KEYS,
+    CachedStore,
+    cache_path,
+    is_sha1_hex,
+)
 from opentab.util import local_machine_name, resolve_project_root
 
 
@@ -64,7 +70,7 @@ def _models_shaped(payload: dict) -> bool:
     # rows (older writers, hand-made fixtures) keep CachedStore's shape check.
     if "model_breakdown" not in payload:
         external = payload.get("models_external")
-        return isinstance(external, dict) and isinstance(external.get("sha1"), str)
+        return isinstance(external, dict) and is_sha1_hex(external.get("sha1"))
     rows = payload["model_breakdown"]
     return isinstance(rows, list) and all(
         isinstance(model, dict)
