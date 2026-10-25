@@ -237,6 +237,15 @@ ones this release's own parse produced. Any edit, another release's stamp, a mis
 stamp or a crash between the two atomic writes means the full check runs (about
 330 ms on a 40 MB cache, against about 15 ms for the digest). Shape checks always run.
 
+Model rows are about 97% of a rollup's decode time, and the TUI needs none of them
+before its first paint. So they live in a `.models` sidecar that is written first,
+and the cache pins its SHA-1. Workflows decode eagerly; `model_breakdown()` reads and
+checks the sidecar on first use (`cache.models_read`). A sidecar whose digest does
+not match is never adopted; one that matches but fails validation makes the hit path
+parse afresh and rewrite the whole cache. An inline `model_breakdown` (an older
+writer or a fixture) is still accepted and checked eagerly. Warm first paint on the
+reference corpus fell from about 515 ms to 185 ms.
+
 ## Startup progress
 
 While `App.__init__` loads rollups, an interactive ANSI stderr shows one row per
@@ -421,7 +430,8 @@ pass-through (`persistent=False`) that reads and writes no cache, kept only so a
 loader process can hand rows back.
 
 Rollups live under `$XDG_CACHE_HOME/opentab/cache`, defaulting to
-`~/.cache/opentab/cache`. Filenames combine the source key and a hash of key/root.
+`~/.cache/opentab/cache`. Filenames combine the source key and a hash of key/root;
+each `.json` rollup may have `.models`, `.trust` and `.usage.sqlite3` sidecars.
 These rebuildable files are separate from authored notes and UI preferences.
 
 Each backend's `cache_inputs()` lists its dependencies. The default fingerprint is a

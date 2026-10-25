@@ -23,10 +23,14 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 22  # Copilot: AI-credit spend, JetBrains fixes, desktop child sessions
+CACHE_VERSION = 23  # model rows moved to a lazily read sidecar
 # Beside each cache: the digest this release wrote it with. A match proves the rows
 # are the ones its own parse produced, so the per-row pricing check is skipped.
 TRUST_SUFFIX = ".trust"
+# The model rows (~97% of the decode time) live beside the cache and are read only
+# when model_breakdown() runs, which the TUI defers until after its first paint. The
+# cache pins the sidecar's SHA-1, so a stale or foreign sidecar is never adopted.
+MODELS_SUFFIX = ".models"
 
 
 # Required because cache readers index these fields directly.
@@ -196,34 +200,75 @@ class CachedStore:
     def _validate(self, data, trusted: bool = False) -> dict | None:
         if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
             return self._reject("disk", "version_or_shape")
-        if not isinstance(data.get("workflows"), list) or not isinstance(
-            data.get("model_breakdown"), list
+        inline = "model_breakdown" in data
+        external = data.get("models_external")
+        if not isinstance(data.get("workflows"), list) or (
+            not isinstance(data.get("model_breakdown"), list)
+            if inline
+            else not (isinstance(external, dict) and isinstance(external.get("sha1"), str))
         ):
             return self._reject("disk", "rollup_shape")
         # Reject the entire cache on shape drift; skipping a row would lose usage silently.
         if not all(isinstance(row, dict) for row in data["workflows"]):
             return self._reject("disk", "workflow_shape")
+        if inline and self._model_problem(data["model_breakdown"], trusted):
+            return self._reject("disk", self._model_problem(data["model_breakdown"], trusted))
+        if not isinstance(data.get("provenance"), dict):
+            data["provenance"] = {}  # readable, just not spliceable: full parse on a miss
+        data["_trusted"] = trusted  # in memory only: whether the sidecar may skip pricing
+        self._debug(
+            "cache.loaded",
+            workflows=len(data["workflows"]),
+            models=len(data["model_breakdown"]) if inline else None,
+            trusted=trusted,
+        )
+        return data
+
+    @staticmethod
+    def _model_problem(rows, trusted: bool) -> str | None:
         # Validate direct-index fields before the hit path loses its reparse fallback.
         # Pricing buckets are the expensive part; a trusted file skips only those.
         if not all(
             isinstance(row, dict)
             and MODEL_ROW_KEYS <= row.keys()
             and (trusted or valid_pricing(row))
-            for row in data["model_breakdown"]
+            for row in rows
         ):
-            return self._reject("disk", "model_shape")
+            return "model_shape"
         # root_id is used as a mapping key.
-        if not all(isinstance(row["root_id"], str) for row in data["model_breakdown"]):
-            return self._reject("disk", "model_identity_shape")
-        if not isinstance(data.get("provenance"), dict):
-            data["provenance"] = {}  # readable, just not spliceable: full parse on a miss
-        self._debug(
-            "cache.loaded",
-            workflows=len(data["workflows"]),
-            models=len(data["model_breakdown"]),
-            trusted=trusted,
-        )
-        return data
+        if not all(isinstance(row["root_id"], str) for row in rows):
+            return "model_identity_shape"
+        return None
+
+    @debug.timed("cache.models_read")
+    def _disk_models(self) -> list | None:
+        """The disk cache's model rows, read from the sidecar on first use; None if unusable."""
+        disk = self._disk
+        if disk is None:
+            return None
+        if "model_breakdown" in disk:
+            return disk["model_breakdown"]
+        try:
+            with open(self._path + MODELS_SUFFIX, encoding="utf-8") as fh:
+                text = fh.read()
+            digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
+            if digest != disk["models_external"]["sha1"]:
+                return self._reject("models", "sidecar_mismatch")
+            rows = json.loads(text)
+        except FileNotFoundError:
+            return self._reject("models", "missing")
+        except OSError:
+            return self._reject("models", "unreadable")
+        except ValueError:
+            return self._reject("models", "invalid_json")
+        if not isinstance(rows, list):
+            return self._reject("models", "rollup_shape")
+        problem = self._model_problem(rows, bool(disk.get("_trusted")))
+        if problem:
+            return self._reject("models", problem)
+        disk["model_breakdown"] = rows
+        self._debug("cache.models_loaded", models=len(rows))
+        return rows
 
     @debug.timed("cache.write")
     def _write(
@@ -242,7 +287,6 @@ class CachedStore:
             # The backend just parsed, so lazy cost state is already available.
             "records_cost": bool(getattr(self._store, "records_cost", True)),
             "workflows": workflows,
-            "model_breakdown": model_breakdown,
             # Empty provenance disables incremental misses for this backend.
             "provenance": provenance or {},
         }
@@ -268,6 +312,15 @@ class CachedStore:
                             "cache.accounting_write_skipped", reason="all_native_rows_reused"
                         )
                     payload["accounting_external"] = "sqlite-v1"
+            with debug.span("cache.encode_models"):
+                models = json.dumps(model_breakdown, separators=(",", ":"))
+            # The sidecar goes first: a cache never names rows that are not on disk yet.
+            self._write_text(self._path + MODELS_SUFFIX, models)
+            payload["models_external"] = {
+                "sha1": hashlib.sha1(models.encode("utf-8")).hexdigest(),
+                "rows": len(model_breakdown),
+            }
+            del models
             text = self._write_json(self._path, payload)
             try:
                 # Written second: a crash in between leaves a stale digest, which fails
@@ -275,6 +328,7 @@ class CachedStore:
                 self._write_text(self._path + TRUST_SUFFIX, json.dumps(self._trust_stamp(text)))
             except OSError:
                 pass
+            payload["model_breakdown"] = model_breakdown
             self._disk = payload
             self._fresh_wf = None
             self._fresh_models = None
@@ -397,7 +451,12 @@ class CachedStore:
         if path is not None and path != self._path:
             old, self._path = self._path, path
             if old is not None and not self.persistent:
-                for stale in (old, old + ".usage.sqlite3", old + TRUST_SUFFIX):
+                for stale in (
+                    old,
+                    old + ".usage.sqlite3",
+                    old + TRUST_SUFFIX,
+                    old + MODELS_SUFFIX,
+                ):
                     try:
                         os.unlink(stale)
                     except OSError:
@@ -500,9 +559,10 @@ class CachedStore:
             kept = [Workflow(**row) for row in disk["workflows"] if row.get("id") not in drop]
         except TypeError:
             return self._reject("splice", "workflow_fields_changed")
-        kept_models = [
-            dict(row) for row in disk["model_breakdown"] if row.get("root_id") not in drop
-        ]
+        disk_models = self._disk_models()
+        if disk_models is None:
+            return None  # rejected and logged: the caller parses everything
+        kept_models = [dict(row) for row in disk_models if row.get("root_id") not in drop]
         rows = sorter(kept + list(fresh_wf))
         provenance = {sid: paths for sid, paths in prov.items() if sid not in drop}
         provenance.update(fresh_prov)
@@ -587,8 +647,17 @@ class CachedStore:
             and self._disk is not None
             and self._disk.get("fingerprint") == fp
         ):
-            self._debug("cache.models_decision", result="hit")
-            return [dict(row) for row in self._disk["model_breakdown"]]
+            disk_rows = self._disk_models()
+            if disk_rows is not None:
+                self._debug("cache.models_decision", result="hit")
+                return [dict(row) for row in disk_rows]
+            # The workflows came from this cache but its model rows are unusable:
+            # parse both now, so the write below replaces the whole cache.
+            self._disk = None
+            with debug.span("cache.backend_workflows", source=self._source):
+                self._fresh_wf = [asdict(w) for w in self._store.workflows()]
+            self._fresh_models = None
+            self._fresh_prov = None
         token_of = getattr(self._store, "model_cache_token", None)
         token = token_of() if token_of is not None else None
         if self._fresh_models is not None:
@@ -601,8 +670,9 @@ class CachedStore:
             and self._disk is not None
             and self._disk.get("model_token") == token
             and fp == self._fingerprint()
+            and self._disk_models() is not None
         ):
-            rows = [dict(row) for row in self._disk["model_breakdown"]]
+            rows = [dict(row) for row in self._disk_models()]
             self._debug("cache.models_decision", result="unchanged_accounting")
         else:
             self._debug("cache.models_decision", result="backend")

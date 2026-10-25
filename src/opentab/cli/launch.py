@@ -59,6 +59,21 @@ def _launchable(row: Workflow, label: str) -> bool:
     )
 
 
+def _models_shaped(payload: dict) -> bool:
+    # Launch lists only workflows, so a sidecar's rows are never read here; inline
+    # rows (older writers, hand-made fixtures) keep CachedStore's shape check.
+    if "model_breakdown" not in payload:
+        external = payload.get("models_external")
+        return isinstance(external, dict) and isinstance(external.get("sha1"), str)
+    rows = payload["model_breakdown"]
+    return isinstance(rows, list) and all(
+        isinstance(model, dict)
+        and MODEL_ROW_KEYS <= model.keys()
+        and isinstance(model["root_id"], str)
+        for model in rows
+    )
+
+
 def _cached_sessions(args, files=None):
     for key, path in files if files is not None else _cache_files(args):
         label = sources.SOURCE_LABELS[key]
@@ -72,13 +87,7 @@ def _cached_sessions(args, files=None):
             or payload.get("version") != CACHE_VERSION
             or payload.get("source") != key
             or not isinstance(payload.get("workflows"), list)
-            or not isinstance(payload.get("model_breakdown"), list)
-            or any(
-                not isinstance(model, dict)
-                or not MODEL_ROW_KEYS <= model.keys()
-                or not isinstance(model["root_id"], str)
-                for model in payload["model_breakdown"]
-            )
+            or not _models_shaped(payload)
         ):
             continue
         # A malformed payload is rejected as a unit, as for CachedStore._read().
