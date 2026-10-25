@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import unittest
 from contextlib import contextmanager, nullcontext
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from tests._support import (
     SQLITE_CAPS_CTE_CURSORS,
     copilot_prices,
     needs_uncapped_sqlite,
+    sqlite_caps_cte_cursors,
     tier_prices,
 )
 
@@ -1765,6 +1767,20 @@ def test_opencode_v2_changes_reject_non_edit_duplicate_part_identity():
                 for file in store.session_change_files("root")["files"]
                 for edit in file["edits"]
             )
+
+
+def test_sqlite_cte_cap_probe_survives_a_lowered_expression_depth_limit():
+    # The cap follows SQLITE_LIMIT_EXPR_DEPTH; a deep probe expression would hit that
+    # limit first and call a capped build uncapped, running the gated tests to failure.
+    if not hasattr(sqlite3.Connection, "setlimit"):
+        raise unittest.SkipTest("Connection.setlimit needs Python 3.11")
+
+    def lowered(path):
+        conn = sqlite3.connect(path)
+        conn.setlimit(sqlite3.SQLITE_LIMIT_EXPR_DEPTH, 500)
+        return conn
+
+    assert sqlite_caps_cte_cursors(lowered) is SQLITE_CAPS_CTE_CURSORS
 
 
 def test_opencode_v2_changes_name_the_sqlite_cte_cursor_cap():
