@@ -1096,6 +1096,67 @@ def test_cached_store_rejects_a_cache_whose_rows_are_the_wrong_shape():
                 os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
+def test_cached_store_skips_pricing_checks_only_for_its_own_unchanged_file():
+    from unittest.mock import patch
+
+    from opentab.accounting import tiers
+    from opentab.stores.cached import TRUST_SUFFIX
+
+    from tests._support import _claude_msg, _usage, _write_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        root = os.path.join(tmp, "projects")
+        os.makedirs(root)
+        _write_jsonl(
+            os.path.join(root, "s1.jsonl"),
+            [
+                _claude_msg(
+                    "s1", "claude-sonnet-4-5", _usage(1000, 500, 2000, 300), uuid="a", cwd=tmp
+                )
+            ],
+        )
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+
+        def load(**kwargs):
+            with patch(
+                "opentab.stores.cached.valid_pricing", wraps=tiers.valid_pricing, **kwargs
+            ) as check:
+                store = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+            return store, check.call_count
+
+        cold, _ = load()
+        cold.workflows()
+        rows = cold.model_breakdown()
+        assert rows and all(r.get("pricing") for r in rows)
+        path = cold._path
+        assert os.path.isfile(path + TRUST_SUFFIX)
+        with open(path, encoding="utf-8") as fh:
+            original = fh.read()
+
+        warm, checks = load(side_effect=AssertionError("revalidated a trusted cache"))
+        assert checks == 0 and warm._disk is not None
+        assert warm.workflows() and warm.served_from_cache
+        assert warm.model_breakdown() == rows
+
+        # Any edit changes the digest, so a damaged bucket is still caught.
+        blob = json.loads(original)
+        blob["model_breakdown"][0]["pricing"][0]["tok"][0] = -1
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(blob, fh, separators=(",", ":"))
+        damaged, checks = load()
+        assert checks > 0 and damaged._disk is None
+
+        # Another release's stamp, or none at all, means a full check that still passes.
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(original)
+        with patch("opentab.stores.cached.__version__", "0.0.0"):
+            other, checks = load()
+        assert checks > 0 and other._disk is not None
+        os.unlink(path + TRUST_SUFFIX)
+        unstamped, checks = load()
+        assert checks > 0 and unstamped._disk is not None
+
+
 def test_cached_store_incremental_flag_is_per_call_not_sticky():
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")

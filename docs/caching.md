@@ -230,8 +230,12 @@ reuse applies; a malformed body that aborts a range is isolated by bisection. On
 
 Pricing-bucket validation fuses numeric checks and accumulation, retaining the same
 array shapes, finiteness checks, ownership subsets, aggregate reconciliation and
-tolerance. It still validates cached/remote numeric data before use; faster cache
-loading does not skip malformed-payload checks.
+tolerance. Remote data is always validated. A warm cache skips only the pricing
+buckets, and only when its `.trust` sidecar holds the SHA-1 of the exact file text
+plus the cache version and OpenTab release that wrote it: those rows are then the
+ones this release's own parse produced. Any edit, another release's stamp, a missing
+stamp or a crash between the two atomic writes means the full check runs (about
+330 ms on a 40 MB cache, against about 15 ms for the digest). Shape checks always run.
 
 ## Startup progress
 
