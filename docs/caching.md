@@ -625,7 +625,12 @@ The picker uses its own fzf options instead of `FZF_DEFAULT_OPTS` or
 `FZF_DEFAULT_OPTS_FILE`, so global bindings cannot change its selection protocol.
 
 `opentab cost` is a curses-free fast path using raw stores, not persistent
-rollups. `--harness` limits which local tool it queries.
+rollups. `--harness` limits which local tool it queries. It is polled every few
+seconds, so its import path stays small: the package root resolves its
+compatibility re-exports on first access (PEP 562), `cli.main` imports the TUI only
+for the commands that draw it, and the machine-command parsers (`usage`, `sessions`,
+`mcp`, ...) are built only when one of those commands, root help or `--version` is
+parsed. On the reference machine one `cost` call fell from about 310 ms to 205 ms.
 
 Resolution in [cli/main.py](../src/opentab/cli/main.py) uses the interactive backends in
 `_STATUS_SOURCES`, excluding request logs, VS Code, and pulled summaries.
