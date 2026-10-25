@@ -2640,3 +2640,48 @@ def test_claude_pool_failure_falls_back_to_the_serial_parse():
         ) as pool:
             assert _parse_state(root, OPENTAB_LOADER_PROCESSES="1") == serial
         assert pool.called
+
+
+def test_claude_pool_falls_back_when_a_file_grows_a_shared_key_between_rounds():
+    from opentab.stores import loader
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        a, b, c = root / "project-a", root / "project-b", root / "project-c"
+        for d in (a, b, c):
+            d.mkdir()
+
+        def call(sid, uid, tokens, *, mid=None, req=None):
+            return _claude_msg(
+                sid,
+                "claude-sonnet-4-5",
+                _usage(tokens, 0, 0, 0),
+                uuid=uid,
+                cwd=str(root),
+                mid=mid,
+                req=req,
+            )
+
+        # A and B share s1 (entangled); C alone owns the call (shared, r).
+        _write_jsonl(a / "s1.jsonl", [call("s1", "a1", 1)])
+        _write_jsonl(b / "s1.jsonl", [call("s1", "b1", 1)])
+        _write_jsonl(c / "s2.jsonl", [call("s2", "c1", 7, mid="shared", req="r")])
+        real = loader.run_pool
+        grown = []
+
+        def grow_after_first_round(*args, **kwargs):
+            result = real(*args, **kwargs)
+            if not grown:
+                grown.append(True)
+                with open(b / "s1.jsonl", "a") as fh:
+                    fh.write(json.dumps(call("s1", "b2", 7, mid="shared", req="r")) + "\n")
+            return result
+
+        with patch.object(loader, "MIN_PARSE_BYTES", 0), patch.object(
+            loader, "run_pool", side_effect=grow_after_first_round
+        ), patch.object(loader.os, "cpu_count", return_value=4):
+            pooled = _parse_state(root, OPENTAB_LOADER_PROCESSES="1")
+        assert grown
+        serial = _parse_state(root, OPENTAB_LOADER_PROCESSES="0")
+        assert pooled == serial
+        assert sum(w["total_tokens"] for w in pooled[0]) == 9  # the call counts once

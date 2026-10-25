@@ -306,7 +306,10 @@ share (replays), and both are a function of file content. So each owner's files,
 transcript plus its `subagents/` sidecars, parse in one worker in corpus order, and
 report every session id and every dedup key they asked about (`_KeyLog`). Groups
 sharing any of those are re-parsed together, still in corpus order; the rest are
-already what the serial parse computes. Sessions are reassembled in the serial
+already what the serial parse computes. A re-parse reads its files again, so the
+final results are checked for disjointness once more (a transcript may have grown a
+shared key meanwhile); any overlap falls back to the serial parse. Sessions are
+reassembled in the serial
 parse's insertion order from where each first appeared. Up to 12 workers (one per
 core); `OPENTAB_MAX_WORKERS=1` or `OPENTAB_LOADER_PROCESSES=0` keeps the serial
 parse, and any pool failure falls back to it. On the 844-file, 1.6 GB reference corpus
