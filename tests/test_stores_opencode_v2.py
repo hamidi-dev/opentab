@@ -6,13 +6,18 @@ import sqlite3
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unittest.mock import patch
 
-from opentab.stores.opencode import Store, _cost_residual
+from opentab.stores.opencode import SQLITE_CTE_CAP_ERROR, Store, _cost_residual
 from opentab.stores.opencode_v2 import REQUIRED_SCHEMA_V2, install_views, scoped_detail_sql
 
-from tests._support import copilot_prices, tier_prices
+from tests._support import (
+    SQLITE_CAPS_CTE_CURSORS,
+    copilot_prices,
+    needs_uncapped_sqlite,
+    tier_prices,
+)
 
 
 def test_v2_copilot_estimates_keep_paid_root_and_mixed_write_calls_separate():
@@ -1003,6 +1008,7 @@ def test_opencode_v2_empty_migrated_session_never_falls_back_to_legacy_messages(
         assert store.conversation_source("empty")["records"] == []
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_changes_use_recorded_native_and_migrated_patches_only():
     with _v2_db() as (writer, store):
         _populate_v2(writer)
@@ -1131,6 +1137,7 @@ def test_opencode_v2_compaction_usage_is_billed_but_text_is_not_conversation_con
         assert store.conversation_source("compact")["records"] == []
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_part_locators_are_disjoint_and_keep_content_order():
     with _v2_db(legacy=True) as (writer, store):
         _populate_v2(writer)
@@ -1368,6 +1375,7 @@ def test_opencode_v2_rollups_never_serialize_inline_content_and_scan_usage_once(
         assert sum("from main.session_message" in sql for sql in statements) == 1
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_changes_bound_fresh_list_and_diff_reads_to_the_session():
     with _v2_db(legacy=True) as (writer, store):
         writer.executescript(
@@ -1491,6 +1499,7 @@ def test_opencode_v2_changes_bound_fresh_list_and_diff_reads_to_the_session():
             assert ticks <= before + 200, (before, ticks)
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_changes_scoping_preserves_duplicate_ownership_checks():
     with _v2_db(legacy=True, message_pk=False) as (writer, store):
         _populate_v2(writer)
@@ -1524,6 +1533,7 @@ def test_opencode_v2_changes_scoping_preserves_duplicate_ownership_checks():
         )
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_changes_skip_normalizing_non_edit_tool_output():
     # Same execution and assistant message as the patch: session/key scoping alone
     # cannot avoid this output. Count VM work, not machine-dependent wall time.
@@ -1588,6 +1598,7 @@ def test_opencode_v2_changes_skip_normalizing_non_edit_tool_output():
         assert after[3] <= before[3] + 20, (before[3], after[3])
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_changes_normalize_candidates_once_without_copying_messages():
     def check(legacy, deterministic):
         with _v2_db(legacy=legacy) as (writer, store):
@@ -1642,6 +1653,7 @@ def test_opencode_v2_changes_normalize_candidates_once_without_copying_messages(
             check(legacy, deterministic)
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_changes_debug_explains_worker_queries_and_preserves_payloads():
     from opentab import diagnostics as debug
 
@@ -1723,6 +1735,7 @@ def test_opencode_v2_change_message_metadata_matches_full_projection():
         assert [tuple(row) for row in metadata] == [tuple(row) for row in full]
 
 
+@needs_uncapped_sqlite
 def test_opencode_v2_changes_reject_non_edit_duplicate_part_identity():
     with _v2_db(legacy=True) as (writer, store):
         _populate_v2(writer)
@@ -1754,6 +1767,39 @@ def test_opencode_v2_changes_reject_non_edit_duplicate_part_identity():
             )
 
 
+def test_opencode_v2_changes_name_the_sqlite_cte_cursor_cap():
+    # SQLite 3.54.1 rejects these scoped queries itself; elsewhere force its error.
+    forced = (
+        nullcontext()
+        if SQLITE_CAPS_CTE_CURSORS
+        else patch.object(
+            Store, "_change_rows", side_effect=sqlite3.OperationalError(SQLITE_CTE_CAP_ERROR)
+        )
+    )
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        writer.execute("insert into session values ('legacy', null, 'legacy', '/repo', null, 1, 2)")
+        writer.executemany(
+            "insert into message values (?,?,?)",
+            [
+                ("lu", "legacy", json.dumps({"role": "user"})),
+                ("la", "legacy", json.dumps({"role": "assistant", "parentID": "lu"})),
+            ],
+        )
+        blob = {"type": "tool", "tool": "patch", "state": {"status": "completed"}}
+        blob["state"]["metadata"] = {"files": [{"file": "legacy.py", "patch": "legacy patch"}]}
+        writer.execute("insert into part values ('lp','la','legacy',?)", [json.dumps(blob)])
+        writer.commit()
+        with forced:
+            listing = store.session_change_files("legacy")
+            diff = store.session_change_diff("legacy", "occhg1:patch:1:0:" + "0" * 64)
+    reason = f"SQLite {sqlite3.sqlite_version} cannot run this query"
+    assert listing["files"] == [] and not listing["truncated"]
+    assert any(item.startswith(reason) for item in listing["limitations"])
+    assert "patch" not in diff and diff["limitation"].startswith(reason)
+
+
+@needs_uncapped_sqlite
 def test_opencode_v2_scoped_changes_keep_legacy_parents_and_duplicate_parts():
     with _v2_db(legacy=True) as (writer, store):
         writer.executescript(
