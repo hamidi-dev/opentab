@@ -1797,6 +1797,9 @@ def test_opencode_v2_changes_name_the_sqlite_cte_cursor_cap():
     assert listing["files"] == [] and not listing["truncated"]
     assert any(item.startswith(reason) for item in listing["limitations"])
     assert "patch" not in diff and diff["limitation"].startswith(reason)
+    # No fixed SQLite has shipped; the advice must not promise one.
+    assert "once a fixed release ships" in diff["limitation"]
+    assert "fixed in later releases" not in diff["limitation"]
 
 
 @needs_uncapped_sqlite
