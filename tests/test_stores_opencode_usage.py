@@ -799,11 +799,41 @@ def test_opencode_usage_parallel_scan_adopts_recent_rows_from_a_proven_snapshot(
             opencode_usage, "_SCAN_THREADS", 2
         ), patch.object(opencode_usage.os, "cpu_count", return_value=4), patch(
             "opentab.stores.opencode_usage._read_usage", wraps=_read_usage
-        ) as single:
+        ) as single, patch.object(
+            opencode_usage.UsageCache, "_full_scalar_rows", side_effect=AssertionError("serial")
+        ):
             store._usage_cache.prepare(store.conn, False)
         assert store._usage_cache.rows == expected
         # No commit landed during the scan, so even rows written just now are adopted.
         assert single.call_count == 0
+
+
+def test_opencode_usage_parallel_scan_never_runs_under_an_already_open_snapshot():
+    from opentab.stores import opencode_usage
+
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        writer.execute("pragma journal_mode=wal")
+        _edge_store(writer, [json.dumps({"tokens": {"input": 1}})] * 8)
+        expected = _per_row_reference(store.db)
+        # The store's connection already holds a snapshot when the refresh starts...
+        store.conn.execute("begin")
+        store.conn.execute("select count(*) from main.session_message").fetchone()
+        # ...and a later commit rewrites a body without touching its metadata.
+        writer.execute(
+            "update session_message set data=? where id='3'", ['{"tokens":{"input":777}}']
+        )
+        writer.commit()
+        store._usage_cache._sql_projection = True
+        with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+            opencode_usage, "_SCAN_THREADS", 2
+        ), patch.object(opencode_usage.os, "cpu_count", return_value=4), patch.object(
+            opencode_usage.UsageCache, "_fused_range", side_effect=AssertionError("fused")
+        ):
+            store._usage_cache.prepare(store.conn, False)
+        assert store._usage_cache.rows == expected  # the open snapshot's 1, never 777
+        store.conn.rollback()
 
 
 def test_opencode_usage_parallel_scan_keeps_composite_fields_on_the_single_row_path():

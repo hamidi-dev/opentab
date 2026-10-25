@@ -1048,7 +1048,13 @@ class UsageCache:
             if scope is not None
             else ""
         )
-        parallel = full_scan and self._sql_projection is True and self._connect is not None
+        # An open transaction keeps a snapshot older than any sentinel could vouch for.
+        parallel = (
+            full_scan
+            and self._sql_projection is True
+            and self._connect is not None
+            and not conn.in_transaction
+        )
         # Read BEFORE the snapshot below opens, so any later commit is detected.
         sentinel = self._sentinel() if parallel else None
         # One read snapshot covers revisions and the changed payloads they identify.

@@ -227,7 +227,9 @@ the full projection), and oversized or non-text cells take the single-row path. 
 workers read their own snapshots, and equal metadata cannot prove an equal body, so a
 sentinel connection reads `pragma data_version` before this connection's snapshot
 opens and again after the workers finish: any commit in between discards the parallel
-results for the single-connection scan of this snapshot. The fused path also runs only
+results for the single-connection scan of this snapshot. A connection that already
+holds a transaction keeps an older snapshot than the sentinel can vouch for, so it
+never scans in parallel. The fused path also runs only
 where `json_array` returns REAL values exactly (a runtime probe; SQLite 3.51 rendered
 15 significant digits). It writes `-0.0` as `0.0`, which OpenCode's `JSON.stringify`
 never produces. A malformed body that aborts a range is isolated by bisection. On the
