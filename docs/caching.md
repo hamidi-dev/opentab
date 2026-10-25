@@ -283,6 +283,21 @@ keeps threads; `OPENTAB_LOADER_PROCESSES=0` disables loader processes. Debug eve
 `--timings` loads the same way, so per-backend times overlap and are labelled
 `parsed (process)` for a child parse.
 
+### Claude Code's own parse pool
+
+A cold Claude Code parse of at least 32 MiB also splits across processes
+(`ClaudeStore._parse_pool`, `loader.run_pool`, the same `-c` boot). Files interact
+only through a session id they share (sidecars, resumed copies) or a dedup key they
+share (replays), and both are a function of file content. So each owner's files, a
+transcript plus its `subagents/` sidecars, parse in one worker in corpus order, and
+report every session id and every dedup key they asked about (`_KeyLog`). Groups
+sharing any of those are re-parsed together, still in corpus order; the rest are
+already what the serial parse computes. Sessions are reassembled in the serial
+parse's insertion order from where each first appeared. Up to 12 workers (one per
+core); `OPENTAB_MAX_WORKERS=1` or `OPENTAB_LOADER_PROCESSES=0` keeps the serial
+parse, and any pool failure falls back to it. On the 844-file, 1.6 GB reference corpus
+the parse fell from 5.8 s to 0.9 s, with every session's state identical.
+
 ## Lazy session reads
 
 Subagent nodes, Turns, Tools, and estimated Context composition are per-session

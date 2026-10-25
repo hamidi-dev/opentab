@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
+from opentab import diagnostics as debug
+from opentab import progress
 from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import attach_node_pricing, attach_pricing, row_list_cost
 from opentab.demo import demo_config, scramble_node, scramble_workflow
@@ -19,6 +21,7 @@ from opentab.presentation.formatting import (
     iso_to_local,
     worked_seconds,
 )
+from opentab.stores import loader
 from opentab.util import (
     ATTACHMENT_EST_TOKENS,
     TRACE_OUTPUT_CAP,
@@ -442,8 +445,96 @@ class ClaudeStore:
         # Dedup credits the first claimant, so original transcripts must precede replay
         # sessions. The stable sort preserves file order within both groups.
         files = sorted(self._files(), key=self._replays_history)
-        self._sessions = self._parse_texts(read_files_parallel(files))
+        sessions = self._parse_pool(files)
+        if sessions is None:
+            sessions = self._parse_texts(read_files_parallel(files))
+        self._sessions = sessions
         return self._sessions
+
+    def _parse_pool(self, files: list[str]) -> dict[str, dict] | None:
+        """The corpus parse across processes, identical to the serial one, or None.
+
+        Files only ever interact through a session id they share (sidecars, resumed
+        copies) or a dedup key they share (replays), and both are a function of file
+        content alone. So each owner's files (a transcript and its subagent sidecars)
+        parse in their own process in corpus order, and report every session id and
+        every dedup key they touched. Groups that share any of those are re-parsed
+        together, still in corpus order; the rest are already exactly what the
+        serial parse computes. Sessions keep the serial parse's insertion order.
+        """
+        try:
+            sizes = [os.path.getsize(p) for p in files]
+        except OSError:
+            return None
+        if len(files) < 2 or sum(sizes) < loader.MIN_PARSE_BYTES:
+            return None
+        groups: dict[tuple, list] = {}
+        weights: dict[tuple, int] = {}
+        for i, path in enumerate(files):
+            owner = self._sidecar_owner(path)
+            if owner is not None:
+                key = (os.path.dirname(os.path.dirname(os.path.dirname(path))), owner)
+            else:
+                key = (os.path.dirname(path), os.path.basename(path)[: -len(".jsonl")])
+            groups.setdefault(key, []).append((i, path))
+            weights[key] = weights.get(key, 0) + sizes[i]
+        order = list(groups)
+        jobs = [(self.root_dir, groups[key]) for key in order]
+        done = [0]
+        progress.advance(0, len(files))
+
+        def advance(i: int) -> None:
+            done[0] += len(jobs[i][1])
+            progress.advance(done[0])
+
+        results = loader.run_pool(
+            _parse_files_job,
+            jobs,
+            [weights[key] for key in order],
+            loader.pool_workers(len(jobs)),
+            advance,
+        )
+        if results is None:
+            return None
+        root = list(range(len(jobs)))
+
+        def find(i: int) -> int:
+            while root[i] != i:
+                root[i] = root[root[i]]
+                i = root[i]
+            return i
+
+        claimed: dict = {}
+        for gi, (sessions, asked, _) in enumerate(results):
+            for token in [("s", sid) for sid in sessions] + [("k", key) for key in asked]:
+                other = claimed.setdefault(token, gi)
+                if other != gi:
+                    root[find(gi)] = find(other)
+        components: dict[int, list[int]] = {}
+        for gi in range(len(jobs)):
+            components.setdefault(find(gi), []).append(gi)
+        final = [results[members[0]] for members in components.values() if len(members) == 1]
+        entangled = [
+            (self.root_dir, sorted(f for gi in members for f in jobs[gi][1]))
+            for members in components.values()
+            if len(members) > 1
+        ]
+        if entangled:
+            debug.event("claude.pool_entangled", groups=len(entangled))
+            redo = None
+            if len(entangled) > 1:
+                redo = loader.run_pool(
+                    _parse_files_job,
+                    entangled,
+                    [sum(sizes[i] for i, _ in job[1]) for job in entangled],
+                    loader.pool_workers(len(entangled)),
+                )
+            final.extend(redo or [_parse_files_job(job) for job in entangled])
+        placed = []
+        for sessions, _, first in final:
+            placed.extend((first[sid], sid, s) for sid, s in sessions.items())
+        placed.sort(key=lambda item: item[0])
+        return {sid: s for _, sid, s in placed}
 
     def _parse_one(
         self,
@@ -631,16 +722,28 @@ class ClaudeStore:
                 # by the plain parser anyway, so refusing to rejoin it loses nothing.
                 pending, size = [raw], len(raw)
 
-    def _parse_texts(self, items) -> dict[str, dict]:
+    def _parse_texts(
+        self, items, seen: set | None = None, order=None, first=None
+    ) -> dict[str, dict]:
         # items is read_files_parallel's (path, text) stream. The path is carried
         # through only to record which files produced each session ("files"), which is
         # what lets CachedStore re-parse a changed file's sessions instead of the whole
-        # corpus -- see cache_provenance/parse_subset.
+        # corpus -- see cache_provenance/parse_subset. A pool worker passes `order`
+        # (path -> corpus index) and gets `first` (session id -> first appearance).
         sessions: dict[str, dict] = {}
-        seen: set = set()  # dedupe resumed/forked overlap on (message.id, requestId)
+        if seen is None:
+            seen = set()  # dedupe resumed/forked overlap on (message.id, requestId)
         for path, text in items:
-            for obj in self._records(text):
+            if first is None:
+                for obj in self._records(text):
+                    self._ingest(obj, sessions, seen, path)
+                continue
+            at = order[path]
+            for n, obj in enumerate(self._records(text)):
+                known = len(sessions)
                 self._ingest(obj, sessions, seen, path)
+                if len(sessions) != known:
+                    first[obj["sessionId"]] = (at, n)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         return sessions
@@ -1953,3 +2056,29 @@ class _TranscriptRoot(dict):
         if key == "directory" and "directory" not in self:
             self["directory"] = self._store._transcript_cwd(self._path)
         return super().__getitem__(key)
+
+
+class _KeyLog(set):
+    """The dedup set, also logging every key a parse asked about."""
+
+    def __init__(self):
+        super().__init__()
+        self.asked: set = set()
+
+    def __contains__(self, key) -> bool:
+        self.asked.add(key)
+        return set.__contains__(self, key)
+
+
+def _parse_files_job(job) -> tuple:
+    """A pool worker's parse of (root, [(corpus index, path), ...]), in that order.
+
+    Returns the finalized sessions, every dedup key asked about, and where each
+    session first appeared as (corpus index, record number).
+    """
+    root, files = job
+    store = ClaudeStore(root, argparse.Namespace(demo=False))
+    order = {path: i for i, path in files}
+    seen, first = _KeyLog(), {}
+    sessions = store._parse_texts(read_files_parallel([p for _, p in files]), seen, order, first)
+    return sessions, seen.asked, first
