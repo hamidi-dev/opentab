@@ -2395,6 +2395,10 @@ class App:
         if file is None or edit is None or not edit.get("available") or not isinstance(diff, dict):
             self.notify("diff pager: selected recorded patch is unavailable", "warn")
             return
+        if "patch" not in diff:
+            # A limitation-only result (e.g. SQLite refused the read); Changes shows why.
+            self.notify("diff pager: selected recorded patch could not be read", "warn")
+            return
         if diff.get("truncated"):
             self.notify("diff pager: refusing to show a truncated recorded patch", "warn")
             return

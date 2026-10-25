@@ -16,8 +16,13 @@ import opentab as ot
 
 def sqlite_caps_cte_cursors() -> bool:
     """Whether this SQLite rejects a CTE reference past 1000 cursors (3.54.1)."""
+    # A balanced AND tree keeps the expression shallow, so a lowered expression-depth
+    # limit cannot fail the probe for another reason while the cursor cap still applies.
+    terms = ["1 in (select x from t)"] * 600
+    while len(terms) > 1:
+        terms = [f"({' and '.join(terms[i : i + 2])})" for i in range(0, len(terms), 2)]
     sql = "with recursive t(x) as (select 1 union select x from t where 0) select 1 where "
-    sql += " and ".join(["1 in (select x from t)"] * 600)
+    sql += terms[0]
     conn = sqlite3.connect(":memory:")
     try:
         conn.execute(sql).fetchall()

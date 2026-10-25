@@ -185,6 +185,16 @@ def test_app_launches_only_the_current_loaded_complete_patch_and_reports_safe_fa
         assert not run.called
     assert "truncated" in blocked[1].notice
 
+    # A limitation-only result is unreadable, not an empty patch.
+    refused = _app(diff={"truncated": False, "limitation": "SQLite cannot run this query."})
+    with (
+        patch.dict(os.environ, {diff_pager.ENV_VAR: "delta"}),
+        patch.object(diff_pager, "run") as run,
+    ):
+        refused.open_change_diff_pager(screen)
+        assert not run.called
+    assert refused.notice == "diff pager: selected recorded patch could not be read"
+
     stale = _app(diff=complete)
     stale.selected_change_edit()["key"] = "unknown"
     with (
