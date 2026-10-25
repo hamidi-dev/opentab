@@ -230,8 +230,8 @@ opens and again after the workers finish: any commit in between discards the par
 results for the single-connection scan of this snapshot. A connection that already
 holds a transaction keeps an older snapshot than the sentinel can vouch for, so it
 never scans in parallel. Extra connections must open the very file the store opened
-(device and inode at open time); a database replaced at its path since then is read
-by the single-connection scan only. The fused path also runs only
+(device and inode at open time); a database replaced at its path since then, or one on
+a file system that reports inode 0, is read by the single-connection scan only. The fused path also runs only
 where `json_array` returns REAL values exactly (a runtime probe; SQLite 3.51 rendered
 15 significant digits). It writes `-0.0` as `0.0`, which OpenCode's `JSON.stringify`
 never produces. A malformed body that aborts a range is isolated by bisection. On the
@@ -248,14 +248,14 @@ stamp or a crash between the two atomic writes means the full check runs (about
 
 Model rows are about 97% of a rollup's decode time, and the TUI needs none of them
 before its first paint. So they live in a `.models` sidecar that is written first,
-whose first line is the SHA-1 of its rows, which the cache pins. The warm read checks
-that line and keeps the sidecar open; `model_breakdown()` decodes it on first use
-(`cache.models_read`) and verifies the whole digest. Another process replacing the
-cache in between therefore cannot hand this run rows of a different generation than
-the workflows it already served (POSIX keeps the old file readable; on Windows the
-replace fails until the handle is released, so that write is skipped). A sidecar of
-another generation rejects the whole cache at read time; one that fails its digest or
-validation makes the hit path parse afresh and rewrite the whole cache. An inline `model_breakdown` (an older
+whose first line is the SHA-1 of its rows, which the cache pins. The warm read takes
+the sidecar's bytes with the cache and verifies them as one generation (about 15 ms
+for 35 MB), so corruption or another generation rejects the whole cache before any
+workflow is served, as validating inline rows did. A trusted cache keeps the verified
+bytes undecoded until `model_breakdown()` (`cache.models_read`); an untrusted one
+(another release, an edit) is decoded and validated at read time. Nothing done to the
+files later can hand this run rows of another generation.
+An inline `model_breakdown` (an older
 writer or a fixture) is still accepted and checked eagerly. Warm first paint on the
 reference corpus fell from about 515 ms to 185 ms.
 

@@ -860,6 +860,39 @@ def test_opencode_usage_parallel_scan_reads_only_the_file_the_store_opened():
         assert store._usage_cache.rows == expected  # the opened file's 1, never 777
 
 
+def test_opencode_usage_parallel_scan_needs_a_real_file_identity():
+    from opentab.stores import opencode, opencode_usage
+
+    real_stat = os.stat
+
+    def inode_zero(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if str(path).endswith("opencode.db"):
+            # Some network/FAT file systems: every file reports inode 0.
+            return os.stat_result((info.st_mode, 0, *info[2:]))
+        return info
+
+    with _v2_db() as (writer, store):
+        if not _path_projection_supported(store.conn):
+            return
+        _edge_store(writer, [json.dumps({"tokens": {"input": 1}})] * 8)
+        expected = _per_row_reference(store.db)
+        with patch.object(opencode.os, "stat", side_effect=inode_zero):
+            blind = Store(store.db, argparse.Namespace(demo=False))
+        try:
+            assert blind._opened_identity is None
+            blind._usage_cache._sql_projection = True
+            with patch.object(opencode_usage, "_PARALLEL_MIN_ROWS", 0), patch.object(
+                opencode_usage, "_SCAN_THREADS", 2
+            ), patch.object(opencode_usage.os, "cpu_count", return_value=4), patch.object(
+                opencode_usage.UsageCache, "_fused_range", side_effect=AssertionError("fused")
+            ):
+                blind._usage_cache.prepare(blind.conn, False)
+            assert blind._usage_cache.rows == expected
+        finally:
+            blind.conn.close()
+
+
 def test_opencode_usage_parallel_scan_keeps_composite_fields_on_the_single_row_path():
     from opentab.stores import opencode_usage
 

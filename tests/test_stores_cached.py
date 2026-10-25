@@ -1163,10 +1163,10 @@ def test_cached_store_skips_pricing_checks_only_for_its_own_unchanged_file():
         files(models=damaged_pin + "\n" + damaged_text)
         stale, models, checks = load()
         assert stale._disk is None and models is None and checks == 0
-        # Rows edited under the right first line fail the full digest instead.
+        # Rows edited under the right first line fail the full digest, also at read time.
         files(models=pinned + "\n" + damaged_text)
         edited, models, checks = load()
-        assert edited._disk is not None and models is None and checks == 0
+        assert edited._disk is None and models is None and checks == 0
 
         # Re-pinning it edits the cache itself, so the digest fails and the check runs.
         blob = json.loads(original)
@@ -1229,6 +1229,101 @@ def test_cached_store_model_rows_stay_with_the_generation_it_served():
         assert writer.model_breakdown() != old_rows
         # The deferred model scan still describes the workflows this reader served.
         assert reader.model_breakdown() == old_rows
+
+
+def test_cached_store_model_rows_survive_sidecar_damage_after_the_warm_read():
+    from unittest.mock import patch
+
+    from opentab.stores.cached import MODELS_SUFFIX
+
+    from tests._support import _claude_msg, _usage, _write_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        root = os.path.join(tmp, "projects")
+        os.makedirs(root)
+        transcript = os.path.join(root, "s1.jsonl")
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+
+        def record(tokens):
+            _write_jsonl(
+                transcript,
+                [
+                    _claude_msg(
+                        "s1", "claude-sonnet-4-5", _usage(tokens, 0, 0, 0), uuid="a", cwd=tmp
+                    )
+                ],
+            )
+
+        record(1)
+        first = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+        first.workflows()
+        old_rows = first.model_breakdown()
+        reader = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+        assert reader.workflows()[0].total_tokens == 1
+        # The sources move on and the sidecar's body is damaged, header intact...
+        record(777)
+        with open(reader._path + MODELS_SUFFIX, "r+b") as fh:
+            fh.seek(-2, os.SEEK_END)
+            fh.write(b"!!")
+        # ...yet the verified bytes taken with the cache still describe what was served.
+        assert reader.model_breakdown() == old_rows
+
+
+def test_cached_store_sidecar_keeps_its_lf_under_windows_newline_translation():
+    from unittest.mock import patch
+
+    from opentab.stores import cached
+
+    from tests._support import _claude_msg, _usage, _write_jsonl
+
+    real = os.fdopen
+
+    def windows_fdopen(fd, mode="r", *args, **kwargs):
+        if "b" not in mode and kwargs.get("newline") is None:
+            kwargs["newline"] = "\r\n"  # what newline=None means on Windows
+        return real(fd, mode, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        root = os.path.join(tmp, "projects")
+        os.makedirs(root)
+        _write_jsonl(
+            os.path.join(root, "s1.jsonl"),
+            [_claude_msg("s1", "claude-sonnet-4-5", _usage(5, 0, 0, 0), uuid="a", cwd=tmp)],
+        )
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        with patch.object(cached.os, "fdopen", side_effect=windows_fdopen):
+            first = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+            first.workflows()
+            first.model_breakdown()
+        again = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+        assert again._disk is not None  # its own sidecar is accepted on the next launch
+
+
+def test_cached_store_rejects_a_malformed_sidecar_pin_without_raising():
+    from unittest.mock import patch
+
+    from tests._support import _claude_msg, _usage, _write_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        root = os.path.join(tmp, "projects")
+        os.makedirs(root)
+        _write_jsonl(
+            os.path.join(root, "s1.jsonl"),
+            [_claude_msg("s1", "claude-sonnet-4-5", _usage(5, 0, 0, 0), uuid="a", cwd=tmp)],
+        )
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        first = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+        first.workflows()
+        first.model_breakdown()
+        with open(first._path, encoding="utf-8") as fh:
+            blob = json.load(fh)
+        for pin in ("\ud800", "G" * 40, "ab", 7):
+            blob["models_external"]["sha1"] = pin
+            with open(first._path, "w", encoding="utf-8") as fh:
+                json.dump(blob, fh)
+            store = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+            assert store._disk is None, pin  # rejected, then parsed afresh
+            assert store.workflows()[0].total_tokens == 5
 
 
 def test_cached_store_incremental_flag_is_per_call_not_sticky():

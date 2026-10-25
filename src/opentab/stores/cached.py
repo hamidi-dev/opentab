@@ -27,11 +27,11 @@ CACHE_VERSION = 23  # model rows moved to a lazily read sidecar
 # Beside each cache: the digest this release wrote it with. A match proves the rows
 # are the ones its own parse produced, so the per-row pricing check is skipped.
 TRUST_SUFFIX = ".trust"
-# The model rows (~97% of the decode time) live beside the cache and are decoded only
-# when model_breakdown() runs, which the TUI defers until after its first paint. The
-# sidecar's first line is its rows' SHA-1, which the cache pins. The read checks that
-# line and keeps the file open, so a sidecar replaced later by another process can
-# never hand this run rows of a different generation than the workflows it served.
+# The model rows (~97% of the decode time) live beside the cache. The sidecar's first
+# line is its rows' SHA-1, which the cache pins. The read takes and verifies the
+# sidecar's bytes with the cache, as one generation, and keeps them undecoded: a
+# trusted cache decodes them only when model_breakdown() runs, which the TUI defers
+# until after its first paint.
 MODELS_SUFFIX = ".models"
 
 
@@ -39,6 +39,12 @@ MODELS_SUFFIX = ".models"
 MODEL_ROW_KEYS = frozenset(
     {"root_id", "model_name", "runs", "cost", "tokens_total", "cache_read", "cache_write", "output"}
 )
+
+
+def is_sha1_hex(value) -> bool:
+    return (
+        isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+    )
 
 
 def cache_dir() -> str:
@@ -199,22 +205,25 @@ class CachedStore:
         data = self._validate(data, trusted)
         if data is None or "model_breakdown" in data:
             return data
-        pin = (data["models_external"]["sha1"] + "\n").encode("ascii", "replace")
+        pin = data["models_external"]["sha1"]
         try:
-            fh = open(self._path + MODELS_SUFFIX, "rb")
-        except OSError:
+            with debug.span("cache.models_disk_read"):
+                with open(self._path + MODELS_SUFFIX, "rb") as fh:
+                    raw = fh.read()
+        except FileNotFoundError:
             return self._reject("models", "missing")
-        if fh.read(len(pin)) != pin:
-            fh.close()
-            return self._reject("models", "other_generation")
-        data["_models_file"] = fh  # in memory only; read and closed by _disk_models()
+        except OSError:
+            return self._reject("models", "unreadable")
+        header, _, body = raw.partition(b"\n")
+        with debug.span("cache.models_digest"):
+            # Corruption or another generation rejects the whole cache now, before any
+            # workflow is served, exactly as validating inline rows used to.
+            if header != pin.encode("utf-8") or hashlib.sha1(body).hexdigest() != pin:
+                return self._reject("models", "other_generation")
+        data["_models_raw"] = body  # in memory only, decoded by _disk_models()
+        if not trusted and self._disk_models_from(data) is None:
+            return None  # another release or an edited cache: validated now, as before
         return data
-
-    def _close_models(self) -> None:
-        # Windows cannot replace a file held open, so release it before any write.
-        fh = (self._disk or {}).pop("_models_file", None)
-        if fh is not None:
-            fh.close()
 
     @debug.timed("cache.validate")
     def _validate(self, data, trusted: bool = False) -> dict | None:
@@ -225,7 +234,7 @@ class CachedStore:
         if not isinstance(data.get("workflows"), list) or (
             not isinstance(data.get("model_breakdown"), list)
             if inline
-            else not (isinstance(external, dict) and isinstance(external.get("sha1"), str))
+            else not (isinstance(external, dict) and is_sha1_hex(external.get("sha1")))
         ):
             return self._reject("disk", "rollup_shape")
         # Reject the entire cache on shape drift; skipping a row would lose usage silently.
@@ -260,25 +269,19 @@ class CachedStore:
             return "model_identity_shape"
         return None
 
-    @debug.timed("cache.models_read")
     def _disk_models(self) -> list | None:
-        """The disk cache's model rows, read from the sidecar on first use; None if unusable."""
-        disk = self._disk
-        if disk is None:
-            return None
+        """The disk cache's model rows, decoded on first use; None if unusable."""
+        return None if self._disk is None else self._disk_models_from(self._disk)
+
+    @debug.timed("cache.models_read")
+    def _disk_models_from(self, disk: dict) -> list | None:
         if "model_breakdown" in disk:
             return disk["model_breakdown"]
-        fh = disk.pop("_models_file", None)
-        if fh is None:
+        raw = disk.pop("_models_raw", None)
+        if raw is None:
             return self._reject("models", "missing")
         try:
-            with fh:
-                raw = fh.read()  # the generation checked at read time, even if replaced since
-            if hashlib.sha1(raw).hexdigest() != disk["models_external"]["sha1"]:
-                return self._reject("models", "sidecar_mismatch")
             rows = json.loads(raw.decode("utf-8"))
-        except OSError:
-            return self._reject("models", "unreadable")
         except ValueError:
             return self._reject("models", "invalid_json")
         if not isinstance(rows, list):
@@ -335,7 +338,6 @@ class CachedStore:
             with debug.span("cache.encode_models"):
                 models = json.dumps(model_breakdown, separators=(",", ":"))
             digest = hashlib.sha1(models.encode("utf-8")).hexdigest()
-            self._close_models()
             # The sidecar goes first: a cache never names rows that are not on disk yet.
             self._write_text(self._path + MODELS_SUFFIX, digest + "\n" + models)
             payload["models_external"] = {"sha1": digest, "rows": len(model_breakdown)}
@@ -370,7 +372,8 @@ class CachedStore:
     def _write_text(path: str, text: str) -> None:
         fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", dir=os.path.dirname(path))
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            # newline="": text mode must not turn the sidecar's LF into CRLF on Windows.
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
                 with debug.span("cache.disk_write"):
                     fh.write(text)
             os.replace(tmp, path)
@@ -481,7 +484,6 @@ class CachedStore:
                     except OSError:
                         pass
             self._install_accounting_loader()
-        self._close_models()
         self._disk = self._read()
         self._plan_memo = None
 
@@ -611,7 +613,6 @@ class CachedStore:
                 rows = [Workflow(**row) for row in self._disk["workflows"]]
             except TypeError:
                 self._reject("disk", "workflow_fields_changed")
-                self._close_models()
                 self._disk = None  # cached fields drifted from the dataclass: reparse
             else:
                 # These stashes are one answer and must clear together on a hit.
@@ -674,7 +675,6 @@ class CachedStore:
                 return [dict(row) for row in disk_rows]
             # The workflows came from this cache but its model rows are unusable:
             # parse both now, so the write below replaces the whole cache.
-            self._close_models()
             self._disk = None
             with debug.span("cache.backend_workflows", source=self._source):
                 self._fresh_wf = [asdict(w) for w in self._store.workflows()]

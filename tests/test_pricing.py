@@ -1278,3 +1278,23 @@ def test_parsed_catalog_cache_follows_the_parser_and_rejects_non_utf8_text():
             except ValueError:
                 continue
             raise AssertionError("accepted a catalog the text read refused")
+
+
+def test_parser_digest_reads_the_source_through_the_module_loader():
+    import hashlib as _hashlib
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    class ZipLoader:
+        # zipimport has no file to open(); only its loader can return the source.
+        def get_data(self, path):
+            return b"parser source from inside a zip"
+
+    with patch.object(pricing, "_PARSER_DIGEST", None), patch.object(
+        pricing, "__loader__", ZipLoader()
+    ), patch.object(pricing, "__file__", "/nowhere/opentab.zip/opentab/accounting/pricing.py"):
+        assert (
+            pricing._parser_digest()
+            == _hashlib.sha1(b"parser source from inside a zip").hexdigest()
+        )
