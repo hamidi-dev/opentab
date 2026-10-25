@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -955,7 +956,7 @@ def test_cached_store_falls_back_to_a_full_parse_when_the_splice_cannot_be_trust
             files, cid = seed("noprov", {"a.jsonl": {"s1": 1}})
             from opentab.stores.cached import cache_dir
 
-            for fname in os.listdir(cache_dir()):
+            for fname in [f for f in os.listdir(cache_dir()) if f.endswith(".json")]:
                 fpath = os.path.join(cache_dir(), fname)
                 blob = json.load(open(fpath))
                 if blob.get("source") == "fake":
@@ -1024,7 +1025,7 @@ def test_cached_store_splice_survives_a_corrupt_cache_payload():
 
                 from opentab.stores.cached import cache_dir
 
-                for fname in os.listdir(cache_dir()):
+                for fname in [f for f in os.listdir(cache_dir()) if f.endswith(".json")]:
                     fpath = os.path.join(cache_dir(), fname)
                     blob = json.load(open(fpath))
                     if blob.get("source") == "fake" and blob.get("fingerprint"):
@@ -1074,7 +1075,7 @@ def test_cached_store_rejects_a_cache_whose_rows_are_the_wrong_shape():
 
                 from opentab.stores.cached import cache_dir
 
-                for fname in os.listdir(cache_dir()):
+                for fname in [f for f in os.listdir(cache_dir()) if f.endswith(".json")]:
                     fpath = os.path.join(cache_dir(), fname)
                     blob = json.load(open(fpath))
                     if blob.get("fingerprint") and any(
@@ -1100,7 +1101,7 @@ def test_cached_store_skips_pricing_checks_only_for_its_own_unchanged_file():
     from unittest.mock import patch
 
     from opentab.accounting import tiers
-    from opentab.stores.cached import TRUST_SUFFIX
+    from opentab.stores.cached import MODELS_SUFFIX, TRUST_SUFFIX
 
     from tests._support import _claude_msg, _usage, _write_jsonl
 
@@ -1118,13 +1119,21 @@ def test_cached_store_skips_pricing_checks_only_for_its_own_unchanged_file():
         args = type("Args", (), {"demo": False, "no_cache": False})()
 
         def load(**kwargs):
+            # Model rows are read lazily, so the pricing check runs on first use.
             with patch(
                 "opentab.stores.cached.valid_pricing", wraps=tiers.valid_pricing, **kwargs
             ) as check:
                 store = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
-            return store, check.call_count
+                models = store._disk_models()
+            return store, models, check.call_count
 
-        cold, _ = load()
+        def files(main=None, models=None):
+            for name, text in ((path, main), (path + MODELS_SUFFIX, models)):
+                if text is not None:
+                    with open(name, "w", encoding="utf-8") as fh:
+                        fh.write(text)
+
+        cold, _, _ = load()
         cold.workflows()
         rows = cold.model_breakdown()
         assert rows and all(r.get("pricing") for r in rows)
@@ -1132,29 +1141,45 @@ def test_cached_store_skips_pricing_checks_only_for_its_own_unchanged_file():
         assert os.path.isfile(path + TRUST_SUFFIX)
         with open(path, encoding="utf-8") as fh:
             original = fh.read()
+        with open(path + MODELS_SUFFIX, encoding="utf-8") as fh:
+            original_models = fh.read()
+        assert "model_breakdown" not in json.loads(original)  # rows live in the sidecar
 
-        warm, checks = load(side_effect=AssertionError("revalidated a trusted cache"))
-        assert checks == 0 and warm._disk is not None
+        lazy = ot.CachedStore(ot.ClaudeStore(root, args), "claude|" + root, args)
+        assert lazy.workflows() and lazy.served_from_cache
+        assert "model_breakdown" not in lazy._disk  # a warm launch never decodes the rows
+        warm, models, checks = load(side_effect=AssertionError("revalidated a trusted cache"))
+        assert checks == 0 and models == rows
         assert warm.workflows() and warm.served_from_cache
         assert warm.model_breakdown() == rows
 
-        # Any edit changes the digest, so a damaged bucket is still caught.
+        # A sidecar that no longer matches the cache's pinned digest is never adopted.
+        damaged_rows = json.loads(original_models)
+        damaged_rows[0]["pricing"][0]["tok"][0] = -1
+        damaged_text = json.dumps(damaged_rows, separators=(",", ":"))
+        files(models=damaged_text)
+        stale, models, checks = load()
+        assert models is None and checks == 0
+
+        # Re-pinning it edits the cache itself, so the digest fails and the check runs.
         blob = json.loads(original)
-        blob["model_breakdown"][0]["pricing"][0]["tok"][0] = -1
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(blob, fh, separators=(",", ":"))
-        damaged, checks = load()
-        assert checks > 0 and damaged._disk is None
+        blob["models_external"]["sha1"] = hashlib.sha1(damaged_text.encode()).hexdigest()
+        files(main=json.dumps(blob, separators=(",", ":")))
+        damaged, models, checks = load()
+        assert models is None and checks > 0
+        # The hit path then parses afresh and replaces the whole cache.
+        assert damaged.workflows() and damaged.model_breakdown() == rows
+        healed, models, checks = load(side_effect=AssertionError("revalidated a trusted cache"))
+        assert models == rows and checks == 0
 
         # Another release's stamp, or none at all, means a full check that still passes.
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(original)
+        files(main=original, models=original_models)
         with patch("opentab.stores.cached.__version__", "0.0.0"):
-            other, checks = load()
-        assert checks > 0 and other._disk is not None
+            other, models, checks = load()
+        assert checks > 0 and models == rows
         os.unlink(path + TRUST_SUFFIX)
-        unstamped, checks = load()
-        assert checks > 0 and unstamped._disk is not None
+        unstamped, models, checks = load()
+        assert checks > 0 and models == rows
 
 
 def test_cached_store_incremental_flag_is_per_call_not_sticky():
