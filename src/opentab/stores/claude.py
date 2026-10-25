@@ -530,6 +530,15 @@ class ClaudeStore:
                     loader.pool_workers(len(entangled)),
                 )
             final.extend(redo or [_parse_files_job(job) for job in entangled])
+            # A re-parse reads its files again; a transcript that grew meanwhile can now
+            # share a key with a group accepted in the first pass. Only provably
+            # independent results may be merged; anything else is the serial parse.
+            seen: dict = {}
+            for gi, (sessions, asked, _) in enumerate(final):
+                for token in [("s", sid) for sid in sessions] + [("k", key) for key in asked]:
+                    if seen.setdefault(token, gi) != gi:
+                        debug.event("claude.pool_conflict")
+                        return None
         placed = []
         for sessions, _, first in final:
             placed.extend((first[sid], sid, s) for sid, s in sessions.items())
