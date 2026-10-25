@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import unittest
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
@@ -585,13 +586,14 @@ def _path_projection_supported(conn) -> bool:
     )
 
 
-def _parallel_scan_supported(conn) -> bool:
-    # SQLite that renders JSON REAL with 15 digits (3.45 on Ubuntu 24.04) never
+def _skip_without_exact_reals(conn) -> None:
+    # SQLite that renders JSON REAL with 15 digits (3.51 and older) never
     # adopts fused rows; test_opencode_usage_parallel_scan_needs_exact_real_round_trips
     # covers that path everywhere.
     from opentab.stores import opencode_usage
 
-    return _path_projection_supported(conn) and opencode_usage._fused_values_exact(conn)
+    if not opencode_usage._fused_values_exact(conn):
+        raise unittest.SkipTest(f"SQLite {sqlite3.sqlite_version} does not round-trip REAL")
 
 
 _EDGE_BODIES = [
@@ -734,7 +736,8 @@ def test_opencode_usage_parallel_scan_matches_per_row_reader_on_edge_cases():
         '{"type":"x","tokens":{"input":11}}',
     ]
     with _v2_db() as (writer, store):
-        if not _parallel_scan_supported(store.conn):
+        _skip_without_exact_reals(store.conn)
+        if not _path_projection_supported(store.conn):
             return
         _edge_store(writer, bodies, kinds={len(bodies) - 1: "compaction"})
         expected = _per_row_reference(store.db)
@@ -761,7 +764,8 @@ def test_opencode_usage_parallel_scan_keeps_this_connections_snapshot():
     from opentab.stores import opencode_usage
 
     with _v2_db() as (writer, store):
-        if not _parallel_scan_supported(store.conn):
+        _skip_without_exact_reals(store.conn)
+        if not _path_projection_supported(store.conn):
             return
         writer.execute("pragma journal_mode=wal")
         _edge_store(writer, [json.dumps({"tokens": {"input": i + 1}}) for i in range(40)])
@@ -798,7 +802,8 @@ def test_opencode_usage_parallel_scan_adopts_recent_rows_from_a_proven_snapshot(
     from opentab.stores import opencode_usage
 
     with _v2_db() as (writer, store):
-        if not _parallel_scan_supported(store.conn):
+        _skip_without_exact_reals(store.conn)
+        if not _path_projection_supported(store.conn):
             return
         now = int(clock.time() * 1000)
         _edge_store(writer, [json.dumps({"tokens": {"input": 1}})] * 10, updated=now)
@@ -912,7 +917,8 @@ def test_opencode_usage_parallel_scan_keeps_composite_fields_on_the_single_row_p
         json.dumps({"tokens": {"input": 2}}),
     ]
     with _v2_db() as (writer, store):
-        if not _parallel_scan_supported(store.conn):
+        _skip_without_exact_reals(store.conn)
+        if not _path_projection_supported(store.conn):
             return
         _edge_store(writer, bodies)
         expected = _per_row_reference(store.db)
@@ -931,7 +937,7 @@ def test_opencode_usage_parallel_scan_needs_exact_real_round_trips():
     from opentab.stores import opencode_usage
 
     class FifteenDigits:
-        # What SQLite 3.45 does: json_array renders REAL with 15 significant digits.
+        # What SQLite 3.51 and older do: json_array renders REAL with 15 significant digits.
         def execute(self, sql, params):
             value = json.loads(params[0])
             rendered = json.dumps([float("%.15g" % value) if isinstance(value, float) else value])

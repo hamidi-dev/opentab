@@ -522,6 +522,7 @@ def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
     except (OSError, EOFError, ValueError, TypeError):
         pass
     parsed = _parse_catalog(_decode_catalog(raw))
+    tmp = None
     try:
         os.makedirs(folder, exist_ok=True)
         payload = marshal.dumps((dict(parsed[0]), getattr(parsed[0], "tiers", {}), *parsed[1:]))
@@ -529,12 +530,20 @@ def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
         with os.fdopen(fd, "wb") as fh:
             fh.write(hashlib.sha1(payload).digest() + payload)
         os.replace(tmp, cached)
+        tmp = None
         for other in os.listdir(folder):
             # Superseded parses (an old source or release) are dead weight.
             if other.startswith(kind + "-") and other != name:
                 os.unlink(os.path.join(folder, other))
     except (OSError, ValueError):
         pass
+    finally:
+        # A failed write or replace must not strand a partial catalog copy.
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     return parsed
 
 

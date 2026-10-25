@@ -139,8 +139,10 @@ TUI and CLI/MCP only, never in the browser. See
 
 **Cause**: SQLite 3.54.1 rejects queries that reference a CTE after opening 1000
 cursors. The Changes tab's scoped reads on current OpenCode databases cross that cap.
-SQLite reverted it in later releases; cost, tokens and turns are unaffected.
+Upstream has reverted the cap for the next release (3.54.2, then 3.55), but no fixed
+release is out yet. Cost, tokens and turns are unaffected.
 
-**Fix**: update SQLite, or run OpenTab with a Python that links another version.
-`opentab doctor` shows which SQLite your Python uses. Homebrew Python links Homebrew's
-SQLite, so `brew upgrade sqlite` fixes it once a newer release is out.
+**Fix**: run OpenTab with a Python that links another SQLite version (macOS's
+`/usr/bin/python3` links 3.51). `opentab doctor` shows which SQLite your Python uses. Homebrew
+Python links Homebrew's SQLite, so `brew upgrade sqlite` fixes it once a fixed
+release ships.
