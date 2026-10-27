@@ -263,6 +263,7 @@ input.filter:focus{outline:none;border-color:var(--accent)}
 .tool-map-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;
   margin:0 2px 6px;color:var(--ink2);font-size:12px}
 .tool-map-head b{color:var(--ink);font-size:13px}
+.trace-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.trace-text{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:6px 0;tab-size:4}.trace-call,.trace-prose{border:1px solid var(--line);padding:12px;margin:12px 0;min-width:0}.trace-call.selected{border-color:var(--accent)}.trace-param{margin:6px 0}.trace-prose h3,.trace-call h3{overflow-wrap:anywhere}
 .tool-map{position:relative;height:clamp(150px,18vw,220px);overflow:hidden;
   border-radius:6px;background:var(--panel2)}
 .tool-tile{position:absolute;border:2px solid var(--panel);background-clip:padding-box;
@@ -680,6 +681,7 @@ function resetScopeState() {
     }
   }
   if (typeof TOOL_NAV !== 'undefined') TOOL_NAV += '.';
+  clearTrace();
   FILTER = '';
   EXPANDED.clear();
   NODE_DRILL = null;
@@ -837,6 +839,7 @@ function h(tag, attrs, ...kids) {
     if (k === 'class') el.className = v;
     else if (k === 'onclick') el.addEventListener('click', v);
     else if (k === 'oninput') el.addEventListener('input', v);
+    else if (k === 'onkeydown') el.addEventListener('keydown', v);
     else el.setAttribute(k, v);
   }
   for (const kid of kids.flat(9)) if (kid !== null && kid !== undefined)
@@ -1930,6 +1933,184 @@ function turnCostContextStrip(turns, { prompts = false, indices = null } = {}) {
   return h('div', { class: 'turn-strip' }, svg);
 }
 
+// Raw event strings are passed only to h()'s text-node path, never parsed as markup.
+// Keep these display caps aligned with tui/trace.py. Full reader events stay intact.
+const TRACE_LIMITS = { output: 6, params: 6, value: 10, prose: 40 };
+let TRACE = null;
+function clearTrace() {
+  if (TRACE) TRACE.controller.abort();
+  TRACE = null;
+}
+function openTrace(turn, node = null, restoring = false, replacing = false) {
+  clearTrace();
+  if (!EXTRAS.traces || !turn.contentKey) return;
+  const sc = curScope();
+  const request = { session: sc.id, key: turn.contentKey, node, loading: true, events: [],
+    error: '', expanded: false, outputs: new Set(), selected: null, controller: new AbortController() };
+  TRACE = request;
+  if (!restoring) {
+    const parent = { ...(history.state || {}), session: sc.id, traceTab: TAB,
+      traceGroup: TURN_DRILL, execution: NODE_DRILL, traceNav: TOOL_NAV };
+    delete parent.trace;
+    if (!replacing) history.replaceState(parent, '', location.hash);
+    const state = { ...parent, trace: { key: turn.contentKey, node } };
+    if (replacing) history.replaceState(state, '', location.hash);
+    else history.pushState(state, '', location.hash);
+  }
+  const scope = node == null ? EXTRAS : Object.values(EXTRAS.executions || {}).find(x => x.id === node);
+  const embedded = scope && scope.sessionTraces;
+  if (!META.serve) {
+    request.events = embedded && Object.prototype.hasOwnProperty.call(embedded, request.key) ? embedded[request.key]
+      : Object.prototype.hasOwnProperty.call(EXTRAS.sessionTraces || {}, request.key) ? EXTRAS.sessionTraces[request.key] : [];
+    request.loading = false;
+    render(false); return;
+  }
+  render(false);
+  const query = { session: sc.id, key: request.key };
+  if (node != null) query.node = node;
+  fetch('/api/trace?' + new URLSearchParams(query), { signal: request.controller.signal, cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error('Trace unavailable'); return r.json(); })
+    .then(x => {
+      if (TRACE !== request || EXTRAS.id !== request.session || curScope().id !== request.session) return;
+      request.events = Array.isArray(x.events) ? x.events : [];
+      request.loading = false; render(false);
+    }).catch(() => {
+      if (TRACE !== request) return;
+      request.loading = false; request.error = 'Trace unavailable. Refresh the page and try again.'; render(false);
+    });
+}
+function closeTrace() {
+  clearTrace();
+  if (history.state && history.state.trace && history.state.traceNav === TOOL_NAV) history.back();
+  else render(false);
+}
+function traceTurns() {
+  const scope = TRACE && TRACE.node != null
+    ? Object.values(EXTRAS.executions || {}).find(x => x.id === TRACE.node) : EXTRAS;
+  return (scope && scope.turns) || [];
+}
+function stepTraceTurn(delta) {
+  if (!TRACE) return;
+  const turns = traceTurns(), index = turns.findIndex(t => t.contentKey === TRACE.key);
+  if (index < 0) return;
+  let next = index + delta;
+  while (next >= 0 && next < turns.length && !turns[next].contentKey) next += delta;
+  if (next < 0 || next >= turns.length) return;
+  if (TRACE.node == null) TURN_DRILL = turnGroupRows(turns).findIndex(g => g.indices.includes(next));
+  openTrace(turns[next], TRACE.node, false, true);
+  document.querySelector('.trace-controls')?.scrollIntoView({ block: 'start' });
+}
+function refreshTrace(control) {
+  // Replacing the whole detail view briefly empties it and clamps page scroll to
+  // the top. Replace only the trace, preserving the clicked control's position.
+  const top = control.getBoundingClientRect().top;
+  const selector = '[data-trace-focus="' + control.getAttribute('data-trace-focus') + '"]';
+  control.closest('.trace-body').replaceWith(tracePane());
+  const target = document.querySelector(selector);
+  if (target) {
+    target.focus({ preventScroll: true });
+    window.scrollBy(0, target.getBoundingClientRect().top - top);
+  }
+}
+function stepTraceCall(delta) {
+  if (!TRACE) return;
+  const calls = TRACE.events.map((e, i) => e.kind === 'tool' ? i : null).filter(i => i != null);
+  if (!calls.length) return;
+  const pos = TRACE.selected == null ? (delta > 0 ? -1 : calls.length) : calls.indexOf(TRACE.selected);
+  TRACE.selected = calls[Math.max(0, Math.min(calls.length - 1, pos + delta))];
+  render(false);
+  const target = document.querySelector('[data-trace-call="' + TRACE.selected + '"]');
+  if (target) { target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); }
+}
+function traceBlock(value, limit = Infinity, compact = false) {
+  // Like the TUI, prose/arguments cap source lines; output previews cap wrapped lines.
+  let lines = String(value == null ? '' : value).replace(/\t/g, '    ').split(/\r\n|\r|\n/);
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  if (compact) {
+    lines = lines.filter((line, i, all) => line.trim() || (i > 0 && all[i - 1].trim()));
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    const host = document.getElementById('view');
+    const width = Math.max(16, Math.floor(((host && host.clientWidth) || 900) / 8) - 10);
+    lines = lines.flatMap(line => {
+      const chars = Array.from(line), parts = [];
+      for (let i = 0; i < chars.length; i += width) parts.push(chars.slice(i, i + width).join(''));
+      return parts.length ? parts : [''];
+    });
+  }
+  const hidden = Math.max(0, lines.length - limit);
+  return h('div', null, h('pre', { class: 'trace-text' }, lines.slice(0, limit).join('\n')),
+    hidden ? h('div', { class: 'hint' }, '… ' + hidden + ' more lines') : null);
+}
+
+function tracePane() {
+  const t = TRACE;
+  if (!t) return null;
+  const turns = traceTurns(), index = turns.findIndex(turn => turn.contentKey === t.key);
+  const header = h('div', { class: 'trace-controls' },
+    h('button', { class: 'hbtn', onclick: closeTrace }, 'Back to turns (Esc)'),
+    h('button', { class: 'hbtn', disabled: index <= 0 || !turns.slice(0, index).some(x => x.contentKey) ? '' : null,
+      onclick: () => stepTraceTurn(-1) }, '← Previous turn'),
+    h('span', { class: 'hint' }, 'Turn ' + (index + 1) + ' of ' + turns.length),
+    h('button', { class: 'hbtn', disabled: index < 0 || !turns.slice(index + 1).some(x => x.contentKey) ? '' : null,
+      onclick: () => stepTraceTurn(1) }, 'Next turn →'),
+    h('button', { class: 'hbtn', 'data-trace-focus': 'expand-all', onclick: e => {
+      t.expanded = !t.expanded; if (!t.expanded) t.outputs.clear(); refreshTrace(e.currentTarget);
+    } }, t.expanded ? 'Collapse all' : 'Expand all'),
+    h('button', { class: 'hbtn', onclick: () => stepTraceCall(-1) }, '[ previous call'),
+    h('button', { class: 'hbtn', onclick: () => stepTraceCall(1) }, '] next call'));
+  const body = h('div', { class: 'trace-body', 'aria-live': 'polite' }, header);
+  if (!EXTRAS.records_reasoning) body.appendChild(h('div', { class: 'hint' }, "This harness doesn't record reasoning text."));
+  if (t.loading || t.error || !t.events.length) {
+    body.appendChild(h('div', { class: 'hint' }, t.loading ? 'Loading trace…' : t.error || 'No recorded trace for this turn.'));
+    return body;
+  }
+  t.events.forEach((event, i) => {
+    if (event.kind === 'tool') {
+      const expanded = t.expanded || t.outputs.has(i);
+      const call = h('section', { class: 'trace-call' + (t.selected === i ? ' selected' : ''),
+        tabindex: '0', 'data-trace-call': i, 'aria-label': 'Tool call ' + (event.name || '(unknown)'),
+        onclick: () => { t.selected = i; } },
+        h('h3', null, '▸ ' + (event.name || '(unknown)') + (event.status ? ' · ' + event.status : '')),
+        event.args ? traceBlock(event.args, t.expanded ? Infinity : TRACE_LIMITS.value) : null);
+      const params = Array.isArray(event.params) ? event.params : [];
+      params.slice(0, t.expanded ? params.length : TRACE_LIMITS.params).forEach(([key, value]) => {
+        call.appendChild(h('div', { class: 'trace-param' }, h('b', null, String(key) + ':'), traceBlock(value, t.expanded ? Infinity : TRACE_LIMITS.value)));
+      });
+      if (!t.expanded && params.length > TRACE_LIMITS.params) call.appendChild(h('div', { class: 'hint' }, '… ' + (params.length - TRACE_LIMITS.params) + ' more arguments'));
+      if (event.output || event.output_dropped) {
+        call.appendChild(h('button', { class: 'hbtn', 'aria-expanded': String(expanded), 'data-trace-focus': 'output-' + i,
+          onclick: e => { e.stopPropagation(); if (t.outputs.has(i)) t.outputs.delete(i); else t.outputs.add(i); t.selected = i; refreshTrace(e.currentTarget); },
+          disabled: t.expanded ? '' : null }, t.expanded ? 'Output · full' : expanded ? 'Output · full · collapse' : 'Output · preview · expand'));
+        call.appendChild(traceBlock(event.output || '', expanded ? Infinity : TRACE_LIMITS.output, !expanded));
+        if (event.output_dropped) call.appendChild(h('div', { class: 'hint' }, '… ' + event.output_dropped + ' more characters not retained by the reader'));
+      }
+      body.appendChild(call);
+    } else if (event.kind === 'text' || event.kind === 'reasoning') {
+      body.appendChild(h('section', { class: 'trace-prose' }, h('h3', null, event.kind === 'reasoning' ? 'Reasoning' : 'Narration'),
+        traceBlock(event.text || '', t.expanded ? Infinity : TRACE_LIMITS.prose),
+        event.dropped ? h('div', { class: 'hint' }, '… ' + event.dropped + ' more characters not retained by the reader') : null));
+    }
+  });
+  return body;
+}
+function executionTurnsPane(index) {
+  if (!EXTRAS.traces) return h('div', { class: 'hint' }, 'For raw turn traces, enable --allow-raw-content.');
+  if (EXTRAS.traceUnavailable) return h('div', { class: 'hint' }, EXTRAS.traceUnavailable);
+  const execution = (EXTRAS.executions || {})[String(index)];
+  if (!execution) return h('div', { class: 'hint' }, 'Execution turns not available for this harness.');
+  if (TRACE && TRACE.node === execution.id) return tracePane();
+  return h('div', null, h('h3', null, 'Execution turns'),
+    execution.turns.length ? table('t-execution-turns', [
+      { key: 'index', label: 'Turn', asc: true, fmt: r => String(r.index + 1) },
+      { key: 'time', label: 'Time', fmt: r => dt(r.time) || '-' },
+      { key: 'model', label: 'Model', cls: 'grow' },
+      { key: 'tools', label: 'Tools', fmt: r => toolLabel(r.tools, false) || '-' },
+      { key: 'cost', label: 'Cost', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
+    ], execution.turns.map((r, index) => ({ ...r, index })), { defaultSort: { key: 'index', desc: false },
+      rowLabel: r => 'Open execution turn ' + (r.index + 1), onRow: r => openTrace(r, execution.id) })
+    : h('div', { class: 'hint' }, 'No recorded turns in this execution.'));
+}
+
 function turnsTable(turns, expiries) {
   const groups = turnGroupRows(turns);
   const comps = turnCompactions(turns);
@@ -2015,8 +2196,24 @@ function turnDrillPane(turns, groups, n) {
     const t = turns[i];
     const owner = TOOL_TURN && TOOL_TURN.turnIndex === i;
     cum += mCost(t);
-    return h('tr', owner ? { class: 'tool-owner', tabindex: '-1', 'data-tool-focus': 'owner-turn',
-      'aria-label': 'Owning turn ' + (i + 1) + ' for selected tool call' } : null,
+    const attrs = owner ? { class: 'tool-owner', tabindex: '-1', 'data-tool-focus': 'owner-turn',
+      'aria-label': 'Owning turn ' + (i + 1) + ' for selected tool call' } : {};
+    if (EXTRAS.traces && t.contentKey) {
+      attrs.class = (attrs.class || '') + ' rowlink'; attrs.tabindex = '0';
+      if (!owner) attrs['aria-label'] = 'Open trace for turn ' + (i + 1);
+      attrs.onclick = e => { if (!e?.target?.closest('details')) openTrace(t); };
+      attrs.onkeydown = e => {
+        if (e.metaKey || e.ctrlKey || e.altKey || STARTUP_WARNINGS.length || WHATS_NEW_OPEN || THEMEPICK
+            || WHATIF.open || PRICES.open || TRENDS.open || RANGE.pick || e.target?.closest('details')) return;
+        if (e.key === 'Tab') { e.stopPropagation(); return; }
+        if (e.key === 'Enter' || e.key === ' ') openTrace(t);
+        else if (e.key === 'j' || e.key === 'ArrowDown') e.currentTarget.nextElementSibling?.focus();
+        else if (e.key === 'k' || e.key === 'ArrowUp') e.currentTarget.previousElementSibling?.focus();
+        else return;
+        e.preventDefault(); e.stopPropagation();
+      };
+    }
+    return h('tr', attrs,
       h('td', { class: 'r dim' }, String(i + 1)),
       h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
       h('td', { class: 'grow' }, modelCell(t.model)),
@@ -2028,7 +2225,9 @@ function turnDrillPane(turns, groups, n) {
       h('td', { class: 'r' }, moneyCell(mCost(t))),
       h('td', { class: 'r dim' }, money(cum)));
   });
-  const back = TOOL_TURN
+  const back = TRACE
+    ? h('button', { class: 'hbtn', onclick: closeTrace }, '← back to turns')
+    : TOOL_TURN
     ? h('button', { class: 'hbtn', 'data-tool-focus': 'turn-back', onclick: closeToolTurn },
         '← back to ' + (TOOL_DRILL.kind === 'tool' ? 'tool ' : 'namespace ') + TOOL_DRILL.value)
     : h('button', { class: 'hbtn', 'data-tool-focus': 'prompt-back',
@@ -2048,7 +2247,8 @@ function turnDrillPane(turns, groups, n) {
       tokenBreakdown(g.tokAvailable ? g.tok : null, g.tokens),
       h('div', { class: 'hint' }, 'Zero separate reasoning may mean it is included in model output. Expand a turn\'s token count below for its breakdown.')),
     turnCostContextStrip(g.rows, { indices: g.indices }),
-    h('div', { class: 'scroll' }, h('table', null,
+    h('div', { class: 'hint' }, EXTRAS.traces ? (EXTRAS.traceUnavailable || 'Select a turn to open its raw trace.') : 'For raw turn traces, enable --allow-raw-content.'),
+    TRACE && TRACE.node == null ? tracePane() : h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
         h('th', null, 'Model'),
         ...(hasEffort ? [h('th', null, 'Eff')] : []),
@@ -2518,6 +2718,7 @@ function openExecution(index) {
   render(false);
 }
 function closeExecution() {
+  if (TRACE) { closeTrace(); return; }
   clearNodePrompt();
   if (history.state && history.state.session === curScope().id && history.state.execution === NODE_DRILL)
     history.back();
@@ -2606,6 +2807,7 @@ function executionDetail(nodes, index, t) {
         : NODE_PROMPT && NODE_PROMPT.loading ? 'Loading received prompt...'
         : NODE_PROMPT && NODE_PROMPT.text !== null ? NODE_PROMPT.text
         : (NODE_PROMPT && NODE_PROMPT.error) || 'Received prompt not available for this execution.'),
+      executionTurnsPane(index),
       h('dl', { class: 'meta' }, fields.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
       h('div', { class: 'hint' }, 'The model is representative: an execution may use multiple models. '
         + 'It cannot provide an exact list-rate baseline; model comparisons stay at session level. '
@@ -2853,6 +3055,9 @@ function renderSessionOverview(root, sc) {
     root.appendChild(h('div', { class: 'hint' }, 'For Turns, Tools and Context, export with opentab web --html report.html --include-details or run opentab web.'));
 }
 function renderDetail(sc, ws) {
+  if (TRACE && (sc.kind !== 's' || sc.id !== TRACE.session
+      || (TRACE.node == null ? TAB !== 'Turns' || TURN_DRILL == null
+        : TAB !== 'Subagents' || (EXTRAS.executions || {})[String(NODE_DRILL)]?.id !== TRACE.node))) clearTrace();
   if (NODE_PROMPT && TAB !== 'Subagents') NODE_DRILL = null;
   if (NODE_PROMPT && (META.demo || !META.serve || sc.kind !== 's' || sc.id !== NODE_PROMPT.session
       || NODE_DRILL !== NODE_PROMPT.index || META.nodeSnapshot !== NODE_PROMPT.snapshot || TAB !== 'Subagents'))
@@ -2990,6 +3195,7 @@ function chrome() {
 function ensureExtras(sc) {
   if (sc.kind !== 's' || EXTRAS.id === sc.id) return;
   const request = ++EXTRAS_REQUEST, session = sc.id;
+  clearTrace();
   TURN_DRILL = null;
   abandonToolNavigation();
   // A static report either embeds a session's extras or, written with --details-dir,
@@ -2997,9 +3203,11 @@ function ensureExtras(sc) {
   const file = !META.serve && Object.prototype.hasOwnProperty.call(DATA.detailFiles || {}, sc.id)
     ? META.detailsDir + DATA.detailFiles[sc.id] : null;
   if (!META.serve && !file) {
-    const x = Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id)
+    let x = Object.prototype.hasOwnProperty.call(DATA.sessionExtras || {}, sc.id)
       ? DATA.sessionExtras[sc.id] : {};
-    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
+    if (Object.prototype.hasOwnProperty.call(DATA.sessionTraces || {}, sc.id))
+      x = { ...x, sessionTraces: DATA.sessionTraces[sc.id] };
+    EXTRAS = { ...x, id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
     return;
   }
   EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
@@ -3009,7 +3217,7 @@ function ensureExtras(sc) {
   }).then(x => {
     const current = curScope();
     if (request !== EXTRAS_REQUEST || current.kind !== 's' || current.id !== session || EXTRAS.id !== session) return;
-    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
+    EXTRAS = { ...x, id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [], client: x.client || '' };
     render(false);
   }).catch(err => {
     const current = curScope();
@@ -3581,6 +3789,14 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (RANGE.pick) { if (e.key === 'Escape') closeRange(); e.preventDefault(); return; }
+  if (TRACE && ['j', 'k', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
+    window.scrollBy(0, e.key === 'j' || e.key === 'ArrowDown' ? 56 : -56);
+    e.preventDefault(); return;
+  }
+  if (TRACE && (e.key === 'Escape' || e.key === '[' || e.key === ']')) {
+    if (e.key === 'Escape') closeTrace(); else stepTraceCall(e.key === '[' ? -1 : 1);
+    e.preventDefault(); return;
+  }
   if (e.key === 'W') { openWhatsNew(document.activeElement); e.preventDefault(); return; }
   const sc = curScope();
   const tabs = tabsFor(sc);
@@ -3690,6 +3906,8 @@ window.addEventListener('hashchange', () => { resetScopeState(); render(); });
 // Same-URL history entries let browser Back close an execution without leaving its session.
 window.addEventListener('popstate', e => {
   const sc = curScope(), state = e.state;
+  const leavingTrace = TRACE;
+  clearTrace();
   const leavingTool = TOOL_DRILL, returnFocus = TOOL_RETURN_FOCUS;
   NODE_DRILL = sc.kind === 's' && state && state.session === sc.id && Number.isInteger(state.execution)
     ? state.execution : null;
@@ -3708,6 +3926,14 @@ window.addEventListener('popstate', e => {
     else { TOOL_TURN = null; TAB = 'Tools'; TURN_DRILL = null; }
   } else if (TOOL_DRILL) { TAB = 'Tools'; TURN_DRILL = null; }
   else if (leavingTool) { TAB = 'Tools'; TURN_DRILL = null; }
+  if (sc.kind === 's' && state && state.session === sc.id && state.traceNav === TOOL_NAV) {
+    TAB = state.traceTab; TURN_DRILL = state.traceGroup;
+    if (state.trace) {
+      const scope = state.trace.node == null ? EXTRAS : Object.values(EXTRAS.executions || {}).find(x => x.id === state.trace.node);
+      const turn = scope && scope.turns.find(t => t.contentKey === state.trace.key);
+      if (turn) openTrace(turn, state.trace.node, true);
+    }
+  } else if (leavingTrace && leavingTrace.node == null && sc.kind === 's' && sc.id === leavingTrace.session) TAB = 'Turns';
   requestNodePrompt();
   render(false);
   if (TOOL_TURN) focusToolTarget('owner-turn', true);
