@@ -1723,6 +1723,7 @@ const document = {
 let STARTUP_WARNINGS=[], WHATS_NEW_OPEN=false, THEMEPICK=false;
 let WHATIF={open:false,i:0}, PRICES={open:false}, TRENDS={open:false}, RANGE={pick:false};
 let META={demo:false}, BROWSE='time', FOCUS='', TAB='', MODE='real', MSUB=null, TURN_DRILL=null, RETURN=null, W=[];
+let TRACE=null;
 let opened=0, closed=0;
 function openWhatsNew(){opened++;WHATS_NEW_OPEN=true}
 function closeWhatsNew(){closed++;WHATS_NEW_OPEN=false}
@@ -2233,7 +2234,8 @@ def test_serve_command_runs_serve_forever_off_the_main_thread():
     import types
 
     class FakeServer:
-        def __init__(self, address, app):
+        def __init__(self, address, app, *, allow_raw_content=False):
+            self.allow_raw_content = allow_raw_content
             self.server_address = (address[0], 8765)
             self.events = []
             self.serve_on_main = None
@@ -2253,7 +2255,9 @@ def test_serve_command_runs_serve_forever_off_the_main_thread():
 
     made = {}
     real = report.ReportServer
-    report.ReportServer = lambda address, app: made.setdefault("s", FakeServer(address, app))
+    report.ReportServer = lambda address, app, **kwargs: made.setdefault(
+        "s", FakeServer(address, app, **kwargs)
+    )
     try:
         args = types.SimpleNamespace(bind="127.0.0.1", port=0, web=False)
         rc = report.serve_command(app_with([workflow("w1", "2026-05-01 10:00:00")]), args)
@@ -3367,6 +3371,8 @@ def test_web_range_change_cannot_restore_a_sessions_model_return_hop():
 const assert = require('node:assert/strict');
 let location = {hash: '#/'}, MSUB, TAB, RETURN, FILTER, NODE_DRILL;
 function clearNodePrompt() {}
+function clearTrace() {}
+let TRACE = null;
 let RANGE, W = [], ALL_W = [], EXPANDED = new Set();
 function render() {}
 function closeRange() {}
@@ -3441,6 +3447,8 @@ let TRENDS = {open:true, tab:'Models', drill:{kind:'model', key:'target'}, drill
 let META = {demo:false}, BROWSE = 'time', FOCUS = '', TAB = 'Models', MODE = 'real';
 let MSUB = null, TURN_DRILL = null, NODE_DRILL = null, RETURN = null, W = [], FILTER = '';
 function clearNodePrompt() {}
+function clearTrace() {}
+let TRACE = null;
 const EXPANDED = new Set(), TREND_TABS = ['Models'];
 let trendRenders = 0;
 function renderTrends() { trendRenders++; }
@@ -3546,3 +3554,679 @@ console.log(JSON.stringify(out));
 
     values = [41.4e6, 265.7e6, 999.4e6, 999.6e6, 9.96e6, 999, 3e9]
     assert actual["labels"] == [token_label(v) for v in values]
+
+
+_RAW_XSS = "</script><img src=x onerror=alert(1)> __PAYLOAD__ ${template} {{value}}"
+
+
+class RawTraceStore(ToolsExplorerFakeStore, NodesFakeStore):
+    records_reasoning = False
+
+    def __init__(self, workflows):
+        super().__init__(workflows)
+        self.raw_reads = []
+
+    def supports_turn_content(self, workflow_id):
+        return True
+
+    def message_timeline(self, workflow_id):
+        rows = super().message_timeline(workflow_id)
+        for i, row in enumerate(rows):
+            row["content_key"] = "turn:" + str(i)
+        rows[1]["depth"] = 1
+        return rows
+
+    def turn_content(self, workflow_id, content_key=None):
+        assert content_key is not None, "web must request one full turn, never previews"
+        self.raw_reads.append((workflow_id, None, content_key))
+        return {
+            content_key: [
+                {"kind": "text", "text": "Narration " + _RAW_XSS},
+                {"kind": "reasoning", "text": "Reasoning " + _RAW_XSS},
+                {
+                    "kind": "tool",
+                    "name": "Bash " + _RAW_XSS,
+                    "args": "command " + _RAW_XSS,
+                    "params": [("cwd", _RAW_XSS)],
+                    "status": "completed",
+                    "output": _RAW_XSS + "\n" + "\n".join("line " + str(i) for i in range(12)),
+                },
+            ]
+        }
+
+    def node_timeline(self, root_id, node_id):
+        rows = self.message_timeline(root_id)
+        return [dict(rows[1 if node_id == "ses_sub" else 0], depth=0)]
+
+    def node_turn_content(self, root_id, node_id, content_key=None):
+        content = self.turn_content(root_id, content_key)
+        self.raw_reads[-1] = (root_id, node_id, content_key)
+        return content
+
+
+def _raw_trace_app(*options):
+    args = cli.parse_args(["web", "--no-state", *options])
+    w = workflow("w1", "2026-05-01")
+    w.subagents = 1
+    store = RawTraceStore([w])
+    return ot.App(store, args), args
+
+
+def _web_memory_server(app, *, traces=False):
+    # Exercise the shipped handler and page cache without a socket/thread dependency.
+    server = report.ReportServer.__new__(report.ReportServer)
+    server.app = app
+    server.allow_raw_content = traces
+    server._page = server._node_snapshot = None
+    server.server_address = ("127.0.0.1", 8321)
+    return server
+
+
+def _web_memory_get(server, path):
+    import io
+    from email.message import Message
+
+    handler = report._Handler.__new__(report._Handler)
+    handler.server = server
+    handler.path = path
+    handler.command = "GET"
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = "GET " + path + " HTTP/1.1"
+    handler.headers = Message()
+    handler.headers["Host"] = "localhost:8321"
+    handler.wfile = io.BytesIO()
+    handler.do_GET()
+    head, body = handler.wfile.getvalue().split(b"\r\n\r\n", 1)
+    return int(head.split()[1]), head, body
+
+
+def test_web_raw_trace_cli_requires_static_details_and_accepts_both_modes():
+    import contextlib
+    import io
+
+    errors = io.StringIO()
+    with contextlib.redirect_stderr(errors):
+        try:
+            cli.parse_args(["web", "--html", "--allow-raw-content"])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("raw static report without details must fail")
+    assert "--include-details or --details-dir" in errors.getvalue()
+    for options in ([], ["--html", "--include-details"], ["--html", "--details-dir", "details"]):
+        assert cli.parse_args(["web", "--allow-raw-content", *options]).allow_raw_content
+
+
+def test_web_raw_trace_gate_validation_and_full_execution_reads():
+    from unittest.mock import patch
+    from urllib.parse import urlencode
+
+    app, _ = _raw_trace_app("--allow-raw-content")
+    store = app.store
+    server = _web_memory_server(app)
+    with patch.object(
+        app, "trace_owner", side_effect=AssertionError("gate before store resolution")
+    ), patch.object(
+        app, "session_turn_rows", side_effect=AssertionError("gate before timeline read")
+    ):
+        status, head, body = _web_memory_get(server, "/api/trace?session=w1&key=turn:0")
+    assert status == 403 and not store.raw_reads
+    assert b"Cache-Control: no-store" in head
+    server.allow_raw_content = True
+    extras = json.loads(_web_memory_get(server, "/api/session/w1")[2])
+    assert extras["traces"] is True and extras["records_reasoning"] is False
+    assert extras["turns"][1]["contentKey"] == "turn:1"
+    assert extras["executions"]["1"]["id"] == "ses_sub"
+    assert not store.raw_reads  # even flagged extras do not read event bodies
+    for query in (
+        {"session": "w1", "key": "turn:0"},
+        {"session": "w1", "key": "turn:1"},  # descendant in the root timeline
+        {"session": "w1", "key": "turn:1", "node": "ses_sub"},
+    ):
+        status, head, body = _web_memory_get(server, "/api/trace?" + urlencode(query))
+        assert status == 200 and b"Cache-Control: no-store" in head
+        assert json.loads(body)["events"][-1]["output"].startswith(_RAW_XSS)
+    assert store.raw_reads == [
+        ("w1", None, "turn:0"),
+        ("w1", None, "turn:1"),
+        ("w1", "ses_sub", "turn:1"),
+    ]
+    reads = list(store.raw_reads)
+    for query in (
+        "session=w1&key=",
+        "session=w1&key=missing",
+        "session=missing&key=turn:0",
+        "session=w1&key=turn:0&node=ses_sub",
+        "session=w1&key=turn:1&node=other-root",
+        "session=w1&key=turn:0&key=turn:1",
+        "session=w1&key=turn:0&extra=x",
+        "session=w1",
+        "session=w1&key=turn:0&node=",
+    ):
+        assert _web_memory_get(server, "/api/trace?" + query)[0] == 400
+    assert store.raw_reads == reads
+    app.all_workflows.append(app.all_workflows[0])
+    assert _web_memory_get(server, "/api/trace?session=w1&key=turn:0")[0] == 400
+    assert store.raw_reads == reads
+
+
+def test_web_raw_trace_default_payload_is_byte_identical_and_content_never_cached():
+    from unittest.mock import patch
+
+    from opentab.stores.cached import CachedStore
+    from opentab.stores.remote import build_export
+
+    app, args = _raw_trace_app()
+    # Compare with the pre-feature projection, including field insertion order.
+    baseline = json.dumps(report.session_extras(app, "w1"), separators=(",", ":"))
+    payload = json.dumps(report.build_payload(app), separators=(",", ":"))
+    args.allow_raw_content = True
+    assert json.dumps(report.session_extras(app, "w1"), separators=(",", ":")) == baseline
+    assert (
+        json.dumps(report.session_extras(app, "w1", traces=False), separators=(",", ":"))
+        == baseline
+    )
+    # generated timestamp is stable for this short call; no flag-related fields are added.
+    flagged = report.build_payload(app)
+    unflagged = json.loads(payload)
+    flagged["meta"]["generated"] = unflagged["meta"]["generated"]
+    assert json.dumps(flagged, separators=(",", ":")) == payload
+    assert "contentKey" not in baseline and "traces" not in baseline
+    server = _web_memory_server(app, traces=True)
+    before = server.page()
+    app.store = CachedStore(app.store, "test|raw-trace", args, persistent=False)
+    assert report.session_trace_events(app, "w1", "turn:1")
+    assert server.page() == before and _RAW_XSS not in before
+    assert not app._trace_by_session and app._trace_full is None
+    assert app.store._disk is None and app.store._fresh_wf is None
+    with patch.object(
+        app.store._store, "turn_content", side_effect=AssertionError("fleet raw read")
+    ):
+        fleet = json.dumps(build_export(app.store, "local"))
+    assert _RAW_XSS not in fleet and "content_key" not in fleet
+
+
+def test_web_raw_trace_demo_uses_only_fixtures_and_unsupported_is_empty():
+    from unittest.mock import patch
+
+    app, _ = _raw_trace_app("--allow-raw-content", "--demo")
+    app.store.demo = True
+    app.store.demo_scale = 1.0
+    app.store.demo_cats = frozenset({"turns"})
+    with patch.object(
+        app.store, "turn_content", side_effect=AssertionError("real trace")
+    ), patch.object(
+        app.store, "node_turn_content", side_effect=AssertionError("real child trace")
+    ), patch.object(app.store, "node_timeline", side_effect=AssertionError("real child turns")):
+        extras = report._export_extras(app, "w1", True)
+        assert extras["sessionTraces"]
+        assert "refresh_cache" in json.dumps(extras)
+        assert _RAW_XSS not in json.dumps(extras)
+        child = extras["executions"]["1"]
+        assert child["sessionTraces"]
+    assert not app.store.raw_reads
+    app, _ = _raw_trace_app()
+    app.store.supports_turn_content = lambda wid: False
+    assert report.session_trace_events(app, "w1", "turn:0") == []
+    assert report.session_extras(app, "w1", traces=True)["traceUnavailable"]
+    app.store.remote_trace_request = lambda *args: (_ for _ in ()).throw(AssertionError("SSH"))
+    assert report.session_trace_events(app, "w1", "turn:0") == []
+    assert "remote sessions" in report.session_extras(app, "w1", traces=True)["traceUnavailable"]
+    assert not app.store.raw_reads
+
+
+def test_web_raw_trace_static_exports_full_events_modes_and_xss():
+    import stat
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for separate in (False, True):
+            path = os.path.join(tmp, "report.html")
+            folder = os.path.join(tmp, "details")
+            os.makedirs(folder, exist_ok=True)
+            os.chmod(folder, 0o755)
+            options = ["--html", path, "--allow-raw-content"]
+            options += ["--details-dir", folder] if separate else ["--include-details"]
+            app, args = _raw_trace_app(*options)
+            assert report.html_command(app, args) == 0
+            text = open(path, encoding="utf-8").read()
+            payload = json.loads(re.search(r'id="opentab-data">(.*?)</script>', text, re.S)[1])
+            assert text.count("</script>") == 2
+            assert "<img src=x onerror=alert(1)>" not in text
+            if separate:
+                detail_path = os.path.join(folder, payload["detailFiles"]["w1"])
+                extras = json.load(open(detail_path, encoding="utf-8"))
+                if os.name != "nt":
+                    assert stat.S_IMODE(os.stat(folder).st_mode) == 0o700
+                    assert stat.S_IMODE(os.stat(detail_path).st_mode) == 0o600
+                assert "sessionTraces" not in json.dumps(payload)
+            else:
+                extras = payload["sessionExtras"]["w1"]
+                assert "sessionTraces" not in extras
+                extras["sessionTraces"] = payload["sessionTraces"]["w1"]
+                if os.name != "nt":
+                    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+            assert extras["sessionTraces"]["turn:1"][-1]["output"].startswith(_RAW_XSS)
+            assert extras["sessionTraces"]["turn:1"][-1]["output"].endswith("line 11")
+            # A descendant already in the root map is not embedded twice.
+            assert extras["executions"]["1"]["sessionTraces"] == {}
+            assert not app._trace_by_session
+
+
+def test_web_raw_trace_browser_caps_navigation_xss_and_stale_fetches():
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for trace browser verification"
+    from opentab.tui.trace import (
+        TRACE_OUTPUT_LINES,
+        TRACE_PARAM_LINES,
+        TRACE_PROSE_LINES,
+        TRACE_VALUE_LINES,
+    )
+
+    app, _ = _raw_trace_app("--allow-raw-content")
+    payload = report.build_payload(app)
+    extras = report._export_extras(app, "w1", True)
+    events = extras["sessionTraces"]["turn:0"]
+    events[0]["text"] += "\n" + "\n".join("prose " + str(i) for i in range(45))
+    events[-1]["args"] += "\n" + "\n".join("arg " + str(i) for i in range(12))
+    events[-1]["params"] = [("param " + str(i), _RAW_XSS) for i in range(8)]
+    events.append({"kind": "tool", "name": "Second call", "status": "error", "output": "failure"})
+    payload["sessionExtras"] = {"w1": {k: v for k, v in extras.items() if k != "sessionTraces"}}
+    payload["sessionTraces"] = {"w1": extras["sessionTraces"]}
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    shipped += re.search(r"window.addEventListener\('popstate', e => \{.*?\n\}\);", source, re.S)[0]
+    result = subprocess.run(
+        [node, "-"],
+        input=_WEB_DOM_JS
+        + "\n"
+        + "document.getElementById('opentab-data').textContent = "
+        + json.dumps(json.dumps(payload))
+        + ";\n"
+        + "global.requestAnimationFrame = () => 1; global.cancelAnimationFrame = () => {};\n"
+        + shipped
+        + "\nassert.deepEqual(TRACE_LIMITS, "
+        + json.dumps(
+            {
+                "output": TRACE_OUTPUT_LINES,
+                "params": TRACE_PARAM_LINES,
+                "value": TRACE_VALUE_LINES,
+                "prose": TRACE_PROSE_LINES,
+            }
+        )
+        + ");\n"
+        + r"""
+let renderCount = 0;
+function render() { renderCount++; ensureExtras(curScope()); renderDetail(curScope(), []); }
+const view = document.getElementById('view');
+function all(el, tag) { return [...(el.tag === tag ? [el] : []), ...el.children.flatMap(n => all(n, tag))]; }
+Node.prototype.getBoundingClientRect = function() { return {top: 120}; };
+Node.prototype.closest = function(selector) {
+  for (let n = this; n; n = n.parent) if (selector === '.trace-body' && n.className === 'trace-body') return n;
+  return null;
+};
+Node.prototype.replaceWith = function(node) {
+  const index = this.parent.children.indexOf(this);
+  this.parent.children[index] = node; node.parent = this.parent;
+};
+function key(key) { listeners.keydown({key, preventDefault(){}, stopPropagation(){}}); }
+function button(text) { return all(view, 'button').find(n => n.textContent.includes(text)); }
+function click(text) { const b = button(text); assert.ok(b, text); b.events.click({currentTarget:b, stopPropagation(){}}); }
+assert.ok(traceBlock('x'.repeat(5000) + '\nsecond', 10).textContent.includes('second'));
+assert.ok(!traceBlock('x'.repeat(5000) + '\nsecond', 6, true).textContent.includes('second'));
+const scrolls = []; window.scrollBy = (x, y) => scrolls.push(y);
+document.querySelector = selector => all(view, 'section').find(n => selector === '[data-trace-call="' + n.attrs['data-trace-call'] + '"]')
+  || all(view, 'button').find(n => selector === '[data-trace-focus="' + n.attrs['data-trace-focus'] + '"]')
+  || (selector === '.trace-controls' ? all(view, 'div').find(n => n.className === 'trace-controls') : null);
+TAB = 'Turns'; render(); TURN_DRILL = 0; render();
+all(view, 'tr').find(n => n.attrs['aria-label'] === 'Open trace for turn 1').events.click();
+assert.equal(TRACE.key, 'turn:0');
+key('j'); key('k'); assert.deepEqual(scrolls, [56,-56]);
+assert.ok(view.textContent.includes("doesn't record reasoning text"));
+assert.ok(view.textContent.includes('Narration'));
+assert.ok(view.textContent.includes('Reasoning'));
+assert.ok(view.textContent.includes('</script><img src=x onerror=alert(1)> __PAYLOAD__ ${template} {{value}}'));
+assert.equal(all(view, 'img').length, 0); assert.equal(all(view, 'script').length, 0);
+assert.ok(!view.textContent.includes('line 11'));
+assert.ok(!view.textContent.includes('prose 44'));
+assert.ok(!view.textContent.includes('param 7'));
+assert.ok(!view.textContent.includes('arg 11'));
+const beforeExpand = renderCount, originalPane = view.children[0];
+click('Output · preview'); assert.ok(view.textContent.includes('line 11'));
+assert.equal(renderCount, beforeExpand); assert.equal(view.children[0], originalPane);
+assert.equal(document.activeElement.attrs['data-trace-focus'], 'output-2');
+assert.equal(scrolls.at(-1), 0); // The toggle keeps its viewport anchor.
+assert.ok(!view.textContent.includes('prose 44')); // One output expands independently.
+const selected = TRACE;
+key('$'); assert.equal(TRACE, selected); assert.ok(view.textContent.includes('line 11'));
+click('Output · full'); assert.ok(!view.textContent.includes('line 11'));
+click('Output · preview');
+click('Expand all');
+assert.ok(view.textContent.includes('line 11')); assert.ok(view.textContent.includes('prose 44'));
+assert.ok(view.textContent.includes('param 7')); assert.ok(view.textContent.includes('arg 11'));
+click('Collapse all'); assert.equal(TRACE.outputs.size, 0);
+assert.ok(!view.textContent.includes('line 11')); TRACE.selected = null;
+key(']'); assert.equal(TRACE.selected, 2);
+assert.deepEqual(document.activeElement.scrolled, {block:'nearest'});
+key(']'); assert.equal(TRACE.selected, 3);
+key(']'); assert.equal(TRACE.selected, 3);
+key('['); assert.equal(TRACE.selected, 2);
+const traceHistoryDepth = history.entries.length;
+assert.equal(button('Previous turn').attrs.disabled, '');
+click('Next turn'); assert.equal(TRACE.key, 'turn:1');
+assert.ok(view.textContent.includes('Turn 2 of ' + EXTRAS.turns.length));
+assert.equal(history.entries.length, traceHistoryDepth); // Stepping doesn't bury the list in history.
+assert.equal(TRACE.outputs.size, 0); assert.equal(TRACE.expanded, false);
+click('Previous turn'); assert.equal(TRACE.key, 'turn:0');
+const originalPrompt = EXTRAS.turns[1].promptId;
+EXTRAS.turns[1].promptId = 'different-prompt';
+click('Next turn'); assert.equal(TURN_DRILL, 1); assert.equal(history.state.traceGroup, 1);
+assert.equal(button('Next turn').attrs.disabled, '');
+stepTraceTurn(1); assert.equal(TRACE.key, 'turn:1');
+history.back(); assert.equal(TRACE, null); assert.equal(TURN_DRILL, 0);
+assert.equal(TAB, 'Turns'); // Back returns to the original list, not the stepped-to prompt.
+EXTRAS.turns[1].promptId = originalPrompt;
+openTrace(EXTRAS.turns[0]);
+key('Escape'); assert.equal(TRACE, null); assert.equal(TURN_DRILL, 0); assert.equal(TAB, 'Turns');
+assert.ok(view.textContent.includes('Select a turn'));
+TAB = 'Subagents'; openExecution(1);
+assert.ok(view.textContent.includes('Execution turns'));
+all(view, 'tr').find(n => n.attrs['aria-label'] === 'Open execution turn 1').events.click();
+assert.equal(TRACE.node, 'ses_sub'); assert.equal(TRACE.key, 'turn:1');
+assert.equal(button('Previous turn').attrs.disabled, '');
+assert.equal(button('Next turn').attrs.disabled, '');
+stepTraceTurn(1); assert.equal(TRACE.key, 'turn:1'); // Never step out of this execution.
+const childTurns = EXTRAS.executions['1'].turns;
+childTurns.push({...childTurns[0], contentKey:null}, {...childTurns[0], contentKey:'child-only'});
+EXTRAS.executions['1'].sessionTraces['child-only'] = [{kind:'text', text:'SECOND CHILD TURN'}];
+render(); click('Next turn'); assert.equal(TRACE.key, 'child-only'); assert.equal(TRACE.node, 'ses_sub');
+assert.ok(view.textContent.includes('SECOND CHILD TURN')); assert.ok(view.textContent.includes('Turn 3 of 3'));
+click('Previous turn'); assert.equal(TRACE.key, 'turn:1');
+childTurns.splice(1);
+assert.ok(view.textContent.includes('</script><img src=x onerror=alert(1)>'));
+click('Back to turns'); assert.equal(TRACE, null); assert.equal(NODE_DRILL, 1);
+history.back(); assert.equal(NODE_DRILL, null);
+assert.equal(requests.length, 0); // Static root and child events work without any fetch.
+(async () => {
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  META.serve = true; TAB = 'Turns'; TURN_DRILL = 0; render();
+  openTrace(EXTRAS.turns[0]);
+  const request = requests.at(-1), pending = TRACE;
+  assert.ok(request.url.startsWith('/api/trace?'));
+  assert.equal(request.options.cache, 'no-store');
+  assert.equal(TRACE.loading, true);
+  resetScopeState();
+  assert.equal(TRACE, null); assert.equal(pending.controller.signal.aborted, true);
+  request.resolve({ok:true, json:() => Promise.resolve({events:[{kind:'text',text:'STALE SECRET'}]})});
+  await tick(); assert.equal(TRACE, null); assert.ok(!view.textContent.includes('STALE SECRET'));
+  EXTRAS.id = 'w1'; TAB = 'Subagents'; NODE_DRILL = 1;
+  openTrace(EXTRAS.executions['1'].turns[0], 'ses_sub');
+  const child = requests.at(-1);
+  assert.equal(new URL('http://local' + child.url).searchParams.get('node'), 'ses_sub');
+  child.resolve({ok:true, json:() => Promise.resolve({events:[{kind:'text',text:'CHILD LIVE CONTENT'}]})});
+  await tick(); assert.ok(view.textContent.includes('CHILD LIVE CONTENT'));
+  TAB = 'Overview'; render(); assert.equal(TRACE, null);
+  TAB = 'Turns'; openTrace(EXTRAS.turns[0]);
+  requests.at(-1).reject(new Error('/private/backend/path'));
+  await tick(); assert.ok(view.textContent.includes('Trace unavailable'));
+  assert.ok(!view.textContent.includes('/private/backend/path'));
+  clearTrace();
+  // Per-session files retain the same trace scopes through ensureExtras.
+  META.serve = false; DATA.detailFiles = {w1:'one.json'}; META.detailsDir = 'details/';
+  delete DATA.sessionExtras; delete DATA.sessionTraces; EXTRAS.id = null;
+  ensureExtras(curScope());
+  assert.equal(requests.at(-1).url, 'details/one.json');
+  requests.at(-1).resolve({ok:true, json:() => Promise.resolve("""
+        + json.dumps(extras)
+        + r""")});
+  await tick(); assert.equal(EXTRAS.traces, true);
+  TAB = 'Subagents'; NODE_DRILL = 1;
+  openTrace(EXTRAS.executions['1'].turns[0], 'ses_sub');
+  assert.ok(view.textContent.includes('</script><img src=x onerror=alert(1)>'));
+})().catch(e => { console.error(e); process.exitCode = 1; });
+""",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_web_raw_trace_startup_announces_mode_and_warns_beyond_loopback():
+    import contextlib
+    import io
+    from unittest.mock import patch
+
+    class Server:
+        def __init__(self, address, app, *, allow_raw_content=False):
+            self.server_address = address
+            self.allow_raw_content = allow_raw_content
+
+        def page(self):
+            pass
+
+        def serve_forever(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            pass
+
+    for bind in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        for traces in (False, True):
+            app, args = _raw_trace_app(*(["--allow-raw-content"] if traces else []))
+            args.bind, args.port, args.web = bind, 8321, False
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(report, "ReportServer", Server), contextlib.redirect_stdout(
+                stdout
+            ), contextlib.redirect_stderr(stderr):
+                assert report.serve_command(app, args) == 0
+            assert ("raw traces enabled" in stdout.getvalue()) == traces
+            assert ("anyone reaching this port can read tool output" in stderr.getvalue()) == (
+                traces and bind == "0.0.0.0"
+            )
+
+
+def _opencode_child_trace_app(folder):
+    import sqlite3
+
+    db = os.path.join(folder, "opencode.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        create table session (id text primary key, parent_id text, title text,
+                              directory text, agent text, time_created integer);
+        create table message (id text primary key, session_id text, data text);
+        create table part (id text primary key, message_id text, session_id text, data text);
+        insert into session values ('root', null, 'Parent delegates everything', '/work/demo', null, 1760000000000);
+        insert into session values ('child', 'root', 'Implementation', '/work/demo', 'builder', 1760000001000);
+    """
+    )
+    for mid, sid, role, created in (
+        ("root-user", "root", "user", 1760000000000),
+        ("child-user", "child", "user", 1760000001000),
+        ("child-turn", "child", "assistant", 1760000002000),
+    ):
+        data = {
+            "role": role,
+            "time": {"created": created},
+            "providerID": "anthropic",
+            "modelID": "claude-sonnet-4",
+            "tokens": {"input": 100, "output": 20},
+            "cost": 0.1,
+        }
+        conn.execute("insert into message values (?,?,?)", (mid, sid, json.dumps(data)))
+    parts = [
+        (
+            "root-prompt",
+            "root-user",
+            "root",
+            {"type": "text", "text": "Delegate the implementation"},
+        ),
+        ("child-prompt", "child-user", "child", {"type": "text", "text": "Implement the feature"}),
+        (
+            "narration",
+            "child-turn",
+            "child",
+            {"type": "text", "text": "Implementation happened here"},
+        ),
+        ("reasoning", "child-turn", "child", {"type": "reasoning", "text": "Child reasoning"}),
+        (
+            "call",
+            "child-turn",
+            "child",
+            {
+                "type": "tool",
+                "tool": "bash",
+                "state": {
+                    "status": "completed",
+                    "input": {"command": "python3 run_tests.py", "description": "run tests"},
+                    "output": _RAW_XSS + "\nAll child tests passed",
+                },
+            },
+        ),
+    ]
+    conn.executemany(
+        "insert into part values (?,?,?,?)", [(p, m, s, json.dumps(d)) for p, m, s, d in parts]
+    )
+    conn.commit()
+    conn.close()
+    args = cli.parse_args(
+        [
+            "web",
+            "--db",
+            db,
+            "--harness",
+            "opencode",
+            "--allow-raw-content",
+            "--no-state",
+            "--no-cache",
+        ]
+    )
+    return ot.App(ot.Store(db, args), args)
+
+
+def test_web_raw_trace_opencode_all_work_in_subagent_is_read_and_exported():
+    from urllib.parse import urlencode
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _opencode_child_trace_app(tmp)
+        try:
+            import argparse
+
+            path = os.path.join(tmp, "rollups.json")
+            app.store = ot.CachedStore(
+                app.store,
+                "opencode|" + app.store.db,
+                argparse.Namespace(no_cache=False, demo=False),
+                path=path,
+            )
+            app.store.workflows()
+            app.store.model_breakdown()
+            with open(path, "rb") as fh:
+                cached_before = fh.read()
+            assert _RAW_XSS.encode() not in cached_before
+            extras = report.session_extras(app, "root", traces=True)
+            assert [t["contentKey"] for t in extras["turns"]] == ["child-turn"]
+            assert extras["turns"][0]["depth"] == 1
+            child = next(e for e in extras["executions"].values() if e["id"] == "child")
+            assert child["turns"][0]["contentKey"] == "child-turn"
+            assert child["turns"][0]["depth"] == 0
+            server = _web_memory_server(app, traces=True)
+            for query in (
+                {"session": "root", "key": "child-turn"},
+                {"session": "root", "node": "child", "key": "child-turn"},
+            ):
+                status, _, body = _web_memory_get(server, "/api/trace?" + urlencode(query))
+                assert status == 200
+                events = json.loads(body)["events"]
+                assert [e["kind"] for e in events] == ["text", "reasoning", "tool"]
+                assert events[-1]["output"].endswith("All child tests passed")
+                assert events[-1]["args"] == "python3 run_tests.py"
+            embedded = report._export_extras(app, "root", True)
+            assert json.loads(json.dumps(embedded["sessionTraces"]["child-turn"])) == events
+            assert (
+                next(e for e in embedded["executions"].values() if e["id"] == "child")[
+                    "sessionTraces"
+                ]
+                == {}
+            )
+            assert not app._trace_by_session
+            with open(path, "rb") as fh:
+                assert fh.read() == cached_before
+        finally:
+            app.store.conn.close()
+
+
+def test_web_raw_trace_backend_errors_and_reused_execution_keys_fail_safely():
+    from unittest.mock import patch
+
+    app, _ = _raw_trace_app("--allow-raw-content")
+    server = _web_memory_server(app, traces=True)
+    with patch.object(app.store, "turn_content", side_effect=OSError("/private/secret/path")):
+        status, _, body = _web_memory_get(server, "/api/trace?session=w1&key=turn:0")
+        assert status == 500 and b"/private/secret/path" not in body
+    # A harness may reuse the same key for different execution-scoped events.
+    with patch.object(
+        app.store,
+        "node_turn_content",
+        return_value={"turn:1": [{"kind": "text", "text": "distinct child"}]},
+    ):
+        extras = report._export_extras(app, "w1", True)
+    assert extras["sessionTraces"]["turn:1"][0]["text"] != "distinct child"
+    assert extras["executions"]["1"]["sessionTraces"]["turn:1"] == [
+        {"kind": "text", "text": "distinct child"}
+    ]
+    # A stale URL is checked against the current turn rows before another content read.
+    reads = list(app.store.raw_reads)
+    with patch.object(app, "session_turn_rows", return_value=[]):
+        assert _web_memory_get(server, "/api/trace?session=w1&key=turn:0")[0] == 400
+    assert app.store.raw_reads == reads
+
+
+def test_web_raw_trace_demo_cli_exports_only_fake_root_and_execution_events():
+    import sys
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _opencode_child_trace_app(tmp)
+        db = app.store.db
+        app.store.conn.close()
+        path = os.path.join(tmp, "demo.html")
+        env = dict(os.environ, PYTHONPATH=os.path.abspath("src"))
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "opentab",
+                "web",
+                "--harness",
+                "opencode",
+                "--db",
+                db,
+                "--html",
+                path,
+                "--include-details",
+                "--allow-raw-content",
+                "--demo",
+                "--no-state",
+                "--no-cache",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "raw traces enabled" in result.stdout
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        payload = json.loads(re.search(r'id="opentab-data">(.*?)</script>', text, re.S)[1])
+        assert payload["meta"]["demo"] is True
+        assert payload["sessionTraces"]["root"]
+        assert "Implementation happened here" not in text and _RAW_XSS not in text
+        assert "refresh_cache" in json.dumps(payload["sessionTraces"])
+        assert payload["sessionExtras"]["root"]["executions"]
+        assert all(
+            e["sessionTraces"] for e in payload["sessionExtras"]["root"]["executions"].values()
+        )
