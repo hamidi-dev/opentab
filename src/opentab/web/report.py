@@ -320,8 +320,42 @@ def _machine_meta_payload(app: App) -> dict:
     return out
 
 
+def _turn_row(r: dict, curve: bool) -> dict:
+    real = float(r.get("cost") or 0)
+    api = detail_api_cost(r)
+    return {
+        "time": r.get("time") or "",
+        "agent": r.get("agent") or "-",
+        "depth": int(r.get("depth") or 0),
+        "model": r.get("model_name") or "",
+        "effort": str(r.get("effort") or ""),
+        "durationSeconds": r.get("duration_seconds"),
+        "usageStatus": str(r.get("usage_status") or ""),
+        "real": _money6(real),
+        "api": _money6(api),
+        "tokens": int(r.get("tokens_total") or 0),
+        # Five additive categories plus the long-TTL cache-write subset.
+        "tok": [
+            int(r.get("input") or 0),
+            int(r.get("output") or 0),
+            int(r.get("reasoning") or 0),
+            int(r.get("cache_read") or 0),
+            int(r.get("cache_write") or 0),
+            int(r.get("cache_write_1h") or 0),
+        ],
+        # Subagent contexts are separate and must not break the main chain.
+        "ctx": 0 if (int(r.get("depth") or 0) or not curve) else context_size(r),
+        "cached": None if not curve else cached_share(r),
+        # Preserve call order/repeats, but reject malformed shapes at the boundary.
+        "tools": tool_names(r.get("tools")),
+        "promptId": r.get("prompt_id") or "",
+        "promptTitle": r.get("prompt_title") or "",
+        "promptFull": r.get("prompt_full") or "",
+    }
+
+
 @debug.timed("web.session_extras")
-def session_extras(app: App, workflow_id: str) -> dict:
+def session_extras(app: App, workflow_id: str, *, traces: bool = False) -> dict:
     """Return lazy drill-in data; empty capabilities remain hidden in the page."""
     debug.event("web.session_request", session=debug.identity(workflow_id))
     turns = []
@@ -332,39 +366,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         curve = app.session_supports_context_curve(workflow_id)
         turn_rows = app.session_turn_rows(workflow_id)
         for r in turn_rows:
-            real = float(r.get("cost") or 0)
-            api = detail_api_cost(r)
-            turns.append(
-                {
-                    "time": r.get("time") or "",
-                    "agent": r.get("agent") or "-",
-                    "depth": int(r.get("depth") or 0),
-                    "model": r.get("model_name") or "",
-                    "effort": str(r.get("effort") or ""),
-                    "durationSeconds": r.get("duration_seconds"),
-                    "usageStatus": str(r.get("usage_status") or ""),
-                    "real": _money6(real),
-                    "api": _money6(api),
-                    "tokens": int(r.get("tokens_total") or 0),
-                    # Five additive categories plus the long-TTL cache-write subset.
-                    "tok": [
-                        int(r.get("input") or 0),
-                        int(r.get("output") or 0),
-                        int(r.get("reasoning") or 0),
-                        int(r.get("cache_read") or 0),
-                        int(r.get("cache_write") or 0),
-                        int(r.get("cache_write_1h") or 0),
-                    ],
-                    # Subagent contexts are separate and must not break the main chain.
-                    "ctx": 0 if (int(r.get("depth") or 0) or not curve) else context_size(r),
-                    "cached": None if not curve else cached_share(r),
-                    # Preserve call order/repeats, but reject malformed shapes at the boundary.
-                    "tools": tool_names(r.get("tools")),
-                    "promptId": r.get("prompt_id") or "",
-                    "promptTitle": r.get("prompt_title") or "",
-                    "promptFull": r.get("prompt_full") or "",
-                }
-            )
+            turns.append(_turn_row(r, curve))
     # Cache-expiry pricing stays server-side with the canonical TTL rules. Expose only
     # the causes the TUI renders; the client merely labels them.
     expiries = []
@@ -491,7 +493,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         tool_calls=len(tool_calls),
         context=context is not None,
     )
-    return {
+    extras = {
         "turns": turns,
         "tools": tools,
         "toolCalls": tool_calls,
@@ -499,6 +501,112 @@ def session_extras(app: App, workflow_id: str) -> dict:
         "expiries": expiries,
         "client": app.session_client(workflow_id),
     }
+
+    if traces:
+        for turn, row in zip(turns, turn_rows):
+            turn["contentKey"] = row.get("content_key") or ""
+        extras.update(
+            traces=True,
+            records_reasoning=app.session_records_reasoning(workflow_id),
+            traceUnavailable=_trace_unavailable(app, workflow_id),
+            executions={},
+        )
+        if not extras["traceUnavailable"]:
+            for index, node in enumerate(app.session_node_rows(workflow_id)):
+                node_id = node.get("id")
+                rows = _execution_turn_rows(app, workflow_id, node_id)
+                if rows is not None:
+                    extras["executions"][str(index)] = {
+                        "id": node_id,
+                        "turns": [
+                            dict(_turn_row(r, False), contentKey=r.get("content_key") or "")
+                            for r in rows
+                        ],
+                    }
+    return extras
+
+
+def _trace_unavailable(app: App, workflow_id: str) -> str:
+    owner = app.trace_owner(workflow_id)
+    if callable(getattr(owner, "remote_trace_request", None)):
+        return "Trace not available for remote sessions."
+    if sum(w.id == workflow_id for w in app.all_workflows) != 1 or not app.session_supports_trace(
+        workflow_id
+    ):
+        return "Trace not available for this harness or session."
+    return ""
+
+
+def _execution_turn_rows(app: App, workflow_id: str, node_id: str) -> list | None:
+    # Validate ownership before handing an execution ID to any reader.
+    nodes = [n for n in app.session_node_rows(workflow_id) if n.get("id") == node_id]
+    if len(nodes) != 1:
+        raise ValueError("Invalid execution")
+    if app.store.demo:
+        # Nested TUI drills are disabled in demo; the web uses a synthetic row instead.
+        return [
+            {
+                "content_key": "demo-execution:" + str(node_id),
+                "agent": "demo agent",
+                "prompt_id": "demo",
+                "prompt_title": "Demo task",
+                "prompt_full": "Demo task",
+            }
+        ]
+    reader = getattr(app.trace_owner(workflow_id), "node_timeline", None)
+    return reader(workflow_id, node_id) if callable(reader) else None
+
+
+def session_trace_events(
+    app: App, workflow_id: str, key: str, node_id: str | None = None
+) -> list[dict]:
+    """Read one validated turn in full, without using App's or a page's trace memo."""
+    if not workflow_id or sum(w.id == workflow_id for w in app.all_workflows) != 1:
+        raise ValueError("Invalid session")
+    if _trace_unavailable(app, workflow_id):
+        return []
+    rows = (
+        _execution_turn_rows(app, workflow_id, node_id)
+        if node_id is not None
+        else app.session_turn_rows(workflow_id)
+    ) or []
+    if not key or sum(r.get("content_key") == key for r in rows) != 1:
+        raise ValueError("Invalid turn key")
+    if app.store.demo:
+        from opentab.demo import demo_turn_content
+
+        content = demo_turn_content(
+            key, records_reasoning=app.session_records_reasoning(workflow_id), full=True
+        )
+    else:
+        owner = app.trace_owner(workflow_id)
+        if node_id is None:
+            content = owner.turn_content(workflow_id, content_key=key)
+        else:
+            reader = getattr(owner, "node_turn_content", None)
+            content = reader(workflow_id, node_id, content_key=key) if callable(reader) else {}
+    return list(content.get(key) or [])
+
+
+def _export_extras(app: App, workflow_id: str, traces: bool) -> dict:
+    extras = session_extras(app, workflow_id, traces=traces)
+    if traces:
+        extras["sessionTraces"] = {
+            t["contentKey"]: session_trace_events(app, workflow_id, t["contentKey"])
+            for t in extras["turns"]
+            if t["contentKey"]
+        }
+        for execution in extras["executions"].values():
+            execution["sessionTraces"] = {}
+            for turn in execution["turns"]:
+                key = turn["contentKey"]
+                if key:
+                    events = session_trace_events(app, workflow_id, key, execution["id"])
+                    # Root timelines often contain descendants already. Store one copy,
+                    # but preserve scoped content when a harness reuses a native key.
+                    if key not in extras["sessionTraces"] or extras["sessionTraces"][key] != events:
+                        execution["sessionTraces"][key] = events
+    return extras
 
 
 def _write_owner_only(path: str, text: str) -> None:
@@ -513,7 +621,9 @@ def _write_owner_only(path: str, text: str) -> None:
 DETAIL_FILE_PREFIX = "opentab-session-"
 
 
-def _write_detail_files(app: App, payload: dict, html_path: str, details_dir: str) -> int:
+def _write_detail_files(
+    app: App, payload: dict, html_path: str, details_dir: str, *, traces: bool = False
+) -> int:
     """Write each exported session's extras beside the report and name them in the payload.
 
     Files carry recorded prompts, so they are owner-only like an embedded report. Stale
@@ -522,10 +632,12 @@ def _write_detail_files(app: App, payload: dict, html_path: str, details_dir: st
     """
     folder = os.path.expanduser(details_dir)
     os.makedirs(folder, mode=0o700, exist_ok=True)
+    if traces:
+        os.chmod(folder, 0o700)
     files = {}
     for index, w in enumerate(payload["workflows"]):
         name = f"{DETAIL_FILE_PREFIX}{index}.json"
-        extras = session_extras(app, w["id"])
+        extras = _export_extras(app, w["id"], traces)
         _write_owner_only(os.path.join(folder, name), json.dumps(extras, separators=(",", ":")))
         files[w["id"]] = name
     written = set(files.values())
@@ -542,14 +654,19 @@ def html_command(app: App, args: argparse.Namespace) -> int:
     payload = build_payload(app)
     path = os.path.expanduser(args.html or DEFAULT_REPORT)
     detail_files = None
+    traces = getattr(args, "allow_raw_content", False)
     if getattr(args, "details_dir", None):
-        detail_files = _write_detail_files(app, payload, path, args.details_dir)
+        detail_files = _write_detail_files(app, payload, path, args.details_dir, traces=traces)
     if getattr(args, "include_details", False):
-        # Reuse the live projection: prompts and numeric detail, never raw traces.
+        # Reuse the live projection; raw events require the explicit gate.
         # Iterate exactly the exported catalog, honoring hidden-session policy.
         payload["sessionExtras"] = {
-            w["id"]: session_extras(app, w["id"]) for w in payload["workflows"]
+            w["id"]: _export_extras(app, w["id"], traces) for w in payload["workflows"]
         }
+        if traces:
+            payload["sessionTraces"] = {
+                wid: extras.pop("sessionTraces") for wid, extras in payload["sessionExtras"].items()
+            }
     text = render_html(payload)
     if "sessionExtras" in payload:
         _write_owner_only(path, text)
@@ -559,7 +676,9 @@ def html_command(app: App, args: argparse.Namespace) -> int:
     meta = payload["meta"]
     print(
         f"OpenTab browser: {path} ({len(text) // 1024} kB, "
-        f"{len(payload['workflows'])} sessions, {meta['range']}, {meta['source']})"
+        f"{len(payload['workflows'])} sessions, {meta['range']}, {meta['source']}"
+        + (", raw traces enabled" if traces else "")
+        + ")"
     )
     if detail_files is not None:
         print(
@@ -616,7 +735,34 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(405, "text/plain; charset=utf-8", b"reload is POST-only")
         elif path.startswith("/api/session/"):
             workflow_id = unquote(path[len("/api/session/") :])
-            self._send_json(session_extras(server.app, workflow_id))
+            self._send_json(
+                session_extras(server.app, workflow_id, traces=server.allow_raw_content)
+            )
+        elif path == "/api/trace":
+            if not server.allow_raw_content:
+                self._send(
+                    403, "text/plain; charset=utf-8", b"raw traces require --allow-raw-content"
+                )
+                return
+            try:
+                params = parse_qs(
+                    self.path.partition("?")[2], keep_blank_values=True, max_num_fields=3
+                )
+                if set(params) not in ({"session", "key"}, {"session", "key", "node"}) or any(
+                    len(v) != 1 for v in params.values()
+                ):
+                    raise ValueError("Invalid trace request")
+                events = session_trace_events(
+                    server.app,
+                    params["session"][0],
+                    params["key"][0],
+                    params["node"][0] if "node" in params else None,
+                )
+                self._send_json({"events": events})
+            except ValueError:
+                self._send(400, "text/plain; charset=utf-8", b"invalid trace request")
+            except Exception:  # noqa: BLE001 -- do not expose backend paths or raw IDs
+                self._send(500, "text/plain; charset=utf-8", b"trace unavailable")
         elif path == "/api/node-prompt":
             self._send_json(server.node_prompt(self.path.partition("?")[2]))
         else:
@@ -673,9 +819,10 @@ class ReportServer(HTTPServer):
     receive Ctrl-C on Windows.
     """
 
-    def __init__(self, address: tuple[str, int], app: App):
+    def __init__(self, address: tuple[str, int], app: App, *, allow_raw_content: bool = False):
         super().__init__(address, _Handler)
         self.app = app
+        self.allow_raw_content = allow_raw_content
         self._page: str | None = None
         self._node_snapshot: str | None = None
 
@@ -746,14 +893,21 @@ def serve_command(app: App, args: argparse.Namespace) -> int:
             "and spend to anyone who can reach the port; prefer a VPN/Tailscale "
             "address and never a public interface\n"
         )
+    if getattr(args, "allow_raw_content", False) and bind not in ("127.0.0.1", "localhost", "::1"):
+        sys.stderr.write(
+            "WARNING: raw traces enabled: anyone reaching this port can read tool output, arguments, narration and reasoning.\n"
+        )
     try:
-        server = ReportServer((bind, port), app)
+        server = ReportServer(
+            (bind, port), app, allow_raw_content=getattr(args, "allow_raw_content", False)
+        )
     except OSError as exc:
         raise SystemExit(f"cannot bind {bind}:{port}: {exc}") from exc
     server.page()
     host = "localhost" if bind in ("127.0.0.1", "::1") else bind
     url = f"http://{host}:{server.server_address[1]}/"
-    print(f"OpenTab browser at {url}  (Ctrl-C to stop)")
+    mode = " · raw traces enabled" if server.allow_raw_content else ""
+    print(f"OpenTab browser at {url}  (Ctrl-C to stop{mode})")
     import threading
 
     if getattr(args, "web", False):

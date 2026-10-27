@@ -40,9 +40,10 @@ membership there. Never join by sibling or agent name; missing or ambiguous
 ownership fails closed. Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support
 these methods; Gemini, Antigravity and Remote do not. Demo blocks the drill before
 reads. Prompt/trace content stays lazy and its scoped cache is released on leaving.
-Existing root timelines and accounting are unchanged. Session Turns/Context, web
-and ordinary exports remain root scoped; explicitly requested nested CSV exports
-use the execution's numeric turn rows. There is no new raw web/fleet/CLI/MCP path.
+Existing root timelines and accounting are unchanged. Session Turns/Context and
+ordinary exports remain root scoped; explicitly requested nested CSV exports use
+the execution's numeric turn rows. The web uses these execution readers only with
+`--allow-raw-content`; fleet, CLI and MCP paths are unchanged.
 
 Recorded dollars and list-price estimates remain separate. Token-only harnesses
 return zero cost and keep their tokens in `unpriced_*` fields. Mixed harnesses make
@@ -383,8 +384,9 @@ rollup fingerprint so execution ownership updates invalidate cached root shares.
 
 Without matching saved events, OTEL-only sessions retain headerless Turns and the
 measured Context curve. Event enrichment does not create usage for sessions lacking
-an OTEL ledger. Raw traces never enter caches, web reports or fleet summaries; demo
-blocks event content and execution-detail reads.
+an OTEL ledger. Raw traces enter web details only with `--allow-raw-content`, never
+rollup caches or fleet summaries. Demo blocks real event content and execution-detail
+reads; web traces use synthetic fixtures.
 
 The fresh conversation reader is independent of the OTEL join: it retains all saved
 `user.message` and `assistant.message` occurrences, including zero-usage replies and

@@ -169,8 +169,9 @@ part you want to show them.
   <br><sub><b>Keep exploring in the browser.</b> The same history, with familiar keys and clickable tables.</sub>
 </p>
 
-Turn traces and personal notes are absent from web reports unless you export with
-`--include-details`, which embeds retained prompts. [Web browser & exports](docs/web.md)
+Turn traces require `--allow-raw-content`; static reports also need
+`--include-details` or `--details-dir`. Those detail options include retained user
+prompts even without traces. Personal notes stay out of web reports. [Web browser & exports](docs/web.md)
 
 <a id="fleet"></a>
 

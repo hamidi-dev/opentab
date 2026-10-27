@@ -176,9 +176,10 @@ Opening a session paints a loading frame before fetching its extras. Raw traces
 are a further opt-in read and never part of the rollup cache.
 The TUI's nested Subagents reader loads one execution's timeline and content lazily
 and releases its scoped raw-content cache on leaving. It does not replace root
-timelines or change session Turns/Context, web views or ordinary exports. Only an
+timelines or change session Turns/Context or ordinary exports. The web has its own
+opt-in execution turn/trace projection through `--allow-raw-content`. Only an
 explicit nested CSV export uses execution-scoped numeric turn rows; the reader
-adds no raw-content path to web, fleet, CLI or MCP.
+adds no raw-content path to fleet, CLI or MCP.
 
 `RemoteStore` keeps ordinary fleet reads offline. Only the managed default summary
 directory can associate a session's winning source file with a saved SSH connection.
@@ -211,9 +212,9 @@ session without changing global rollups; see [Pricing](pricing.md).
 
 Static HTML carries rollups; the live server supplies session extras on demand.
 The server is single-threaded because SQLite connections belong to their creating
-thread. Raw traces, content keys and notes are absent from web/fleet payloads;
-the TUI's locally authorized search and explicitly gated CLI/MCP reads are separate
-content paths. Search results and indexed text are likewise excluded. See
+thread. Raw traces and content keys enter web details only with `--allow-raw-content`,
+and remain absent from fleet payloads. Notes stay out of both. The TUI's locally
+authorized search and explicitly gated CLI/MCP reads are separate content paths. Search results and indexed text are likewise excluded. See
 [Web](web.md) for serialization, browser state and security boundaries, and
 [Machines](machines.md) for portable summaries.
 
@@ -234,8 +235,9 @@ renders it. Keep these boundaries when adding a field or interaction, and check
 static and live views together, including a session with no optional detail:
 
 - **Explicit payload fields.** Whitelist what the page needs rather than dumping store
-  rows or App state. Notes, raw traces and content keys belong in neither the initial
-  payload nor session extras.
+  rows or App state. Notes stay out of web payloads. Raw traces and content keys
+  require `--allow-raw-content` and stay out of the served page cache; raw events
+  are fetched per turn or embedded in explicit static session details.
 - **Two cost snapshots.** Recorded (`real`) and API-equivalent (`api`) values both
   travel; `$` swaps fields. `w` uses per-model token splits and list rates for one
   session, never another global cost mode.
@@ -254,15 +256,17 @@ static and live views together, including a session with no optional detail:
   are `{"text": str | null}`, uncacheable, rejected in demo, and never enter static or
   fleet payloads. The browser keeps only the selected prompt in memory; navigation,
   reload or refresh expires stale indices. Remote executions never trigger SSH reads.
-- **Subagent executions** use only the embedded node metrics: no node IDs, raw content,
+- **Subagent executions** ordinarily use only the embedded node metrics: no node IDs, raw content,
   invented parentage, status or duration. Selection uses the original payload index, so
-  duplicate titles, sorting and `$` cannot select another execution.
+  duplicate titles, sorting and `$` cannot select another execution. With raw content
+  enabled, details also carry execution IDs and owned turn rows for trace reads.
 - **Tools explorer.** The ledger shows its aggregate coverage instead of assuming both
   accounting surfaces agree. Arguments, results and content keys never enter extras or
-  the static report; a Tools call jump opens the owning turn's breakdown, and `$` keeps
-  expansion and focus. Manual tab or scope changes and reload invalidate the jump.
+  the static report without the raw-content flag; a Tools call jump opens the owning
+  turn's breakdown, and `$` keeps expansion and focus. Manual tab or scope changes and reload invalidate the jump.
 - **`--include-details`** scans every session in the exported catalog and embeds the
-  live UI's detail projection (numeric counts only), so tabs work from `file://`.
+  live UI's detail projection (raw events only with `--allow-raw-content`), so tabs
+  work from `file://`.
   Ordinary exports and live startup keep lazy detail loading.
 - **What's New** reads the validated bundled resource ([`whats-new.md`](whats-new.md));
   the browser never fetches or persists it, infers no upgrade, stores no unread marker,

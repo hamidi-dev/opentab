@@ -213,6 +213,7 @@ or repeated prompts it kept can appear.
 - Demo mode hides real prompts and content, and turns off copying.
 - `Ctrl-P` swaps the prompts you typed for stand-ins without entering demo mode.
   See [Overlays](overlays.md#hide-your-prompts).
-- Turn content is read only when you open it, and never goes into the web report or
-  the summaries other machines pull. Reading it from scripts is opt-in; see
-  [Raw content](programmatic.md#raw-content).
+- Turn content is read when you open it, or when explicitly exporting a
+  [web report with traces](web.md#raw-turn-traces-opt-in) through
+  `--allow-raw-content`. It never enters summaries other machines pull. Reading it
+  from scripts is opt-in; see [Raw content](programmatic.md#raw-content).

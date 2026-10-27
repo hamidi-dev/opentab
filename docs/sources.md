@@ -71,7 +71,7 @@ headers. ⁴ With a `tool` column. ⁵ Only with a real `session_id` column.
 | **Cost** | `recorded`: the tool stores real spend. `estimated`: tokens only, priced by the `$` view. `mixed`: metered routes are recorded, subscription routes estimated |
 | **Subagent tree** | Each subagent's cost, nested under the session that delegated |
 | **Turns** | The per-turn cost timeline inside a session |
-| **Trace** | One turn's narration, readable reasoning and exact tool calls and results; TUI only |
+| **Trace** | One turn's narration, readable reasoning and exact tool calls and results; TUI, or opt-in web traces |
 | **Tools** | Tokens attributed to each tool call and MCP server |
 | **Context** | How the context window filled up; Claude Code and zaly also show what filled it |
 
@@ -83,9 +83,11 @@ Some features depend on the harness:
 | Conversation reads, `Ctrl-F` search and `y` copy | OpenCode, Claude Code, Codex, Hermes, Copilot, pi, omp |
 | [Changes](changes.md) | OpenCode, Copilot |
 
-Traces load only when you open them and never go into web reports or remote
-summaries. Every harness also tracks when a session was last active, including its
-subagents, which feeds the **Last Activity** sort ([Scope & filter](filters.md)).
+Traces load when you open them. Web traces require `--allow-raw-content`, and
+static trace reports also require `--include-details` or `--details-dir`
+([Web](web.md#raw-turn-traces-opt-in)). They never enter remote summaries. Every
+harness also tracks when a session was last active, including its subagents, which
+feeds the **Last Activity** sort ([Scope & filter](filters.md)).
 
 ### Token-only harnesses
 
@@ -382,8 +384,9 @@ Voice APIs can bill by the second instead of by the token. Log that as a
   turned into tokens.
 - Don't reuse one request ID for both ordinary requests and snapshots.
 - Optional `response` (text) and `details` (JSON) are private trace content: open the
-  Turns row's trace to read them. They never go into caches, web reports or remote
-  summaries, so keep `prompt` a short label.
+  Turns row's trace to read them. They enter web reports only with
+  `--allow-raw-content`, never rollup caches or remote summaries, so keep `prompt`
+  a short label.
 - Without a final event, usage shows as running or unconfirmed. Duration sessions have
   no context curve and no `w` rate comparison, and duration is not active working time.
 

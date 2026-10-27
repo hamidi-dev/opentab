@@ -574,8 +574,9 @@ whole-turn collapse, reload, or harness changes.
 Inside Subagents, `node_turn_content(root_id, node_id, content_key=None)` supplies
 only that execution's previews, or the selected owned key's full content. These
 lazy reads use a separate scoped cache, released on leaving the drill along with
-its prompt/trace state; they do not populate root-session content caches. Nested
-reads add no raw-content support to web, fleet, CLI or MCP.
+its prompt/trace state; they do not populate root-session content caches. Execution
+web traces use these readers through a separate `--allow-raw-content` gate
+([Web](web.md#raw-turn-traces-opt-in)); fleet, CLI and MCP paths are unchanged.
 
 Remote traces follow a separate one-turn lifetime. `trace_owner()` resolves the
 selected workflow's exact backend; `remote_trace_request(id, key)` builds a

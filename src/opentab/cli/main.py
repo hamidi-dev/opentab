@@ -617,6 +617,12 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
         "(default FILE: opentab-report.html); selective --demo leaves other data real",
     )
     web.add_argument(
+        "--allow-raw-content",
+        action="store_true",
+        help="allow raw turn traces, including tool arguments/output and reasoning; "
+        "with --html requires --include-details or --details-dir",
+    )
+    web.add_argument(
         "--include-details",
         action="store_true",
         help="with --html, embed available Turns, Tools and Context for every exported session; "
@@ -1075,6 +1081,12 @@ def _validate_web_args(parser: argparse.ArgumentParser, args: argparse.Namespace
         return
     if getattr(args, "include_details", False) and getattr(args, "details_dir", None):
         parser.error("web: use --include-details or --details-dir, not both")
+    if getattr(args, "allow_raw_content", False) and not (
+        getattr(args, "include_details", False) or getattr(args, "details_dir", None)
+    ):
+        parser.error(
+            "web: --allow-raw-content with --html requires --include-details or --details-dir"
+        )
     explicit_server_flags = []
     if getattr(args, "web_port", None) is not None:
         explicit_server_flags.append("--port")
