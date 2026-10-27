@@ -171,9 +171,9 @@ sessions relate, stays real. A `DEMO — synthetic` header marks the mode.
 | `spend` | Dollars and token counts, scaled by a hidden factor; unpriced usage gets a made-up price |
 
 All four are on by default. Pick some with `--demo titles,turns,spend`, or untick them
-in the `D` picker. In demo, notes and turn traces are hidden, launch, copy and folder
-opening are off, and preferences aren't saved. Check every screenshot or file before
-you share it.
+in the `D` picker. In demo, real notes and traces are hidden; enabled web traces
+use synthetic fixtures. Launch, copy and folder opening are off, and preferences
+aren't saved. Check every screenshot or file before you share it.
 
 `Ctrl-P` hides your prompts without demo: the root session's Turns prompts become the
 same stable fakes. Subagent prompts, titles, paths, spend, traces and search stay real.
@@ -186,8 +186,15 @@ It resets on the next launch.
 
 - Reports include titles, project paths and spend. Live session details and fleet data
   can include **full user prompts**.
-- Turn traces (narration, reasoning, tool arguments and results) and notes are never in
-  web or fleet data. TUI CSV exports can include notes.
-- Opening a subagent in the TUI or live browser can read its first prompt. It stays in
-  memory for that subagent only, is hidden in demo, and never goes into HTML, fleet
-  summaries, caches or programmatic output.
+- Turn traces (narration, reasoning, tool arguments and results), including subagent
+  executions, enter web responses or HTML details only with `--allow-raw-content`.
+  They never enter rollup caches, fleet data or the served page cache. Notes never
+  enter web data; TUI CSV exports can include notes.
+- Trace exports need `--include-details` or `--details-dir`; inline reports and
+  details files use `0600`, and trace details directories use `0700`. A live server
+  announces raw traces and warns again when binding beyond localhost. Anyone who
+  can reach that port can read the enabled content. Demo traces use fakes only.
+- The separate received-prompt reader in the TUI and live browser keeps its response
+  in memory for that subagent only, blocks demo, and never embeds its response in
+  HTML, fleet summaries or caches. With raw web content enabled, execution turn
+  details can also include their retained prompts.

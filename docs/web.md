@@ -44,6 +44,24 @@ answering turn's usage, not the size of what you typed:
 - Reasoning can be zero when the harness counts it as output.
 - Recorded totals are shown as recorded; any gap to the category sum is shown.
 
+### Raw turn traces (opt-in)
+
+Run `opentab web --allow-raw-content` to open individual turns into narration,
+reasoning and tool calls with recorded arguments, parameters, status and output.
+Open a prompt in **Turns**, then select a turn below its charts. **Subagents**
+execution details also list their own turns, including work done entirely in children.
+
+Traces start collapsed with the TUI's caps: 40 prose lines, 6 parameters, 10 lines
+per argument value and 6 output lines. Expand one output or use **Expand all**;
+`[` / `]` select the previous/next tool call; `j` / `k` scroll the trace. **Back**, browser Back and `Esc`
+return to the owning turn list. Missing reasoning text is labeled explicitly.
+Remote sessions have no web trace transport and show an unavailable message.
+
+The live endpoint `/api/trace?session=…&key=…` (optional `node=…` for an execution)
+checks the current session/turn ownership before reading full events. Without the
+flag it returns 403 before reading any store. Raw events are never put in the served
+page cache, rollup caches or fleet summaries. Demo traces use synthetic fixtures only.
+
 ### Tools explorer
 
 The **Tools** tab pairs a spend treemap with rankings by tool and by server. Select a
@@ -59,8 +77,8 @@ a list of every call in order.
 
 Costs are **model usage shared across a turn's tool calls**, not fees for running the
 tool. Times are the turn's time; status and duration aren't guessed. Sources with only
-totals keep the rankings but have no call list. Tool arguments and results are never
-shown.
+totals keep the rankings but have no call list. Open the owning turn for raw traces
+when `--allow-raw-content` is enabled.
 
 ## One self-contained file: `--html`
 
@@ -77,18 +95,33 @@ opentab web --html report.html --include-details
 ```
 
 This reads every session, so it takes longer and makes a bigger file. It includes
-recorded user prompts, per-turn usage, tool attribution and context data. It never
-includes tool arguments or results, reasoning text, notes or subagents' received
-prompts. With this option the file is written readable only by you (`0600` on macOS
-and Linux), also when it replaces an existing file.
+recorded user prompts, per-turn usage, tool attribution and context data. Without
+`--allow-raw-content` it excludes tool arguments and results and reasoning text.
+Notes and the separate subagent received-prompt reader are always excluded. With
+this option the file is written readable only by you (`0600` on macOS and Linux),
+also when it replaces an existing file.
 
 | Option | Effect |
 |--------|--------|
+| `--allow-raw-content` | Enable raw root and subagent turn traces; with `--html` requires `--include-details` or `--details-dir` |
 | `--include-details` | Add Turns, Tools and Context (needs `--html`) |
 | `--details-dir DIR` | Instead, write one small details file per session to `DIR`, loaded when a session is opened; serve the report over HTTP (e.g. `python3 -m http.server`) |
 | `--harness all` | Include every discovered harness; otherwise only the selected one is in the file |
 | `--demo` | Disguise selected data, e.g. `opentab web --demo --html demo.html` |
 | date options | Set the starting range; other sessions stay in the file |
+
+To embed full traces in one offline file:
+
+```sh
+opentab web --html report.html --include-details --allow-raw-content
+```
+
+The same flag works with `--details-dir DIR`. Trace detail files are `0600` and the
+directory is `0700`, including an existing directory. Full events are stored once
+per turn (shared between root and execution views when identical); collapsed previews are computed by the browser.
+Trace exports can be substantially larger: there is no additional export size cap,
+so use `--details-dir` for large catalogs. Inline reports work from `file://`;
+per-session detail files require HTTP.
 
 A report is a snapshot: generate it again to include new usage. Before publishing a
 demo report, review it: [demo mode is selective, not fully private](privacy.md#demo-mode).
@@ -176,8 +209,9 @@ message it recorded (for a subagent, its own first message). It isn't the full s
 prompt or context. It loads only when you ask, and it's kept in page memory only until
 you navigate away.
 
-Static reports, demo mode, executions on other machines and missing local records say
-that the prompt isn't available. After a server reload or machine refresh, refresh the
+The separate panel is unavailable in static reports, demo mode, executions on other
+machines and missing local records. Opt-in trace exports can still carry recorded
+prompts in their execution turn details. After a server reload or machine refresh, refresh the
 browser tab before loading more prompts.
 
 ## Security
@@ -185,7 +219,10 @@ browser tab before loading more prompts.
 The server listens on **localhost only** by default and has **no login**. Anyone who
 can reach it can read session titles, project paths and spend, and full recorded user
 prompts through live Turns and subagent executions. They can also trigger reloads and
-saved-machine refreshes. Raw turn traces and notes are never served.
+saved-machine refreshes. Raw turn traces are served only with `--allow-raw-content`;
+notes are never served. Startup explicitly announces “raw traces enabled”. With a
+non-localhost bind, an additional warning says anyone reaching the port can read
+tool output.
 
 To reach it from another machine, use a private VPN such as Tailscale and restrict who
 can reach the port; never expose a public interface. `--bind` warns when you listen

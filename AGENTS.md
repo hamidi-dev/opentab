@@ -35,7 +35,9 @@ relevant topic, not the entire documentation tree:
 - Recorded cost, API-equivalent estimates (`$`), and session-only rate comparisons
   (`w`) are distinct. Never turn `w` into an app-wide repricing mode.
 - Keep the model scan deferred until after the first TUI paint. Session extras
-  and content stay lazy; raw traces never enter rollup caches or web/fleet payloads.
+  and content stay lazy; raw traces enter web payloads only with
+  `--allow-raw-content`, never rollup caches, fleet payloads, the served page cache,
+  or programmatic output without the existing gate.
 - Demo must not expose real notes or traces, persist preferences, or launch/copy
   sessions. Treat selective anonymization as selective, not fully private.
 - Do not hand-edit `src/opentab/data/models.json`; regenerate it with
