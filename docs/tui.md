@@ -521,9 +521,10 @@ are used, at `depth=0` with unchanged content keys; `None` is unavailable and `[
 is valid empty. Local OpenCode, Claude Code, Codex, OMP, Copilot and Hermes support it;
 Gemini, Antigravity and Remote do not. Exact IDs and verified ownership are required,
 never sibling/name joins; ambiguous records fail closed and demo blocks reads.
-The drill does not replace the root timeline: session Turns/Context, web views and
-ordinary exports retain their root scope. An explicit nested CSV export instead
-uses execution-scoped numeric turn rows, never raw prompt/trace content.
+The drill does not replace the root timeline: session Turns/Context and ordinary
+exports retain their root scope. The web has separate execution-scoped traces
+behind `--allow-raw-content`. An explicit nested CSV export instead uses
+execution-scoped numeric turn rows, never raw prompt/trace content.
 
 The separate Received prompt section uses the optional `node_prompt(root_id, node_id)`
 reader of the exact owning store. It reads the first recorded child user message,
@@ -643,9 +644,10 @@ and grouping runs on a warm reader frame.
 from labeled output, recorded errors are explicit, and reader chrome quiets the
 aggregate totals while retaining prompt/turn identity. The footer paints after
 the body because its expansion action depends on the output sections just laid
-out. Real trace content is unavailable in demo and absent from web payloads and
-fleet summaries. Explicit SSH reads in the TUI and gated CLI/MCP keyed reads do not
-change those export boundaries; see [Privacy](privacy.md).
+out. Real trace content is unavailable in demo, absent from fleet summaries, and
+enters web payloads only with `--allow-raw-content`. Explicit SSH reads in the TUI
+and gated CLI/MCP keyed reads do not change those export boundaries; see
+[Privacy](privacy.md).
 
 ## Launching a Session
 
