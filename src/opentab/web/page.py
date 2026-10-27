@@ -2119,6 +2119,8 @@ function tracePane() {
 function executionTurnsPane(index) {
   if (!EXTRAS.traces) return h('div', { class: 'hint' }, 'For raw turn traces, enable --allow-raw-content.');
   if (EXTRAS.traceUnavailable) return h('div', { class: 'hint' }, EXTRAS.traceUnavailable);
+  if (META.serve && (!META.nodeSnapshot || EXTRAS.nodeSnapshot !== META.nodeSnapshot))
+    return h('div', { class: 'hint' }, 'Page snapshot expired. Refresh the page for execution turns.');
   const execution = (EXTRAS.executions || {})[String(index)];
   if (!execution) return h('div', { class: 'hint' }, 'Execution turns not available for this harness.');
   if (TRACE && TRACE.node === execution.id) return tracePane();

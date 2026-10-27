@@ -3710,6 +3710,72 @@ def test_web_raw_trace_gate_validation_and_full_execution_reads():
     assert store.raw_reads == reads
 
 
+def test_web_raw_trace_execution_listing_errors_preserve_other_details():
+    import sqlite3
+    from unittest.mock import patch
+
+    for failure in ("nodes", "timeline", "duplicate"):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "report.html")
+            app, args = _raw_trace_app("--html", path, "--include-details", "--allow-raw-content")
+            if failure == "nodes":
+                fault = patch.object(
+                    app.store,
+                    "workflow_nodes",
+                    side_effect=sqlite3.OperationalError("private nodes"),
+                )
+            elif failure == "timeline":
+                read = app.store.node_timeline
+
+                def timeline(root_id, node_id, *, read=read):
+                    if node_id == "ses_sub":
+                        raise sqlite3.OperationalError("private timeline")
+                    return read(root_id, node_id)
+
+                fault = patch.object(app.store, "node_timeline", side_effect=timeline)
+            else:
+                nodes = app.session_node_rows("w1")
+                fault = patch.object(app, "session_node_rows", return_value=[*nodes, nodes[1]])
+            with fault:
+                server = _web_memory_server(app, traces=True)
+                status, _, body = _web_memory_get(server, "/api/session/w1")
+                assert status == 200
+                extras = json.loads(body)
+                assert len(extras["turns"]) == 2 and extras["tools"] and extras["context"]
+                assert not extras["traceUnavailable"]
+                assert "private" not in json.dumps(extras)
+                assert "1" not in extras["executions"]
+                assert bool(extras["executions"]) == (failure != "nodes")
+                assert report.html_command(app, args) == 0
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+                payload = json.loads(re.search(r'id="opentab-data">(.*?)</script>', text, re.S)[1])
+                assert payload["sessionTraces"]["w1"]["turn:0"]
+                assert payload["sessionTraces"]["w1"]["turn:1"]
+
+
+def test_web_raw_trace_session_executions_identify_the_current_page_snapshot():
+    from unittest.mock import patch
+
+    app, _ = _raw_trace_app("--allow-raw-content")
+    server = _web_memory_server(app, traces=True)
+    server.page()
+    old_snapshot = server._node_snapshot
+    extras = json.loads(_web_memory_get(server, "/api/session/w1")[2])
+    assert extras["nodeSnapshot"] == old_snapshot
+    with patch.object(app, "reload"):
+        server.reload()
+    assert json.loads(_web_memory_get(server, "/api/session/w1")[2])["nodeSnapshot"] is None
+    nodes = app.session_node_rows("w1")
+    app._nodes_by_session["w1"] = list(reversed(nodes))
+    server.page()
+    extras = json.loads(_web_memory_get(server, "/api/session/w1")[2])
+    assert extras["nodeSnapshot"] == server._node_snapshot != old_snapshot
+    assert extras["executions"]["0"]["id"] == "ses_sub"
+    server.allow_raw_content = False
+    assert "nodeSnapshot" not in json.loads(_web_memory_get(server, "/api/session/w1")[2])
+
+
 def test_web_raw_trace_default_payload_is_byte_identical_and_content_never_cached():
     from unittest.mock import patch
 
@@ -3810,6 +3876,82 @@ def test_web_raw_trace_static_exports_full_events_modes_and_xss():
             # A descendant already in the root map is not embedded twice.
             assert extras["executions"]["1"]["sessionTraces"] == {}
             assert not app._trace_by_session
+
+
+def test_web_raw_trace_static_exports_survive_individual_root_and_execution_read_errors():
+    from unittest.mock import patch
+
+    for separate in (False, True):
+        for failed_scope in (None, "ses_sub"):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "report.html")
+                folder = os.path.join(tmp, "details")
+                options = ["--html", path, "--allow-raw-content"]
+                options += ["--details-dir", folder] if separate else ["--include-details"]
+                app, args = _raw_trace_app(*options)
+                read_root = app.store.turn_content
+
+                def root_content(
+                    workflow_id, content_key=None, *, failed_scope=failed_scope, read_root=read_root
+                ):
+                    if failed_scope is None and content_key == "turn:1":
+                        raise OSError("/private/unreadable/root")
+                    return read_root(workflow_id, content_key)
+
+                def node_content(
+                    root_id,
+                    node_id,
+                    content_key=None,
+                    *,
+                    failed_scope=failed_scope,
+                    read_root=read_root,
+                    store=app.store,
+                ):
+                    if node_id == failed_scope:
+                        raise OSError("/private/unreadable/child")
+                    content = read_root(root_id, content_key)
+                    store.raw_reads[-1] = (root_id, node_id, content_key)
+                    return content
+
+                with patch.object(
+                    app.store, "turn_content", side_effect=root_content
+                ), patch.object(app.store, "node_turn_content", side_effect=node_content):
+                    assert report.html_command(app, args) == 0
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+                payload = json.loads(re.search(r'id="opentab-data">(.*?)</script>', text, re.S)[1])
+                if separate:
+                    with open(
+                        os.path.join(folder, payload["detailFiles"]["w1"]), encoding="utf-8"
+                    ) as fh:
+                        extras = json.load(fh)
+                else:
+                    extras = payload["sessionExtras"]["w1"]
+                    extras["sessionTraces"] = payload["sessionTraces"]["w1"]
+                assert "/private/unreadable" not in json.dumps(extras)
+                assert len(extras["turns"]) == 2
+                assert extras["sessionTraces"]["turn:0"]
+                child = extras["executions"]["1"]
+                assert child["turns"][0]["contentKey"] == "turn:1"
+                if failed_scope is None:
+                    assert not extras["sessionTraces"].get("turn:1")
+                    assert child["sessionTraces"]["turn:1"]
+                else:
+                    assert extras["sessionTraces"]["turn:1"]
+                    # An explicit empty entry blocks fallback to a same-key root trace.
+                    assert child["sessionTraces"]["turn:1"] == []
+
+
+def test_web_raw_trace_export_keeps_ambiguous_keys_fail_closed():
+    from unittest.mock import patch
+
+    app, _ = _raw_trace_app("--allow-raw-content")
+    rows = app.session_turn_rows("w1")
+    with patch.object(app, "session_turn_rows", return_value=[*rows, rows[0]]):
+        extras = report._export_extras(app, "w1", True)
+    assert not extras["sessionTraces"].get("turn:0")
+    assert ("w1", None, "turn:0") not in app.store.raw_reads
+    assert extras["sessionTraces"]["turn:1"]
 
 
 def test_web_raw_trace_browser_caps_navigation_xss_and_stale_fetches():
@@ -3965,12 +4107,18 @@ assert.ok(view.textContent.includes('SECOND CHILD TURN')); assert.ok(view.textCo
 click('Previous turn'); assert.equal(TRACE.key, 'turn:1');
 childTurns.splice(1);
 assert.ok(view.textContent.includes('</script><img src=x onerror=alert(1)>'));
+EXTRAS.executions['1'].sessionTraces['turn:1'] = [];
+openTrace(EXTRAS.executions['1'].turns[0], 'ses_sub', true);
+assert.deepEqual(TRACE.events, []); // Failed child reads never fall back to root events.
+assert.ok(!view.textContent.includes('Narration'));
+delete EXTRAS.executions['1'].sessionTraces['turn:1'];
 click('Back to turns'); assert.equal(TRACE, null); assert.equal(NODE_DRILL, 1);
 history.back(); assert.equal(NODE_DRILL, null);
 assert.equal(requests.length, 0); // Static root and child events work without any fetch.
 (async () => {
   const tick = () => new Promise(resolve => setImmediate(resolve));
-  META.serve = true; TAB = 'Turns'; TURN_DRILL = 0; render();
+  META.serve = true; META.nodeSnapshot = EXTRAS.nodeSnapshot = 'page-one';
+  TAB = 'Turns'; TURN_DRILL = 0; render();
   openTrace(EXTRAS.turns[0]);
   const request = requests.at(-1), pending = TRACE;
   assert.ok(request.url.startsWith('/api/trace?'));
@@ -3981,6 +4129,16 @@ assert.equal(requests.length, 0); // Static root and child events work without a
   request.resolve({ok:true, json:() => Promise.resolve({events:[{kind:'text',text:'STALE SECRET'}]})});
   await tick(); assert.equal(TRACE, null); assert.ok(!view.textContent.includes('STALE SECRET'));
   EXTRAS.id = 'w1'; TAB = 'Subagents'; NODE_DRILL = 1;
+  // Another tab refreshed the server and reordered its execution list. Never
+  // display the fetched ordinal under this tab's old execution header.
+  EXTRAS.nodeSnapshot = 'page-two';
+  EXTRAS.executions['1'].turns[0].model = 'WRONG EXECUTION MODEL';
+  render(); assert.ok(view.textContent.includes('Page snapshot expired'));
+  assert.ok(!view.textContent.includes('WRONG EXECUTION MODEL'));
+  EXTRAS.nodeSnapshot = null;
+  render(); assert.ok(view.textContent.includes('Page snapshot expired'));
+  EXTRAS.nodeSnapshot = 'page-one';
+  render(); assert.ok(view.textContent.includes('WRONG EXECUTION MODEL'));
   openTrace(EXTRAS.executions['1'].turns[0], 'ses_sub');
   const child = requests.at(-1);
   assert.equal(new URL('http://local' + child.url).searchParams.get('node'), 'ses_sub');

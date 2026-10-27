@@ -125,6 +125,9 @@ opentab web --html report.html --include-details --allow-raw-content
 The same flag works with `--details-dir DIR`. Trace detail files are `0600` and the
 directory is `0700`, including an existing directory. Full events are stored once
 per turn (shared between root and execution views when identical); collapsed previews are computed by the browser.
+Unreadable or ambiguous turns keep their numeric details but have no trace content;
+the remaining turns are still exported. Unreadable or ambiguous executions are
+omitted without hiding the session's other details.
 Trace exports can be substantially larger: there is no additional export size cap,
 so use `--details-dir` for large catalogs. Inline reports work from `file://`;
 per-session detail files require HTTP.
@@ -217,8 +220,10 @@ you navigate away.
 
 The separate panel is unavailable in static reports, demo mode, executions on other
 machines and missing local records. Opt-in trace exports can still carry recorded
-prompts in their execution turn details. After a server reload or machine refresh, refresh the
-browser tab before loading more prompts.
+prompts in their execution turn details. Live execution turns are also bound to the
+page snapshot, so stale tabs cannot pair refreshed turns with another execution's
+title. After a server reload or machine refresh, refresh the browser tab before
+loading more prompts or execution turns.
 
 ## Security
 

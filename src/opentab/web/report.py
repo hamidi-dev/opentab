@@ -512,17 +512,24 @@ def session_extras(app: App, workflow_id: str, *, traces: bool = False) -> dict:
             executions={},
         )
         if not extras["traceUnavailable"]:
-            for index, node in enumerate(app.session_node_rows(workflow_id)):
-                node_id = node.get("id")
-                rows = _execution_turn_rows(app, workflow_id, node_id)
-                if rows is not None:
-                    extras["executions"][str(index)] = {
-                        "id": node_id,
-                        "turns": [
-                            dict(_turn_row(r, False), contentKey=r.get("content_key") or "")
-                            for r in rows
-                        ],
-                    }
+            try:
+                nodes = app.session_node_rows(workflow_id)
+            except Exception:  # noqa: BLE001 -- optional executions must not hide root details
+                nodes = []
+            for index, node in enumerate(nodes):
+                try:
+                    node_id = node.get("id")
+                    rows = _execution_turn_rows(app, workflow_id, node_id)
+                    if rows is not None:
+                        extras["executions"][str(index)] = {
+                            "id": node_id,
+                            "turns": [
+                                dict(_turn_row(r, False), contentKey=r.get("content_key") or "")
+                                for r in rows
+                            ],
+                        }
+                except Exception:  # noqa: BLE001 -- omit only the failed or ambiguous execution
+                    continue
     return extras
 
 
@@ -588,11 +595,23 @@ def session_trace_events(
     return list(content.get(key) or [])
 
 
+def _export_trace_events(
+    app: App, workflow_id: str, key: str, node_id: str | None = None
+) -> list[dict]:
+    """Keep a failed turn empty without aborting the rest of the export."""
+    try:
+        return session_trace_events(app, workflow_id, key, node_id)
+    except Exception:  # noqa: BLE001 -- omit unreadable content and backend error details
+        # Preserve an explicit empty entry so execution views cannot fall back to
+        # different root events that happen to share the failed execution's key.
+        return []
+
+
 def _export_extras(app: App, workflow_id: str, traces: bool) -> dict:
     extras = session_extras(app, workflow_id, traces=traces)
     if traces:
         extras["sessionTraces"] = {
-            t["contentKey"]: session_trace_events(app, workflow_id, t["contentKey"])
+            t["contentKey"]: _export_trace_events(app, workflow_id, t["contentKey"])
             for t in extras["turns"]
             if t["contentKey"]
         }
@@ -601,7 +620,7 @@ def _export_extras(app: App, workflow_id: str, traces: bool) -> dict:
             for turn in execution["turns"]:
                 key = turn["contentKey"]
                 if key:
-                    events = session_trace_events(app, workflow_id, key, execution["id"])
+                    events = _export_trace_events(app, workflow_id, key, execution["id"])
                     # Root timelines often contain descendants already. Store one copy,
                     # but preserve scoped content when a harness reuses a native key.
                     if key not in extras["sessionTraces"] or extras["sessionTraces"][key] != events:
@@ -735,9 +754,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(405, "text/plain; charset=utf-8", b"reload is POST-only")
         elif path.startswith("/api/session/"):
             workflow_id = unquote(path[len("/api/session/") :])
-            self._send_json(
-                session_extras(server.app, workflow_id, traces=server.allow_raw_content)
-            )
+            extras = session_extras(server.app, workflow_id, traces=server.allow_raw_content)
+            if server.allow_raw_content:
+                # Ordinals are meaningful only for the page that supplied their labels.
+                extras["nodeSnapshot"] = server._node_snapshot
+            self._send_json(extras)
         elif path == "/api/trace":
             if not server.allow_raw_content:
                 self._send(
