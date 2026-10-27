@@ -263,7 +263,18 @@ input.filter:focus{outline:none;border-color:var(--accent)}
 .tool-map-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;
   margin:0 2px 6px;color:var(--ink2);font-size:12px}
 .tool-map-head b{color:var(--ink);font-size:13px}
-.trace-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.trace-text{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:6px 0;tab-size:4}.trace-call,.trace-prose{border:1px solid var(--line);padding:12px;margin:12px 0;min-width:0}.trace-call.selected{border-color:var(--accent)}.trace-param{margin:6px 0}.trace-prose h3,.trace-call h3{overflow-wrap:anywhere}
+.trace-controls{display:flex;flex-direction:column;gap:12px;margin:16px 0}
+.trace-nav,.trace-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.trace-stepper{display:flex;align-items:center;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel2)}
+.trace-stepper .hbtn{border:0;border-radius:0;padding:8px 12px;background:transparent;white-space:nowrap}
+.trace-position{padding:0 12px;white-space:nowrap;color:var(--ink2);font-size:12px;border-inline:1px solid var(--line)}
+.trace-position b{color:var(--ink)}
+.trace-actions{border-top:1px solid var(--line);padding-top:10px}
+.trace-call-nav{display:flex;gap:8px;flex-wrap:wrap}
+.trace-call-nav .hbtn{color:var(--ink2)}
+.trace-call-nav kbd{font-size:10px;margin-left:6px;color:var(--mut)}
+@media(max-width:600px){.trace-stepper{width:100%}.trace-stepper .hbtn{flex:1;padding:9px 6px}.trace-position{padding:0 10px}}
+.trace-text{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:6px 0;tab-size:4}.trace-call,.trace-prose{border:1px solid var(--line);padding:12px;margin:12px 0;min-width:0}.trace-call.selected{border-color:var(--accent)}.trace-param{margin:6px 0}.trace-prose h3,.trace-call h3{overflow-wrap:anywhere}
 .tool-map{position:relative;height:clamp(150px,18vw,220px);overflow:hidden;
   border-radius:6px;background:var(--panel2)}
 .tool-tile{position:absolute;border:2px solid var(--panel);background-clip:padding-box;
@@ -1946,7 +1957,7 @@ function openTrace(turn, node = null, restoring = false, replacing = false) {
   if (!EXTRAS.traces || !turn.contentKey) return;
   const sc = curScope();
   const request = { session: sc.id, key: turn.contentKey, node, loading: true, events: [],
-    error: '', expanded: false, outputs: new Set(), selected: null, controller: new AbortController() };
+    error: '', expanded: false, inputs: new Set(), outputs: new Set(), selected: null, controller: new AbortController() };
   TRACE = request;
   if (!restoring) {
     const parent = { ...(history.state || {}), session: sc.id, traceTab: TAB,
@@ -2047,17 +2058,23 @@ function tracePane() {
   if (!t) return null;
   const turns = traceTurns(), index = turns.findIndex(turn => turn.contentKey === t.key);
   const header = h('div', { class: 'trace-controls' },
-    h('button', { class: 'hbtn', onclick: closeTrace }, 'Back to turns (Esc)'),
-    h('button', { class: 'hbtn', disabled: index <= 0 || !turns.slice(0, index).some(x => x.contentKey) ? '' : null,
-      onclick: () => stepTraceTurn(-1) }, '← Previous turn'),
-    h('span', { class: 'hint' }, 'Turn ' + (index + 1) + ' of ' + turns.length),
-    h('button', { class: 'hbtn', disabled: index < 0 || !turns.slice(index + 1).some(x => x.contentKey) ? '' : null,
-      onclick: () => stepTraceTurn(1) }, 'Next turn →'),
-    h('button', { class: 'hbtn', 'data-trace-focus': 'expand-all', onclick: e => {
-      t.expanded = !t.expanded; if (!t.expanded) t.outputs.clear(); refreshTrace(e.currentTarget);
-    } }, t.expanded ? 'Collapse all' : 'Expand all'),
-    h('button', { class: 'hbtn', onclick: () => stepTraceCall(-1) }, '[ previous call'),
-    h('button', { class: 'hbtn', onclick: () => stepTraceCall(1) }, '] next call'));
+    h('nav', { class: 'trace-nav', 'aria-label': 'Turn navigation' },
+      h('button', { class: 'hbtn', onclick: closeTrace }, 'Back to turns (Esc)'),
+      h('div', { class: 'trace-stepper' },
+        h('button', { class: 'hbtn', 'aria-label': 'Previous turn', disabled: index <= 0 || !turns.slice(0, index).some(x => x.contentKey) ? '' : null,
+          onclick: () => stepTraceTurn(-1) }, '← Previous'),
+        h('span', { class: 'trace-position' }, 'Turn ', h('b', null, String(index + 1)), ' of ' + turns.length),
+        h('button', { class: 'hbtn', 'aria-label': 'Next turn', disabled: index < 0 || !turns.slice(index + 1).some(x => x.contentKey) ? '' : null,
+          onclick: () => stepTraceTurn(1) }, 'Next →'))),
+    h('div', { class: 'trace-actions' },
+      h('div', { class: 'trace-call-nav', role: 'group', 'aria-label': 'Tool call navigation' },
+        h('button', { class: 'hbtn', title: 'Previous tool call ([)', onclick: () => stepTraceCall(-1) }, 'Previous call', h('kbd', null, '[')),
+        h('button', { class: 'hbtn', title: 'Next tool call (])', onclick: () => stepTraceCall(1) }, 'Next call', h('kbd', null, ']'))),
+      h('button', { class: 'hbtn', 'data-trace-focus': 'expand-all', onclick: e => {
+        t.expanded = !t.expanded;
+        if (!t.expanded) { t.inputs.clear(); t.outputs.clear(); }
+        refreshTrace(e.currentTarget);
+      } }, t.expanded ? 'Collapse all' : 'Expand all')));
   const body = h('div', { class: 'trace-body', 'aria-live': 'polite' }, header);
   if (!EXTRAS.records_reasoning) body.appendChild(h('div', { class: 'hint' }, "This harness doesn't record reasoning text."));
   if (t.loading || t.error || !t.events.length) {
@@ -2067,16 +2084,22 @@ function tracePane() {
   t.events.forEach((event, i) => {
     if (event.kind === 'tool') {
       const expanded = t.expanded || t.outputs.has(i);
+      const inputExpanded = t.expanded || t.inputs.has(i);
+      const params = Array.isArray(event.params) ? event.params : [];
       const call = h('section', { class: 'trace-call' + (t.selected === i ? ' selected' : ''),
         tabindex: '0', 'data-trace-call': i, 'aria-label': 'Tool call ' + (event.name || '(unknown)'),
         onclick: () => { t.selected = i; } },
-        h('h3', null, '▸ ' + (event.name || '(unknown)') + (event.status ? ' · ' + event.status : '')),
-        event.args ? traceBlock(event.args, t.expanded ? Infinity : TRACE_LIMITS.value) : null);
-      const params = Array.isArray(event.params) ? event.params : [];
-      params.slice(0, t.expanded ? params.length : TRACE_LIMITS.params).forEach(([key, value]) => {
-        call.appendChild(h('div', { class: 'trace-param' }, h('b', null, String(key) + ':'), traceBlock(value, t.expanded ? Infinity : TRACE_LIMITS.value)));
+        h('h3', null, '▸ ' + (event.name || '(unknown)') + (event.status ? ' · ' + event.status : '')));
+      if (event.args || params.length) {
+        call.appendChild(h('button', { class: 'hbtn', 'aria-expanded': String(inputExpanded), 'data-trace-focus': 'input-' + i,
+          onclick: e => { e.stopPropagation(); if (t.inputs.has(i)) t.inputs.delete(i); else t.inputs.add(i); t.selected = i; refreshTrace(e.currentTarget); },
+          disabled: t.expanded ? '' : null }, t.expanded ? 'Arguments · full' : inputExpanded ? 'Arguments · full · collapse' : 'Arguments · preview · expand'));
+      }
+      if (event.args) call.appendChild(traceBlock(event.args, inputExpanded ? Infinity : TRACE_LIMITS.value));
+      params.slice(0, inputExpanded ? params.length : TRACE_LIMITS.params).forEach(([key, value]) => {
+        call.appendChild(h('div', { class: 'trace-param' }, h('b', null, String(key) + ':'), traceBlock(value, inputExpanded ? Infinity : TRACE_LIMITS.value)));
       });
-      if (!t.expanded && params.length > TRACE_LIMITS.params) call.appendChild(h('div', { class: 'hint' }, '… ' + (params.length - TRACE_LIMITS.params) + ' more arguments'));
+      if (!inputExpanded && params.length > TRACE_LIMITS.params) call.appendChild(h('div', { class: 'hint' }, '… ' + (params.length - TRACE_LIMITS.params) + ' more arguments'));
       if (event.output || event.output_dropped) {
         call.appendChild(h('button', { class: 'hbtn', 'aria-expanded': String(expanded), 'data-trace-focus': 'output-' + i,
           onclick: e => { e.stopPropagation(); if (t.outputs.has(i)) t.outputs.delete(i); else t.outputs.add(i); t.selected = i; refreshTrace(e.currentTarget); },

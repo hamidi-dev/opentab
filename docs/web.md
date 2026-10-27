@@ -52,10 +52,13 @@ Open a prompt in **Turns**, then select a turn below its charts. **Subagents**
 execution details also list their own turns, including work done entirely in children.
 
 Traces start collapsed with the TUI's caps: 40 prose lines, 6 parameters, 10 lines
-per argument value and 6 output lines. Expand one output or use **Expand all**
-without losing your scroll position. **Previous turn** / **Next turn** at the top
+per argument value and 6 output lines. Each tool call has separate **Arguments**
+and **Output** expand controls, so you can reveal a full command and its parameters
+without expanding its output (or vice versa). Use these controls or **Expand all**
+without losing your scroll position. The grouped **Previous** / **Next** controls at the top
 step through the session's turns (or only the selected execution's turns), showing
 the current turn number; Back still returns to the originating turn list.
+The secondary toolbar holds tool-call navigation and **Expand all**.
 `[` / `]` select the previous/next tool call; `j` / `k` scroll the trace. **Back**, browser Back and `Esc`
 return to the owning turn list. Missing reasoning text is labeled explicitly.
 Remote sessions have no web trace transport and show an unavailable message.

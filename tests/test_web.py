@@ -3829,6 +3829,7 @@ def test_web_raw_trace_browser_caps_navigation_xss_and_stale_fetches():
     events[0]["text"] += "\n" + "\n".join("prose " + str(i) for i in range(45))
     events[-1]["args"] += "\n" + "\n".join("arg " + str(i) for i in range(12))
     events[-1]["params"] = [("param " + str(i), _RAW_XSS) for i in range(8)]
+    events[-1]["params"][0] = ("command", "\n".join("command line " + str(i) for i in range(13)))
     events.append({"kind": "tool", "name": "Second call", "status": "error", "output": "failure"})
     payload["sessionExtras"] = {"w1": {k: v for k, v in extras.items() if k != "sessionTraces"}}
     payload["sessionTraces"] = {"w1": extras["sessionTraces"]}
@@ -3869,7 +3870,7 @@ Node.prototype.replaceWith = function(node) {
   this.parent.children[index] = node; node.parent = this.parent;
 };
 function key(key) { listeners.keydown({key, preventDefault(){}, stopPropagation(){}}); }
-function button(text) { return all(view, 'button').find(n => n.textContent.includes(text)); }
+function button(text) { return all(view, 'button').find(n => n.textContent.includes(text) || (n.attrs['aria-label'] || '').includes(text)); }
 function click(text) { const b = button(text); assert.ok(b, text); b.events.click({currentTarget:b, stopPropagation(){}}); }
 assert.ok(traceBlock('x'.repeat(5000) + '\nsecond', 10).textContent.includes('second'));
 assert.ok(!traceBlock('x'.repeat(5000) + '\nsecond', 6, true).textContent.includes('second'));
@@ -3880,6 +3881,12 @@ document.querySelector = selector => all(view, 'section').find(n => selector ===
 TAB = 'Turns'; render(); TURN_DRILL = 0; render();
 all(view, 'tr').find(n => n.attrs['aria-label'] === 'Open trace for turn 1').events.click();
 assert.equal(TRACE.key, 'turn:0');
+const turnNav = all(view, 'nav').find(n => n.attrs['aria-label'] === 'Turn navigation');
+assert.ok(turnNav); assert.equal(turnNav.children[1].className, 'trace-stepper');
+assert.deepEqual(turnNav.children[1].children.map(n => n.textContent), ['← Previous', 'Turn 1 of 2', 'Next →']);
+const callNav = all(view, 'div').find(n => n.attrs['aria-label'] === 'Tool call navigation');
+assert.ok(callNav); assert.equal(callNav.parent.className, 'trace-actions');
+assert.equal(callNav.parent.children[1].textContent, 'Expand all');
 key('j'); key('k'); assert.deepEqual(scrolls, [56,-56]);
 assert.ok(view.textContent.includes("doesn't record reasoning text"));
 assert.ok(view.textContent.includes('Narration'));
@@ -3891,19 +3898,34 @@ assert.ok(!view.textContent.includes('prose 44'));
 assert.ok(!view.textContent.includes('param 7'));
 assert.ok(!view.textContent.includes('arg 11'));
 const beforeExpand = renderCount, originalPane = view.children[0];
-click('Output · preview'); assert.ok(view.textContent.includes('line 11'));
+click('Arguments · preview');
 assert.equal(renderCount, beforeExpand); assert.equal(view.children[0], originalPane);
+assert.equal(document.activeElement.attrs['data-trace-focus'], 'input-2');
+assert.equal(scrolls.at(-1), 0);
+assert.ok(view.textContent.includes('arg 11')); assert.ok(view.textContent.includes('param 7'));
+assert.ok(view.textContent.includes('command line 12'));
+assert.ok(!all(view, 'pre').some(n => n.textContent.includes('\nline 11'))); // Output stays collapsed.
+assert.equal(TRACE.outputs.size, 0); assert.ok(!view.textContent.includes('prose 44'));
+key('$'); assert.ok(view.textContent.includes('arg 11')); // Cost changes preserve input expansion.
+click('Arguments · full'); assert.ok(!view.textContent.includes('arg 11'));
+assert.ok(!view.textContent.includes('command line 12')); assert.ok(!view.textContent.includes('param 7'));
+const beforeOutputExpand = renderCount;
+click('Output · preview'); assert.ok(view.textContent.includes('line 11'));
+assert.equal(renderCount, beforeOutputExpand);
 assert.equal(document.activeElement.attrs['data-trace-focus'], 'output-2');
 assert.equal(scrolls.at(-1), 0); // The toggle keeps its viewport anchor.
 assert.ok(!view.textContent.includes('prose 44')); // One output expands independently.
+assert.ok(!view.textContent.includes('arg 11')); assert.ok(!view.textContent.includes('param 7'));
 const selected = TRACE;
 key('$'); assert.equal(TRACE, selected); assert.ok(view.textContent.includes('line 11'));
 click('Output · full'); assert.ok(!view.textContent.includes('line 11'));
 click('Output · preview');
+click('Arguments · preview');
 click('Expand all');
 assert.ok(view.textContent.includes('line 11')); assert.ok(view.textContent.includes('prose 44'));
 assert.ok(view.textContent.includes('param 7')); assert.ok(view.textContent.includes('arg 11'));
-click('Collapse all'); assert.equal(TRACE.outputs.size, 0);
+click('Collapse all'); assert.equal(TRACE.outputs.size, 0); assert.equal(TRACE.inputs.size, 0);
+assert.ok(!view.textContent.includes('arg 11')); assert.ok(!view.textContent.includes('param 7'));
 assert.ok(!view.textContent.includes('line 11')); TRACE.selected = null;
 key(']'); assert.equal(TRACE.selected, 2);
 assert.deepEqual(document.activeElement.scrolled, {block:'nearest'});
@@ -3915,7 +3937,7 @@ assert.equal(button('Previous turn').attrs.disabled, '');
 click('Next turn'); assert.equal(TRACE.key, 'turn:1');
 assert.ok(view.textContent.includes('Turn 2 of ' + EXTRAS.turns.length));
 assert.equal(history.entries.length, traceHistoryDepth); // Stepping doesn't bury the list in history.
-assert.equal(TRACE.outputs.size, 0); assert.equal(TRACE.expanded, false);
+assert.equal(TRACE.outputs.size, 0); assert.equal(TRACE.inputs.size, 0); assert.equal(TRACE.expanded, false);
 click('Previous turn'); assert.equal(TRACE.key, 'turn:0');
 const originalPrompt = EXTRAS.turns[1].promptId;
 EXTRAS.turns[1].promptId = 'different-prompt';
@@ -3962,8 +3984,12 @@ assert.equal(requests.length, 0); // Static root and child events work without a
   openTrace(EXTRAS.executions['1'].turns[0], 'ses_sub');
   const child = requests.at(-1);
   assert.equal(new URL('http://local' + child.url).searchParams.get('node'), 'ses_sub');
-  child.resolve({ok:true, json:() => Promise.resolve({events:[{kind:'text',text:'CHILD LIVE CONTENT'}]})});
+  child.resolve({ok:true, json:() => Promise.resolve({events:[{kind:'text',text:'CHILD LIVE CONTENT'},
+    {kind:'tool',name:'shell',params:[['command',Array.from({length:13}, (_,i) => 'child command ' + i).join('\n')]]}]})});
   await tick(); assert.ok(view.textContent.includes('CHILD LIVE CONTENT'));
+  assert.ok(!view.textContent.includes('child command 12'));
+  click('Arguments · preview'); assert.ok(view.textContent.includes('child command 12'));
+  assert.equal(TRACE.node, 'ses_sub');
   TAB = 'Overview'; render(); assert.equal(TRACE, null);
   TAB = 'Turns'; openTrace(EXTRAS.turns[0]);
   requests.at(-1).reject(new Error('/private/backend/path'));
