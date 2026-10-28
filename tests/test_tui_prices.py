@@ -3,7 +3,14 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import FakeStore, _model_row, _price_sort_app, app_with, workflow
+from tests._support import (
+    FakeStore,
+    _model_row,
+    _price_sort_app,
+    app_with,
+    card_prices,
+    workflow,
+)
 
 
 def test_price_refresh_is_nonblocking_single_flight_and_adopts_on_ui_thread():
@@ -604,7 +611,10 @@ def test_prices_enter_lists_sessions_that_used_the_model():
     assert "c" not in [w.id for w, _c, _t in sessions]  # c only used codex
     # The drill-in body lists those session titles (a's $5 ahead of b's $3), not gamma.
     body = app.renderer.price_session_lines("claude-opus-4-8", 80)
-    assert "2 session(s)" in body[0] and "$8.00" in body[0]
+    # The model card heads the drill-in, then a blank line and the session summary.
+    assert body[0].startswith("List rates") and "" in body
+    summary = body[body.index("") + 1]
+    assert "2 session(s)" in summary and "$8.00" in summary
     assert any("alpha" in ln for ln in body) and any("beta" in ln for ln in body)
     assert not any("gamma" in ln for ln in body)
     # Esc backs out to the model list; unbound keys are swallowed; q closes.
@@ -917,3 +927,77 @@ def test_trends_and_prices_stack_over_each_other_in_either_order():
     assert app.overlay_top == "prices"
     app.handle_key(None, 27)  # Esc closes the table, not the charts under it
     assert app.trends and not app.show_prices and app.overlay_top == "trends"
+
+
+def _card_app():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x", title="alpha")])
+    row = _model_row("alibaba/qwen-plus", 0.0, 3_000_000)
+    row["input"] = 3_000_000
+    row["pricing"] = [
+        {"context": 1000.0, "tok": [1e6, 0, 0, 0, 0, 0]},
+        {"context": 300_000.0, "tok": [1e6, 0, 0, 0, 0, 0]},
+        {"context": None, "tok": [1e6, 0, 0, 0, 0, 0]},
+    ]
+    app._model_by_root = {"a": [row]}
+    return app
+
+
+def test_prices_drill_in_heads_with_the_rows_model_card():
+    with card_prices():
+        app = _card_app()
+        app.handle_key(None, ord("P"))
+        (entry,) = app.priced_model_entries()
+        assert entry.card["tiers"] and "↑256k" in app.renderer.price_table_lines(120)[-1]
+        app.handle_key(None, 10)
+        assert app.prices_entry == entry
+        body = app.renderer.price_session_lines("qwen-plus", 120)
+        text = "\n".join(body)
+        assert body[0].startswith("List rates") and "reasoning 4.00" in body[0]
+        # 1M base (0.40) + 1M tiered (1.20) + 1M unknown at base (0.40) = $2.00.
+        assert "60% of your list cost ran at long-context rates" in text
+        assert "20% lacks request size" in text
+        assert "released 2024-01-25" in text and "open weights" in text
+        # The cheapest metered route: not Copilot (subscription) or a zero-rate card.
+        assert "Cheapest route  deepinfra" in text  # label and value never touch
+        assert any("alpha" in ln for ln in body)
+
+
+def test_cheapest_route_names_only_metered_routes_for_open_weights():
+    with card_prices():
+        app = _card_app()
+        app._model_by_root["a"].append(_model_row("openai/gpt-9", 0.0, 10))
+        by_name = {e.bare: e for e in app.priced_model_entries()}
+        route, eff, approx = app.price_cheapest_route(by_name["qwen-plus"])
+        # Not Copilot's subscription card (0.01) nor the zero-rate free route.
+        assert route == "deepinfra" and not approx and eff > 0
+        # Closed weights: deepinfra's cheaper gpt-9 card is resale, not advice.
+        assert app.price_cheapest_route(by_name["gpt-9"]) is None
+
+
+def test_whatif_catalog_offers_only_chat_models():
+    with card_prices():
+        app = _card_app()
+        names = [name for name, _eff, _approx in app.whatif_catalog_candidates()]
+        assert "openai/gpt-9" in names
+        assert not any("embedding" in name for name in names)
+
+
+def test_web_prices_payload_carries_the_same_card_exposure_and_route():
+    with card_prices():
+        app = _card_app()
+        app._models_loaded = True
+        prices = ot.build_payload(app)["prices"]
+        (row,) = prices["byModel"]
+        assert row["card"]["reasoning"] == 4.0 and row["card"]["open"] is True
+        assert row["card"]["tiers"] == [[256000, [1.2, 3.6, 0.24, 1.5], 12.0]]
+        assert row["tierShare"] == [1.2, 2.0, 0.4]
+        assert row["cheapest"][0] == "deepinfra"
+        # The slim catalog carries only the rate-shaping facts.
+        catalog = {(c["r"], c["m"]): c for c in prices["catalog"]}
+        assert catalog[("alibaba", "qwen-plus")]["rr"] == 4.0
+        assert catalog[("alibaba", "qwen-plus")]["t"][0][0] == 256000
+        assert catalog[("openai", "text-embedding-9")]["y"] == "embedding"
+        assert "released" not in catalog[("alibaba", "qwen-plus")]
+        whatif = ot.build_payload(app)["whatif"]
+        assert whatif["rates"]["alibaba/qwen-plus"][5] == 4.0
+        assert whatif["tiers"]["alibaba/qwen-plus"][0]["price"][5] == 12.0

@@ -134,6 +134,84 @@ def tier_prices():
         pricing.model_tiers.cache_clear()
 
 
+# models.dev-shaped cards for rate-card facts: a published reasoning rate (base and
+# tier), release/knowledge/output facts, a cheaper resale route, a free route, a Copilot
+# route and an embedding model. Shared by pricing, TUI, web and service regressions.
+CARD_CATALOG = {
+    "alibaba": {
+        "name": "Alibaba",
+        "models": {
+            "qwen-plus": {
+                "release_date": "2024-01-25",
+                "knowledge": "2024-04",
+                "open_weights": True,
+                "limit": {"context": 1_000_000, "output": 32768},
+                "cost": {
+                    "input": 0.4,
+                    "output": 1.2,
+                    "reasoning": 4,
+                    "cache_read": 0.08,
+                    "cache_write": 0.5,
+                    "tiers": [
+                        {
+                            "tier": {"type": "context", "size": 256000},
+                            "input": 1.2,
+                            "output": 3.6,
+                            "reasoning": 12,
+                            "cache_read": 0.24,
+                            "cache_write": 1.5,
+                        }
+                    ],
+                },
+            },
+            # Equal reasoning and output rates carry nothing worth keeping.
+            "qwen-flat": {"cost": {"input": 1, "output": 2, "reasoning": 2}},
+        },
+    },
+    "deepinfra": {
+        "models": {
+            "qwen-plus": {"cost": {"input": 0.2, "output": 0.6, "cache_read": 0.04}},
+            # A closed model far below its vendor's price: resale, never a recommendation.
+            "gpt-9": {"cost": {"input": 0.5, "output": 3, "cache_read": 0.05}},
+        }
+    },
+    "freeroute": {"models": {"qwen-plus": {"cost": {"input": 0, "output": 0}}}},
+    "github-copilot": {
+        "models": {"qwen-plus": {"cost": {"input": 0.01, "output": 0.01, "cache_read": 0.001}}}
+    },
+    "openai": {
+        "models": {
+            "text-embedding-9": {
+                "type": "embedding",
+                "limit": {"context": 8191, "output": 1536},
+                "cost": {"input": 0.02, "output": 0},
+            },
+            "gpt-9": {
+                "type": "chat",
+                "release_date": "2026-01",
+                "cost": {"input": 5, "output": 30, "cache_read": 0.5},
+            },
+        }
+    },
+}
+
+
+@contextmanager
+def card_prices():
+    """Install CARD_CATALOG as the only price layer, through the real prune/parse path."""
+    from opentab.accounting import pricing
+
+    layer = pricing._parse_catalog(
+        {"providers": pricing.prune_models_dev(CARD_CATALOG), "fetched_at": "2099"}
+    )
+    pricing.model_tiers.cache_clear()
+    try:
+        with patch.object(pricing, "_layers", return_value=[layer]):
+            yield layer
+    finally:
+        pricing.model_tiers.cache_clear()
+
+
 def workflow(
     id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/project", ended_at=""
 ):

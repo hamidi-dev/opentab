@@ -11,6 +11,7 @@ from opentab.accounting.pricing import (
     model_price,
     model_price_source,
     model_tiers,
+    reasoning_price,
 )
 from opentab.util import model_row_1h_write, model_row_split
 
@@ -302,9 +303,11 @@ def estimated_token_split(row: dict) -> tuple:
     return tuple(tokens)
 
 
-def row_cost_parts(row: dict, model: str | None = None, prefix: str = "") -> tuple:
-    name = model if model is not None else str(row.get("model_name") or "")
-    cost = [0.0] * 5
+def _sample_costs(row: dict, name: str, prefix: str = ""):
+    """Yield (rate band, context, per-type list cost) for each priceable request bucket.
+
+    The band is the tier threshold the request exceeded, or None at base rates.
+    """
     # Thousands of request contexts usually share only one or two rate bands.
     # Resolve aliases/catalog cards once per used band, not once per request.
     # Keep this memo local so price refreshes cannot leave stale dollar estimates.
@@ -316,20 +319,49 @@ def row_cost_parts(row: dict, model: str | None = None, prefix: str = "") -> tup
             continue
         band = next((size for size in thresholds if context is not None and context > size), None)
         if band not in rates:
-            rates[band] = model_price(name, context)
-        ir, out, cr, cw = rates[band]
+            rates[band] = (*model_price(name, context), reasoning_price(name, context))
+        ir, out, cr, cw, rr = rates[band]
         long = min(max(tok[5], 0.0), tok[4])
         if long and band not in long_rates:
             long_rates[band] = cache_write_1h_price(name, context)
-        values = (
-            tok[0] * ir,
-            tok[1] * out,
-            tok[2] * out,
-            tok[3] * cr,
-            (tok[4] - long) * cw + (long * long_rates[band] if long else 0),
+        yield (
+            band,
+            context,
+            (
+                tok[0] * ir / 1e6,
+                tok[1] * out / 1e6,
+                tok[2] * rr / 1e6,
+                tok[3] * cr / 1e6,
+                ((tok[4] - long) * cw + (long * long_rates[band] if long else 0)) / 1e6,
+            ),
         )
-        cost = [a + b / 1e6 for a, b in zip(cost, values)]
+
+
+def row_cost_parts(row: dict, model: str | None = None, prefix: str = "") -> tuple:
+    name = model if model is not None else str(row.get("model_name") or "")
+    cost = [0.0] * 5
+    for _band, _context, values in _sample_costs(row, name, prefix):
+        cost = [a + b for a, b in zip(cost, values)]
     return tuple(cost)
+
+
+def row_tier_split(row: dict, model: str | None = None) -> tuple[float, float, float]:
+    """(list cost at long-context rates, total list cost, list cost of unknown context).
+
+    Unknown-context buckets are priced at base rates like everywhere else; the third
+    value lets a caller say how much of the split is a lower bound.
+    """
+    name = model if model is not None else str(row.get("model_name") or "")
+    tiered = total = unknown = 0.0
+    has_tiers = bool(model_tiers(name))
+    for band, context, values in _sample_costs(row, name):
+        cost = sum(values)
+        total += cost
+        if band is not None:
+            tiered += cost
+        elif context is None and has_tiers:
+            unknown += cost
+    return tiered, total, unknown
 
 
 def row_list_cost(row: dict, model: str | None = None, prefix: str = "") -> float:

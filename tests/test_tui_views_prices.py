@@ -172,6 +172,14 @@ def test_boundary_widths_keep_core_tag_and_heat_as_separate_paint_operations():
                     )
 
 
+def test_one_long_catalog_name_keeps_the_tag_column_on_screen():
+    # A 60-character catalog name used to take the whole name column at 124 wide,
+    # pushing every route/tier tag past the edge; narrow screens keep the old names.
+    entries = [entry("x" * 60, 1.0), entry("claude-opus-4-8", 5.0)]
+    assert prices.name_width(entries, 124) + 2 + prices.PRICE_BLOCK_W + 2 + 16 <= 124
+    assert prices.name_width(entries, 80) >= len("claude-opus-4-8")
+
+
 def test_neutral_price_cells_keep_explicit_paint_positions_when_values_overflow():
     entries = [entry("a", 1_000_000), entry("b", 1_000_000)]
     result = layout(entries, width=100)
@@ -247,3 +255,70 @@ def test_session_text_builder_and_layout_leave_clipping_to_the_renderer():
     assert lines[2].endswith(long_title)
     assert result.rows[0] == lines[2]
     assert "…" not in lines[2]
+
+
+CardEntry = namedtuple(
+    "CardEntry",
+    "bare canon family routes spend group share price eff approx status pinned card",
+    defaults=("", False, None),
+)
+
+
+def card_entry(card, *, eff=2.0, routes=("alibaba",), status=""):
+    return CardEntry(
+        "qwen-plus", "qwen-plus", "qwen", routes, 0.0, "", 0.0,
+        (0.4, 1.2, 0.08, 0.5), eff, False, status, False, card,
+    )  # fmt: skip
+
+
+TIERED = {"tiers": [(256000, (1.2, 3.6, 0.24, 1.5), 12.0)], "reasoning": 4.0}
+
+
+def test_tier_tag_rides_in_every_views_tag_and_type_only_in_the_catalog():
+    assert prices.context_label(272000) == "272k" and prices.context_label(1_048_576) == "1.05M"
+    tiered = card_entry(TIERED)
+    assert prices.tier_tag(tiered) == "↑256k" and prices.tier_tag(card_entry(None)) == ""
+    assert prices.entry_tag(tiered, "flat") == "alibaba·↑256k"
+    assert prices.entry_tag(tiered, "provider") == "Qwen·↑256k"
+    embed = card_entry({"type": "embedding"}, status="beta")
+    assert prices.entry_tag(embed, "all") == "alibaba·beta·embedding"
+    assert prices.entry_tag(embed, "flat") == "alibaba"
+
+
+def test_card_lines_show_rates_tiers_exposure_facts_and_a_meaningfully_cheaper_route():
+    card = {
+        **TIERED,
+        "released": "2024-01-25",
+        "knowledge": "2024-04-30",
+        "max_output": 32768,
+        "open": True,
+    }
+    lines = prices.card_lines(
+        card_entry(card),
+        context_window=1_000_000,
+        exposure=(2.0, 8.0, 1.0),
+        cheapest=("deepinfra", 1.0, False),
+    )
+    text = "\n".join(lines)
+    assert lines[0].startswith("List rates") and "reasoning 4.00" in lines[0]
+    assert lines[1].startswith("Above 256k") and "reasoning 12.00" in lines[1]
+    assert "bills whole at the higher rates" in lines[2]
+    assert "25% of your list cost ran at long-context rates" in text
+    assert "12% lacks request size, priced at base (~)" in text
+    assert "released 2024-01-25 · knowledge 2024-04 · 1M context · 32.8k max output" in text
+    assert "open weights" in text
+    assert "deepinfra 1.00 eff $/M, 50% below this row at your mix" in text
+    unknown = prices.card_lines(card_entry(card), exposure=(0.0, 4.0, 4.0))
+    assert any("request sizes unknown" in ln for ln in unknown)
+    assert not any("0% of your list cost" in ln for ln in unknown)
+    # No tiers: no tier lines, and exposure is meaningless without them.
+    plain = prices.card_lines(card_entry({}), exposure=(0.0, 1.0, 0.0))
+    assert plain == [plain[0]] and "reasoning" not in plain[0]
+    # A known card without tiers says so, so a short card reads as flat, not missing.
+    flat = prices.card_lines(card_entry({"context": 1_000_000}))
+    assert flat[1].startswith("Long context") and "same rates at any request size" in flat[1]
+    # A route within rounding noise, or the row's own route, is not news.
+    for cheapest in (("deepinfra", 1.95, False), ("alibaba", 1.0, False)):
+        assert not any(
+            ln.startswith("Cheapest") for ln in prices.card_lines(card_entry({}), cheapest=cheapest)
+        )

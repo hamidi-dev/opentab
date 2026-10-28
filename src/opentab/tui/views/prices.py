@@ -24,7 +24,15 @@ PRICE_EFF_W = 9
 PRICE_USE_BAR = 5
 PRICE_USE_W = PRICE_USE_BAR + 4
 PRICE_BLOCK_W = PRICE_EFF_W + 2 + PRICE_USE_W + 2 + PRICE_COL_W * 4 + 3
+# Room kept for the route/tier tag once names have PRICE_NAME_KEEP_W: one long
+# catalog name must not push every tag offscreen.
+PRICE_TAG_MIN_W = 20
+PRICE_NAME_KEEP_W = 28
 ROUTE_ABBR = {"github-copilot": "copilot"}
+# Resale cards round differently; name a cheaper route only past this margin.
+CHEAPER_ROUTE_MARGIN = 0.05
+# Model-card label column: the longest label ("Cheapest route") plus two spaces.
+CARD_LABEL_W = 16
 
 
 class PriceSpan(NamedTuple):
@@ -94,7 +102,21 @@ def intro_lines(
             f"{cache_write:.1%} cacheW"
         )
         parts.append("~ = no cacheR rate")
+        parts.append("↑ = dearer above that context")
     return (" · ".join(parts), "")
+
+
+def context_label(size: int) -> str:
+    """Compact context threshold: 272k, 1M, 1.5M."""
+    if size >= 1_000_000:
+        return f"{size / 1_000_000:.3g}M"
+    return f"{size / 1000:.3g}k"
+
+
+def tier_tag(entry) -> str:
+    """The lowest context threshold that raises this row's rates, as ↑272k."""
+    tiers = (getattr(entry, "card", None) or {}).get("tiers") or ()
+    return f"↑{context_label(tiers[0][0])}" if tiers else ""
 
 
 def route_tag(routes: Iterable[str]) -> str:
@@ -170,7 +192,8 @@ def name_width(entries: Sequence, width: int) -> int:
     widest = max(
         len(entry.bare) + (2 if getattr(entry, "pinned", False) else 0) for entry in entries
     )
-    return min(widest, max(12, width - PRICE_BLOCK_W - 3))
+    room = width - PRICE_BLOCK_W - 3
+    return min(widest, max(12, room - PRICE_TAG_MIN_W, min(room, PRICE_NAME_KEEP_W)))
 
 
 def use_peak(entries: Sequence) -> float:
@@ -206,12 +229,87 @@ def group_label(group: str, view: str) -> str:
 
 def entry_tag(entry, view: str) -> str:
     if view == "provider":
-        return family_label(entry.family)
-    tag = route_tag(entry.routes)
-    status = getattr(entry, "status", "")
-    if status and view == "all":
-        tag = f"{tag}·{status}" if tag else status
-    return tag
+        parts = [family_label(entry.family)]
+    else:
+        parts = [route_tag(entry.routes)]
+        status = getattr(entry, "status", "")
+        if status and view == "all":
+            parts.append(status)
+        kind = (getattr(entry, "card", None) or {}).get("type")
+        if kind and view == "all":
+            parts.append(kind)
+    parts.append(tier_tag(entry))
+    return "·".join(part for part in parts if part)
+
+
+def _rates_text(rates: Sequence[float], reasoning: float | None) -> str:
+    input_rate, output_rate, cache_read, cache_write = rates
+    cache_read_text = "—" if cache_read <= 0 < input_rate else f"{cache_read:.2f}"
+    text = (
+        f"in {input_rate:.2f} · out {output_rate:.2f} · cacheR {cache_read_text} · "
+        f"cacheW {cache_write:.2f}"
+    )
+    if reasoning is not None and reasoning != output_rate:
+        text += f" · reasoning {reasoning:.2f}"
+    return text
+
+
+def card_lines(
+    entry,
+    *,
+    context_window: int | None = None,
+    exposure: tuple[float, float, float] | None = None,
+    cheapest: tuple[str, float, bool] | None = None,
+) -> list[str]:
+    """The drill-in's model card: rates, context tiers, your tier exposure, facts.
+
+    ``exposure`` is (long-context list cost, total list cost, unknown-context list
+    cost); ``cheapest`` is (provider, eff $/M, approx) at the same mix as eff $/M.
+    """
+    card = getattr(entry, "card", None) or {}
+    label = CARD_LABEL_W
+    lines = [f"{'List rates':<{label}}{_rates_text(entry.price, card.get('reasoning'))}  $/M"]
+    tiers = card.get("tiers") or ()
+    for size, rates, reasoning in tiers:
+        lines.append(f"{'Above ' + context_label(size):<{label}}{_rates_text(rates, reasoning)}")
+    if tiers:
+        lines.append(f"{'':<{label}}a request over the threshold bills whole at the higher rates")
+    elif card:
+        lines.append(f"{'Long context':<{label}}no surcharge: the same rates at any request size")
+    if tiers and exposure is not None:
+        tiered, total, unknown = exposure
+        if unknown >= total:
+            text = "request sizes unknown, so all of it is priced at base rates (~)"
+        else:
+            text = f"{tiered / total:.0%} of your list cost ran at long-context rates"
+            if unknown > 0:
+                text += f" · {unknown / total:.0%} lacks request size, priced at base (~)"
+        lines.append(f"{'Your use':<{label}}{text}")
+    facts = []
+    if card.get("released"):
+        facts.append(f"released {card['released']}")
+    if card.get("knowledge"):
+        facts.append(f"knowledge {card['knowledge'][:7]}")
+    window = card.get("context") or context_window
+    if window:
+        facts.append(f"{context_label(window)} context")
+    if card.get("max_output"):
+        facts.append(f"{context_label(card['max_output'])} max output")
+    if card.get("open"):
+        facts.append("open weights")
+    if card.get("type"):
+        facts.append(f"{card['type']} model")
+    if facts:
+        lines.append(f"{'Model':<{label}}{' · '.join(facts)}")
+    if cheapest is not None and entry.eff > 0:
+        route, eff, approx = cheapest
+        own = set(entry.routes)
+        if route not in own and eff < entry.eff * (1 - CHEAPER_ROUTE_MARGIN):
+            lines.append(
+                f"{'Cheapest route':<{label}}{route} {'~' if approx else ''}{eff:.2f} eff $/M, "
+                f"{1 - eff / entry.eff:.0%} below this row at your mix"
+            )
+    return lines
 
 
 def empty_message(query: str, view: str) -> str:

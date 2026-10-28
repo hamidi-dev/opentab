@@ -629,6 +629,14 @@ rankings and cache-penalty analysis substitute the input rate for a missing cach
 rate so absent metadata cannot make a model look free; API-equivalent totals and token
 economics keep the catalog's zero rate and flag it.
 
+Snapshot rows keep card facts beside the rates (`CARD_INFO_KEYS`): a `reasoning` rate
+only where it differs from output (tiers carry their own), release date, knowledge
+cutoff, maximum output, open weights, and `type` only for non-chat models.
+`reasoning_price()` follows the same card selection as `model_price()`, so per-request
+costs, token economics and `w` (both frontends) bill reasoning at it; a tier without its
+own reasoning rate uses the tier's output. `model_card_info()` and `catalog_card()`
+expose the facts for `P` and the programmatic model listings.
+
 Explicit context-tier tables win over legacy `context_over_200k`, which alone implies a
 200,000-token boundary. Numeric request-context buckets, not dollars, survive rollups,
 warm caches and machine exports, so a rate refresh reprices without rereading

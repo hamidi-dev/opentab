@@ -164,6 +164,7 @@ from opentab.accounting.pricing import (
     model_context_window,
     model_price,
     price_source_meta,
+    reasoning_price,
 )
 from opentab.presentation.formatting import (
     BAR_CELLS,
@@ -3720,7 +3721,8 @@ class Renderer:
             ir, orr, crr, cwr = model_price(name)
             if inp is None:
                 inp = max(0, tok - cr - cw - out - reasoning)
-            raw = (inp * ir, cr * crr, cw * cwr, out * orr, reasoning * orr)
+            rr = reasoning_price(name) if reasoning else orr
+            raw = (inp * ir, cr * crr, cw * cwr, out * orr, reasoning * rr)
         total = sum(raw)
         scale = cost / total if cost > 0 and total > 0 else 0.0
         return tuple(value * scale for value in raw)
@@ -5663,7 +5665,22 @@ class Renderer:
             stdscr, list_top, width - 1, layout.total_rows, visible, layout.scroll
         )
 
+    def price_card_lines(self) -> list[str]:
+        """The drilled row's model card, or nothing when the drill came from elsewhere."""
+        entry = self.app.prices_entry
+        if entry is None or entry.bare != self.app.prices_model:
+            return []
+        tiers = (entry.card or {}).get("tiers")
+        route = entry.group if self.app.prices_view == "provider" else None
+        return price_view.card_lines(
+            entry,
+            context_window=model_context_window(entry.bare),
+            exposure=self.app.price_tier_exposure(entry.canon, route) if tiers else None,
+            cheapest=self.app.price_cheapest_route(entry),
+        )
+
     def price_session_lines(self, model: str, width: int) -> list[str]:
+        card = self.price_card_lines()
         rows = [
             price_view.PriceSessionEntry(
                 workflow.created_at,
@@ -5673,7 +5690,8 @@ class Renderer:
             )
             for workflow, cost, tokens in self.price_model_sessions(model)
         ]
-        return price_view.session_lines(rows, model, self.src_col())
+        body = price_view.session_lines(rows, model, self.src_col())
+        return [*card, "", *body] if card else body
 
     def draw_price_sessions(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         # The P overlay's per-model drill-in (Enter on a model). The subtotal +
@@ -5697,6 +5715,21 @@ class Renderer:
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         top = y + 2
+        card = self.price_card_lines()
+        if card and bottom - top > len(card) + 4:
+            label_w = price_view.CARD_LABEL_W
+            for offset, line in enumerate(card):
+                label, rest = line[:label_w], line[label_w:]
+                self.write(
+                    stdscr,
+                    top + offset,
+                    2,
+                    shorten(label, inner_w),
+                    curses.color_pair(1) | curses.A_DIM,
+                )
+                if inner_w > label_w:
+                    self.write(stdscr, top + offset, 2 + label_w, shorten(rest, inner_w - label_w))
+            top += len(card) + 1
         rows = [
             price_view.PriceSessionEntry(
                 workflow.created_at,

@@ -5,11 +5,14 @@ import sqlite3
 import tempfile
 
 import opentab as ot
+from opentab.accounting.tiers import row_cost_parts, row_tier_split
 
 from tests._support import (
+    CARD_CATALOG,
     CopilotEstimateStore,
     _model_row,
     app_with,
+    card_prices,
     copilot_prices,
     tier_prices,
     workflow,
@@ -1220,6 +1223,7 @@ def test_parsed_catalog_cache_matches_a_fresh_parse_and_follows_its_content():
             cached = pricing._parse_catalog_bytes(raw, "fetched")
         for layer in (written, cached):
             assert list(layer) == list(fresh) and layer[0].tiers == fresh[0].tiers
+            assert layer[0].info == fresh[0].info
             assert isinstance(layer[0], pricing._Prices)
         # Same size, same mtime, different rate: content is the identity, not stat.
         edited = raw.replace(b"[1, 2, 3, 4]", b"[9, 2, 3, 4]")
@@ -1313,3 +1317,91 @@ def test_parser_digest_reads_the_source_through_the_module_loader():
             pricing._parser_digest()
             == _hashlib.sha1(b"parser source from inside a zip").hexdigest()
         )
+
+
+def test_catalog_keeps_reasoning_rates_and_card_facts_only_where_they_carry_information():
+    providers = ot.pricing.prune_models_dev(CARD_CATALOG)
+    plus = providers["alibaba"]["models"]["qwen-plus"]
+    assert plus["reasoning"] == 4.0 and plus["tiers"][0]["reasoning"] == 12.0
+    assert (plus["released"], plus["knowledge"], plus["max_output"]) == (
+        "2024-01-25",
+        "2024-04",
+        32768,
+    )
+    assert plus["open"] is True
+    # A reasoning rate equal to output, a chat type and closed weights add nothing.
+    assert "reasoning" not in providers["alibaba"]["models"]["qwen-flat"]
+    gpt = providers["openai"]["models"]["gpt-9"]
+    assert "type" not in gpt and "open" not in gpt and gpt["released"] == "2026-01"
+    assert providers["openai"]["models"]["text-embedding-9"]["type"] == "embedding"
+    # Malformed facts are dropped rather than trusted.
+    bad = ot.pricing.prune_models_dev(
+        {
+            "x": {
+                "models": {
+                    "m": {
+                        "release_date": "soon",
+                        "knowledge": 2024,
+                        "open_weights": "yes",
+                        "limit": {"output": True},
+                        "cost": {"input": 1, "output": 2, "reasoning": float("nan")},
+                    }
+                }
+            }
+        }
+    )
+    assert set(bad["x"]["models"]["m"]) == {"cost"}
+
+
+def test_reasoning_tokens_bill_at_a_published_reasoning_rate_including_its_tier():
+    with card_prices():
+        name = "alibaba/qwen-plus"
+        assert ot.pricing.reasoning_price(name) == 4.0
+        assert ot.pricing.reasoning_price(name, 300_000) == 12.0
+        assert ot.pricing.reasoning_price(name, 256_000) == 4.0  # strict boundary
+        # Cards without one bill reasoning at output, tiered or not.
+        assert ot.pricing.reasoning_price("openai/gpt-9") == 30.0
+        assert ot.pricing.reasoning_price("alibaba/qwen-flat") == 2.0
+        # One million reasoning tokens, everything else zero.
+        assert abs(ot.pricing.api_equivalent_cost(name, 0, 0, 1e6, 0, 0) - 4.0) < 1e-9
+        assert (
+            abs(
+                ot.pricing.api_equivalent_cost(name, 0, 0, 1e6, 0, 0, context_tokens=300_000) - 12.0
+            )
+            < 1e-9
+        )
+        row = {
+            "model_name": name,
+            "reasoning": 1e6,
+            "pricing": [
+                {"context": 1000.0, "tok": [0, 0, 5e5, 0, 0, 0]},
+                {"context": 300_000.0, "tok": [0, 0, 5e5, 0, 0, 0]},
+            ],
+        }
+        assert abs(row_cost_parts(row)[2] - (2.0 + 6.0)) < 1e-9
+
+
+def test_model_card_info_and_catalog_card_follow_the_resolved_route():
+    with card_prices():
+        info = ot.pricing.model_card_info("qwen-plus")
+        assert info["reasoning"] == 4.0 and info["open"] is True
+        assert info["tiers"] == [(256000, (1.2, 3.6, 0.24, 1.5), 12.0)]
+        assert ot.pricing.model_card_info("unknown-model-x") == {}
+        embed = ot.pricing.catalog_card("openai", "text-embedding-9")
+        assert embed["type"] == "embedding" and embed["context"] == 8191
+        assert ot.pricing.catalog_card("openai", "missing") == {}
+
+
+def test_row_tier_split_separates_long_context_and_unknown_context_spend():
+    with tier_prices() as name:
+        row = {
+            "model_name": name,
+            "input": 3e6,
+            "pricing": [
+                {"context": 1000.0, "tok": [1e6, 0, 0, 0, 0, 0]},
+                {"context": 300_000.0, "tok": [1e6, 0, 0, 0, 0, 0]},
+                {"context": None, "tok": [1e6, 0, 0, 0, 0, 0]},
+            ],
+        }
+        tiered, total, unknown = row_tier_split(row)
+        assert (tiered, total, unknown) == (8.0, 16.0, 4.0)

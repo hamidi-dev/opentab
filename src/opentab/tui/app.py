@@ -26,6 +26,7 @@ from opentab.accounting.tiers import (
     row_cost_parts,
     row_estimate_reasons,
     row_list_cost,
+    row_tier_split,
     unknown_tier_context,
 )
 from opentab.stores.opencode import Store
@@ -52,6 +53,7 @@ from opentab.accounting.pricing import (
     LOCAL_PROVIDERS,
     TOKEN_TYPES,
     canonical_model,
+    catalog_card,
     catalog_models,
     display_model,
     effective_price,
@@ -60,6 +62,7 @@ from opentab.accounting.pricing import (
     invalidate_price_cache,
     is_local_provider,
     is_vendor_route,
+    model_card_info,
     model_family,
     model_matches,
     model_price,
@@ -226,6 +229,14 @@ class PriceEntry(NamedTuple):
     approx: bool
     status: str = ""
     pinned: bool = False
+    # pricing.model_card_info()/catalog_card() of the displayed rates: tiers and facts.
+    card: dict | None = None
+
+
+# models.dev types that cannot stand in for a chat model in a `w` comparison.
+NON_CHAT_TYPES = frozenset(
+    {"embedding", "image", "video", "speech", "transcription", "reranking", "realtime"}
+)
 
 
 class BrowseMode(NamedTuple):
@@ -400,6 +411,13 @@ class App:
         # Defer the corpus-wide model scan until after the fast first frame.
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
         self._model_economics_cache: dict[int, tuple] = {}
+        # Per-row long-context split and the cheapest route per canonical model, both
+        # list-price projections dropped with the economics memo on reload/refresh.
+        self._tier_split_cache: dict[int, tuple] = {}
+        self._cheapest_routes: tuple | None = None
+        # (UI-state key, entries) for the P table: the models.dev view rebuilds ~7k
+        # rows, too slow to redo on every keypress and paint while j is held.
+        self._price_entries_memo: tuple | None = None
         self._models_loaded = False
         self._tool_by_session: dict[str, list[dict]] = {}
         self._turns_by_session: dict[str, list[dict]] = {}
@@ -591,6 +609,8 @@ class App:
         # Pins are route-scoped so one gateway never pins every reseller of a model.
         self.pinned_models: set[str] = set()
         self.prices_model: str | None = None
+        # The row Enter drilled into: its route and rate card head the drill-in.
+        self.prices_entry: PriceEntry | None = None
         self.prices_sort = "eff"
         self.prices_sort_reverse = False
         self.prices_view = "flat"
@@ -1663,6 +1683,9 @@ class App:
     @debug.timed("app.load_models")
     def _load_model_cache(self) -> None:
         self._model_economics_cache.clear()
+        self._tier_split_cache.clear()
+        self._cheapest_routes = None
+        self._price_entries_memo = None
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
         with debug.span("app.fetch_models") as info:
             rows = self.store.model_breakdown()
@@ -3466,6 +3489,8 @@ class App:
         for pid, mid, price, _status in catalog_models():
             if pid.lower() in LOCAL_PROVIDERS or (price[0] <= 0 and price[1] <= 0):
                 continue
+            if catalog_card(pid, mid).get("type") in NON_CHAT_TYPES:
+                continue
             bare = mid.rsplit("/", 1)[-1].lower()
             rank = (
                 is_vendor_route(pid, bare),
@@ -3908,6 +3933,9 @@ class App:
         tool_key = (selected["kind"], selected["name"]) if selected else None
         invalidate_price_cache()
         self._model_economics_cache.clear()
+        self._tier_split_cache.clear()
+        self._cheapest_routes = None
+        self._price_entries_memo = None
         self.renderer._turn_layout_cache = None
         self.renderer._trace_layout_cache = None
         self._whatif_catalog_rows = None
@@ -4670,18 +4698,42 @@ class App:
         return self._token_mix(self._priced_model_roots())
 
     @staticmethod
-    def _best_alias_price(aliases: dict[str, float]) -> tuple[float, float, float, float]:
+    def _best_alias_price(aliases: dict[str, float]) -> tuple[tuple, str]:
         # Prefer the most complete alias rate card; break ties by observed usage.
-        best, best_key = (0.0, 0.0, 0.0, 0.0), (-1, -1.0)
+        best, best_name, best_key = (0.0, 0.0, 0.0, 0.0), "", (-1, -1.0)
         for alias, tok in aliases.items():
-            for candidate in {alias, display_model(alias)}:
+            for candidate in sorted({alias, display_model(alias)}):
                 p = model_price(candidate)
                 key = (sum(1 for v in p if v > 0), tok)
                 if key > best_key:
-                    best, best_key = tuple(p), key
-        return best
+                    best, best_name, best_key = tuple(p), candidate, key
+        return best, best_name
 
     def priced_model_entries(self) -> list[PriceEntry]:
+        # Memoized on every input the rows read; model rows and rates drop the memo
+        # where they are rebuilt (_load_model_cache, the rate refresh).
+        key = (
+            self.prices_view,
+            self.query,
+            self.prices_sort,
+            self.prices_sort_reverse,
+            frozenset(self.pinned_models),
+            self.show_api_prices,
+            None if self.machine_filter is None else frozenset(self.machine_filter),
+            None if self.harness_filter is None else frozenset(self.harness_filter),
+            self.show_ignored_projects,
+            frozenset(self.ignored_sessions),
+            frozenset(self.ignored_projects),
+            len(self.loaded),
+        )
+        # Held by reference, not id(): a replaced list's id can be reused.
+        rows, loaded = self._model_by_root, self.loaded
+        memo = self._price_entries_memo
+        if memo is None or memo[0] != key or memo[1] is not rows or memo[2] is not loaded:
+            memo = self._price_entries_memo = (key, rows, loaded, self._build_price_entries())
+        return list(memo[3])
+
+    def _build_price_entries(self) -> list[PriceEntry]:
         # Flat/family views canonicalize aliases; provider view retains gateway pricing.
         # Local models have no API rate and remain outside this list-price reference.
         mix = self.price_token_mix()
@@ -4712,7 +4764,7 @@ class App:
                 d["aliases"][bare] += tok
         entries = []
         for (route, canon), d in raw.items():
-            price = self._best_alias_price(d["aliases"])
+            price, priced_as = self._best_alias_price(d["aliases"])
             eff, approx = effective_price(price, shares)
             routes_t = tuple(sorted(d["routes"]))
             entries.append(
@@ -4732,6 +4784,7 @@ class App:
                     eff=eff,
                     approx=approx,
                     pinned=self._is_pinned(canon, routes_t),
+                    card=model_card_info(priced_as),
                 )
             )
         return self._order_price_entries(self._filter_price_entries(entries))
@@ -4770,9 +4823,9 @@ class App:
             key = (sum(1 for v in price if v > 0), -len(mid))
             cur = best.get((pid, canon))
             if cur is None or key > cur[0]:
-                best[(pid, canon)] = (key, bare, canon, pid, price, status)
+                best[(pid, canon)] = (key, bare, canon, pid, price, status, mid)
         entries = []
-        for _key, bare, canon, pid, price, status in best.values():
+        for _key, bare, canon, pid, price, status, mid in best.values():
             u = usage.get(canon)
             eff, approx = effective_price(price, shares)
             entries.append(
@@ -4789,9 +4842,64 @@ class App:
                     approx=approx,
                     status=status,
                     pinned=self._is_pinned(canon, (pid,)),
+                    card=catalog_card(pid, mid),
                 )
             )
         return entries
+
+    def price_tier_exposure(self, canon: str, route: str | None = None) -> tuple | None:
+        """(long-context list cost, total list cost, unknown-context list cost) or None.
+
+        Scope matches the price table: all time, identity filters, local models excluded.
+        A route restricts to that access route (the provider view). Per-row splits are
+        memoized like model_row_economics and dropped on reload or a rate refresh.
+        """
+        tiered = total = unknown = 0.0
+        for rows in self._priced_model_roots().values():
+            for m in rows:
+                name = str(m.get("model_name") or "")
+                if is_local_provider(name) or canonical_model(name.rsplit("/", 1)[-1]) != canon:
+                    continue
+                if route is not None and (name.rsplit("/", 1)[0] if "/" in name else "") != route:
+                    continue
+                cached = self._tier_split_cache.get(id(m))
+                if cached is None or cached[0] is not m:
+                    cached = (m, row_tier_split(m))
+                    self._tier_split_cache[id(m)] = cached
+                t, a, u = cached[1]
+                tiered, total, unknown = tiered + t, total + a, unknown + u
+        return (tiered, total, unknown) if total > 0 else None
+
+    def price_cheapest_route(self, entry: PriceEntry) -> tuple[str, float, bool] | None:
+        """(provider, eff $/M, approx) of the cheapest metered route for an open model.
+
+        Ranked at the same token mix as eff $/M. Free (zero-rate) cards, local servers
+        and subscription routes such as Copilot are not purchasable per token. Closed
+        weights are sold legitimately only by their vendor and its clouds, so a far
+        cheaper "route" for one is grey-market resale, not advice: open weights only.
+        """
+        if not (entry.card or {}).get("open"):
+            return None
+        canon = entry.canon
+        mix = self.price_token_mix()
+        shares = mix[0] if mix else (1.0, 0.0, 0.0, 0.0)
+        if self._cheapest_routes is None or self._cheapest_routes[0] != shares:
+            best: dict[str, tuple[float, str, bool]] = {}
+            for pid, mid, price, _status in catalog_models():
+                if (
+                    pid.lower() in LOCAL_PROVIDERS
+                    or pid == "github-copilot"
+                    or price[0] <= 0
+                    or price[1] <= 0
+                ):
+                    continue
+                key = canonical_model(display_model(mid.rsplit("/", 1)[-1]))
+                eff, approx = effective_price(price, shares)
+                if key not in best or (eff, pid) < best[key][:2]:
+                    best[key] = (eff, pid, approx)
+            self._cheapest_routes = (shares, best)
+        hit = self._cheapest_routes[1].get(canon)
+        return (hit[1], hit[0], hit[2]) if hit else None
 
     def _order_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
         # Pins always float; grouped views rank groups by spend with Other last.
@@ -8748,9 +8856,10 @@ class App:
         elif act == "bottom":
             self.prices_index = max(0, n - 1)
         elif act == "select":
-            names = self.priced_model_names()
-            if names:
-                self.prices_model = names[max(0, min(self.prices_index, len(names) - 1))]
+            entries = self.priced_model_entries()
+            if entries:
+                self.prices_entry = entries[max(0, min(self.prices_index, len(entries) - 1))]
+                self.prices_model = self.prices_entry.bare
                 self.prices_scroll = 0
         elif act == "refresh":
             self.refresh_prices_action()  # keeps the overlay open

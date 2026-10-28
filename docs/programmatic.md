@@ -69,6 +69,12 @@ For `models list`, `--search` matches model names. With `--catalog` it browses t
 price list without opening sessions, and only `--search`, `--limit`, `--offset`,
 `--no-state` and `--pretty` apply.
 
+Each model row carries its `*_usd_per_mtok` rates, including `reasoning_usd_per_mtok`
+(the output rate unless the card publishes its own), and models.dev's card facts:
+`context_tiers` (rates above `above_context_tokens`, per request), `release_date`,
+`knowledge_cutoff`, `max_output_tokens`, `open_weights` and `model_type`. Facts the
+catalog lacks are `null`; `model_type` is `null` only for a model with no catalog card.
+
 ### Dates select whole sessions
 
 A range selects sessions by the day their **root session started**, and each one

@@ -214,10 +214,14 @@ def effective_price(
 
 
 # Both layers share one on-disk schema, {"source", "fetched_at", "providers":
-# {pid: {"name", "models": {mid: {"cost": [in, out, cr, cw], "status"?,
-# "limit"?}}}}}. Only explicit refreshes write the cache; normal runs stay offline.
+# {pid: {"name", "models": {mid: {"cost": [in, out, cr, cw], "status"?, "limit"?,
+# "tiers"?, **CARD_INFO_KEYS?}}}}}. Only explicit refreshes write the cache; normal
+# runs stay offline.
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODEL_STATUSES = ("alpha", "beta", "deprecated")
+# Card facts kept beside the rates. "reasoning" is a rate, present only where it differs
+# from output; "type" only for non-chat models; "open" only when the weights are open.
+CARD_INFO_KEYS = ("reasoning", "released", "knowledge", "max_output", "open", "type")
 # Parsed layer: prices, context limits, provider tree, metadata, vendor-route flags.
 _BUNDLED: tuple[dict, dict, dict, dict | None] | None = None
 _PRICE_CACHE: tuple[dict, dict, dict, dict | None] | None = None
@@ -251,7 +255,61 @@ def _catalog_entry(cost: dict, m: dict) -> dict | None:
     ctx = limit.get("context") if isinstance(limit, dict) else None
     if isinstance(ctx, (int, float)) and ctx > 0:
         entry["limit"] = int(ctx)
+    out_limit = limit.get("output") if isinstance(limit, dict) else None
+    entry.update(
+        _card_info(
+            {
+                "reasoning": _reasoning_rate(cost),
+                "released": m.get("release_date"),
+                "knowledge": m.get("knowledge"),
+                "max_output": out_limit,
+                "open": m.get("open_weights"),
+                "type": m.get("type"),
+            }
+        )
+    )
     return entry
+
+
+def _rate(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) and value >= 0 else None
+
+
+def _reasoning_rate(cost: dict) -> float | None:
+    """A published reasoning rate, kept only where it actually differs from output."""
+    rate, out = _rate(cost.get("reasoning")), _rate(cost.get("output"))
+    return rate if rate is not None and rate != out else None
+
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}(?:-\d{2})?$")
+
+
+def _card_info(raw: dict) -> dict:
+    """Validate card facts from either a models.dev model or a snapshot row."""
+    info: dict = {}
+    rate = _rate(raw.get("reasoning"))
+    if rate is not None:
+        info["reasoning"] = rate
+    for key in ("released", "knowledge"):
+        value = raw.get(key)
+        if isinstance(value, str) and _ISO_DATE.match(value):
+            info[key] = value
+    out = raw.get("max_output")
+    if (
+        isinstance(out, (int, float))
+        and not isinstance(out, bool)
+        and math.isfinite(out)
+        and out > 0
+    ):
+        info["max_output"] = int(out)
+    if raw.get("open") is True:
+        info["open"] = True
+    kind = raw.get("type")
+    if isinstance(kind, str) and kind and kind != "chat":
+        info["type"] = kind
+    return info
 
 
 def _context_tiers(cost: dict) -> list[dict]:
@@ -290,13 +348,18 @@ def _context_tiers(cost: dict) -> list[dict]:
                 for v in values
             ):
                 continue
-            tiers.setdefault(int(size), [float(v) for v in values])
+            # A tier without its own reasoning rate bills reasoning at the tier's output.
+            reasoning = _rate(item.get("reasoning"))
+            row = {"cost": [float(v) for v in values]}
+            if reasoning is not None and reasoning != row["cost"][1]:
+                row["reasoning"] = reasoning
+            tiers.setdefault(int(size), row)
     # Legacy metadata has a literal 200k boundary. Never insert that boundary when
     # an explicit table supplies a different one (e.g. OpenAI's 272k threshold).
     legacy = cost.get("context_over_200k")
     if not tiers and isinstance(legacy, dict):
         tiers = {
-            t["tier"]["size"]: t["cost"]
+            t["tier"]["size"]: {k: v for k, v in t.items() if k != "tier"}
             for t in _context_tiers(
                 {
                     **cost,
@@ -306,8 +369,7 @@ def _context_tiers(cost: dict) -> list[dict]:
             )
         }
     return [
-        {"tier": {"type": "context", "size": size}, "cost": values}
-        for size, values in sorted(tiers.items())
+        {"tier": {"type": "context", "size": size}, **row} for size, row in sorted(tiers.items())
     ]
 
 
@@ -372,11 +434,12 @@ def prune_models_dev(data: dict) -> dict:
 
 
 class _Prices(dict):
-    """Resolved rate cards and their matching tiers, indexed together once per layer."""
+    """Resolved rate cards, their tiers and card facts, indexed together once per layer."""
 
     def __init__(self):
         super().__init__()
         self.tiers = {}
+        self.info = {}
 
 
 def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
@@ -412,6 +475,8 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
                 limit = m.get("limit")
                 if isinstance(limit, (int, float)) and limit > 0:
                     entry["limit"] = int(limit)
+                info = _card_info(m)
+                entry.update(info)
                 kept[str(mid)] = entry
                 bare = str(mid).rsplit("/", 1)[-1].lower()
                 # Subscription-only zero cards must not shadow published metered rates.
@@ -420,6 +485,7 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
                 if bare not in rank or score > rank[bare]:
                     prices[bare], rank[bare] = row, score
                     prices.tiers[bare] = entry.get("tiers", [])
+                    prices.info[bare] = info
                     if "limit" in entry:
                         limits[bare] = entry["limit"]
                     else:
@@ -470,11 +536,9 @@ def _layer_shaped(layer) -> bool:
     # A decodable payload can still be the wrong structure; never adopt one.
     return (
         isinstance(layer, tuple)
-        and len(layer) == 6
-        and isinstance(layer[0], dict)
-        and isinstance(layer[1], dict)
-        and all(isinstance(layer[i], dict) for i in (2, 3, 5))
-        and (layer[4] is None or isinstance(layer[4], dict))
+        and len(layer) == 7
+        and all(isinstance(layer[i], dict) for i in (0, 1, 2, 3, 4, 6))
+        and (layer[5] is None or isinstance(layer[5], dict))
     )
 
 
@@ -517,15 +581,22 @@ def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
         if _layer_shaped(layer):
             out = _Prices()
             out.update(layer[0])
-            out.tiers = layer[1]
-            return (out, *layer[2:])
+            out.tiers, out.info = layer[1], layer[2]
+            return (out, *layer[3:])
     except (OSError, EOFError, ValueError, TypeError):
         pass
     parsed = _parse_catalog(_decode_catalog(raw))
     tmp = None
     try:
         os.makedirs(folder, exist_ok=True)
-        payload = marshal.dumps((dict(parsed[0]), getattr(parsed[0], "tiers", {}), *parsed[1:]))
+        payload = marshal.dumps(
+            (
+                dict(parsed[0]),
+                getattr(parsed[0], "tiers", {}),
+                getattr(parsed[0], "info", {}),
+                *parsed[1:],
+            )
+        )
         fd, tmp = tempfile.mkstemp(prefix="catalog.", dir=folder)
         with os.fdopen(fd, "wb") as fh:
             fh.write(hashlib.sha1(payload).digest() + payload)
@@ -603,9 +674,46 @@ def catalog_models() -> list[tuple[str, str, tuple[float, float, float, float], 
     return []
 
 
+# (provider tree, {(pid, mid): public card}): keyed on the tree object itself, so a
+# refreshed or swapped layer can never serve another catalog's cards.
+_CARD_INDEX: tuple | None = None
+
+
+def catalog_card(provider: str, model: str) -> dict:
+    """Tiers and card facts of one provider route, from the layer catalog_models() lists.
+
+    The returned dict is shared between callers; treat it as read-only.
+    """
+    global _CARD_INDEX
+    for _prices, _limits, tree, _meta, _vendor in _layers():
+        if tree:
+            if _CARD_INDEX is None or _CARD_INDEX[0] is not tree:
+                _CARD_INDEX = (tree, {})
+            index = _CARD_INDEX[1]
+            key = (provider, model)
+            if key not in index:
+                card = tree.get(provider, {}).get("models", {}).get(model)
+                index[key] = _public_card(model, card) if card else {}
+            return index[key]
+    return {}
+
+
+def _public_card(mid: str, card: dict) -> dict:
+    out = {k: card[k] for k in CARD_INFO_KEYS if k in card}
+    tiers = [
+        (t["tier"]["size"], _with_openai_cache_write(mid, tuple(t["cost"])), t.get("reasoning"))
+        for t in card.get("tiers", [])
+    ]
+    if tiers:
+        out["tiers"] = tiers
+    if card.get("limit"):
+        out["context"] = card["limit"]
+    return out
+
+
 def invalidate_price_cache() -> None:
-    global _PRICE_CACHE, _BUNDLED
-    _PRICE_CACHE = _BUNDLED = None
+    global _PRICE_CACHE, _BUNDLED, _CARD_INDEX
+    _PRICE_CACHE = _BUNDLED = _CARD_INDEX = None
     model_tiers.cache_clear()
 
 
@@ -721,18 +829,18 @@ def _vendor_spelling(mid: str, vendor: dict) -> str:
     return dashed if dashed != mid and vendor.get(dashed) and not vendor.get(mid) else mid
 
 
-@lru_cache(maxsize=8192)
-def model_tiers(name: str) -> tuple:
-    """Return the selected rate card's context tiers, with the same alias/route rules."""
+def _selected_card(name: str) -> tuple:
+    """(spelling, raw tiers, card facts) of the card model_price() resolves.
+
+    Mirrors _base_model_price's alias and route rules; () tiers and {} facts mean the
+    model fell through to a family or generic guess.
+    """
     if is_local_provider(name):
-        return ()
-    name = _mode_price_name(name)
+        return name, (), {}
     card = _copilot_card(name)
     if card is not None:
-        return tuple(
-            (t["tier"]["size"], _with_openai_cache_write(name, tuple(t["cost"])))
-            for t in card[0].get("tiers", [])
-        )
+        row = card[0]
+        return name, tuple(row.get("tiers", [])), {k: row[k] for k in CARD_INFO_KEYS if k in row}
     spelled = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     for prices, _limits, _tree, _meta, vendor in _layers():
         mid = _vendor_spelling(spelled, vendor)
@@ -749,11 +857,44 @@ def model_tiers(name: str) -> tuple:
                 selected, row = plain, alt
         if row is None:
             continue
-        return tuple(
-            (t["tier"]["size"], _with_openai_cache_write(mid, tuple(t["cost"])))
-            for t in getattr(prices, "tiers", {}).get(selected, [])
+        return (
+            mid,
+            tuple(getattr(prices, "tiers", {}).get(selected, [])),
+            dict(getattr(prices, "info", {}).get(selected, {})),
         )
-    return ()
+    return spelled, (), {}
+
+
+@lru_cache(maxsize=8192)
+def model_tiers(name: str) -> tuple:
+    """Return the selected rate card's context tiers, with the same alias/route rules."""
+    mid, tiers, _info = _selected_card(_mode_price_name(name))
+    return tuple(
+        (t["tier"]["size"], _with_openai_cache_write(mid, tuple(t["cost"]))) for t in tiers
+    )
+
+
+def reasoning_price(name: str, context_tokens: float | None = None) -> float:
+    """Reasoning tokens bill at output unless the selected card publishes its own rate.
+
+    A context tier without its own reasoning rate bills reasoning at the tier's output.
+    """
+    out = model_price(name, context_tokens)[1]
+    _mid, tiers, info = _selected_card(_mode_price_name(name))
+    if context_tokens is not None:
+        for t in reversed(tiers):
+            if context_tokens > t["tier"]["size"]:
+                return float(t.get("reasoning", out))
+    return float(info.get("reasoning", out))
+
+
+def model_card_info(name: str) -> dict:
+    """Card facts (CARD_INFO_KEYS) and context tiers of the card model_price() resolves.
+
+    Tiers are (threshold, rates, reasoning rate or None); empty for guessed prices.
+    """
+    mid, tiers, info = _selected_card(_mode_price_name(name))
+    return _public_card(mid, {**info, "tiers": list(tiers)})
 
 
 def _base_model_price(name: str) -> tuple[float, float, float, float]:
@@ -829,7 +970,7 @@ def model_context_window(name: str) -> int:
 
 
 # Argument-order labels. Input is the uncached residual, disjoint from cache reads/writes;
-# reasoning bills at output rates but remains visible as its own category.
+# reasoning bills at output rates (or a card's own reasoning rate) as its own category.
 TOKEN_TYPES = ("Uncached input", "Output", "Reasoning", "Cache read", "Cache write")
 
 
@@ -861,9 +1002,11 @@ def api_equivalent_cost(
     context_tokens: float | None = None,
 ) -> float:
     # ``cache_write_1h`` replaces the rate for a subset of total writes; it is not an
-    # additive sixth token type. Reasoning bills at the output rate.
+    # additive sixth token type. Reasoning bills at output unless the card says otherwise.
     ir, orr, crr, cwr = model_price(name, context_tokens)
-    cost = inp * ir + (out + reasoning) * orr + cache_read * crr
+    cost = inp * ir + out * orr + cache_read * crr
+    if reasoning:
+        cost += reasoning * reasoning_price(name, context_tokens)
     long = min(max(cache_write_1h, 0.0), cache_write)
     if long:
         cost += (cache_write - long) * cwr + long * cache_write_1h_price(name, context_tokens)

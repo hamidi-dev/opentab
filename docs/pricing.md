@@ -80,7 +80,8 @@ session's recorded tokens cost if one model had produced them all?
 | `Enter` | Select the target |
 
 Your used models are ranked by token usage. Catalog models are ranked by effective
-price at your overall token mix. If none of your models has a price, the catalog opens
+price at your overall token mix; embedding, image, speech and other non-chat models
+are left out. If none of your models has a price, the catalog opens
 directly. `w` works in demo mode and is never remembered between runs.
 
 Where it shows:
@@ -109,7 +110,7 @@ tokens while output accounts for most of the price.
 |------|-----------|
 | Uncached input | Input rate |
 | Output | Output rate |
-| Reasoning | Output rate; counted separately only when the harness records it apart from output |
+| Reasoning | Output rate, or the card's own reasoning rate where models.dev publishes one (some Qwen and DeepSeek routes); counted separately only when the harness records it apart from output |
 | Cache read | Cache-read rate |
 | Cache write | Cache-write rate ([lifetimes](#cache-write-lifetimes)) |
 
@@ -141,7 +142,9 @@ and marked `~` with an explanation in Token economics. That happens for summary-
 records, older exports, Codex deltas that span several requests, and VS Code chat.
 CSV/JSONL producers can supply `context_tokens` to avoid it.
 
-The `P` table shows **base rates**; tiers apply per request, not to monthly totals.
+The `P` table shows **base rates** with a `↑272k` tag on rows whose rates rise; tiers
+apply per request, not to monthly totals. `Enter` on a row lists each tier's rates and
+how much of your list cost ran at them ([model card](#the-model-card)).
 
 ### Cache-write lifetimes
 
@@ -206,7 +209,24 @@ Press `p` (or `h` / `l`, or click a tab) to switch:
 
 In the models.dev view the same model repeats across gateways on purpose: resale
 markups are the point. Your models keep their use bar on every route that sells them.
-Free and local models are left out, and a tag marks alpha, beta and deprecated models.
+Free and local models are left out, and a tag marks alpha, beta and deprecated models
+and non-chat ones such as `embedding`. In every view, `↑272k` marks rates that rise
+above that request context.
+
+### The model card
+
+`Enter` opens a row's sessions under a card with what models.dev knows about it:
+
+| Line | Shows |
+|------|-------|
+| **List rates** | The row's rates, plus a reasoning rate where the card publishes one that differs from output |
+| **Above 272k** | Each context tier's rates; a request over the threshold bills whole at them |
+| **Your use** | The share of your list cost that ran at long-context rates, and the share whose request size is unknown, which is priced at base |
+| **Model** | Release date, knowledge cutoff, context window, maximum output, open weights, model type |
+| **Cheapest route** | For open-weight models, a provider selling the same model at least 5% cheaper at your mix. Free cards, local servers and subscription routes such as Copilot don't count, and hosts can differ in quantization and limits. Closed models get no such line: a far cheaper route for one is grey-market resale |
+
+Lines without data are left out. Your use follows the table's scope: all time, the
+current identity filters, ignored sessions per `I`.
 
 ### Keys
 
@@ -214,7 +234,7 @@ Free and local models are left out, and a tag marks alpha, beta and deprecated m
 |-----|--------|
 | `j` / `k` | Select a row |
 | `Space` | Pin the row to a ★ shortlist shown first in every view; pinning a catalog row pins only that route. Remembered between runs |
-| `Enter` | Show the sessions that used the model, across routes and spellings |
+| `Enter` | Show the model card and the sessions that used the model, across routes and spellings |
 | `s` (or click a header) | Sort by model, eff, use or a rate |
 | `~` (or click the header again) | Reverse the sort |
 | `f` | Filter by model, vendor or route; matches word starts, so `opus48` and `snt45` work |
@@ -222,6 +242,9 @@ Free and local models are left out, and a tag marks alpha, beta and deprecated m
 | `p` / `h` / `l` | Switch views |
 
 The web browser has the same table on `P`, with clickable ☆/★ pins saved in the browser.
+Click a row to expand its model card. In the models.dev view the browser's card has
+rates, tiers and type only, because the facts for thousands of catalog rows would bloat
+every report.
 
 ## Refreshing rates
 
