@@ -223,7 +223,7 @@ above that request context.
 | **Above 272k** | Each context tier's rates; a request over the threshold bills whole at them |
 | **Your use** | The share of your list cost that ran at long-context rates, and the share whose request size is unknown, which is priced at base |
 | **Model** | Release date, knowledge cutoff, context window, maximum output, open weights, model type |
-| **Cheapest route** | For open-weight models, a provider selling the same model at least 5% cheaper at your mix. Free cards, local servers and subscription routes such as Copilot don't count, and hosts can differ in quantization and limits. Closed models get no such line: a far cheaper route for one is grey-market resale |
+| **Cheapest route** | For open-weight models, a provider selling the same model at least 5% cheaper at your mix, with your reasoning tokens billed at each provider's own reasoning rate. Free cards, local servers and subscription routes such as Copilot don't count, and hosts can differ in quantization and limits. Closed models get no such line: a far cheaper route for one is grey-market resale |
 
 Lines without data are left out. Your use follows the table's scope: all time, the
 current identity filters, ignored sessions per `I`.

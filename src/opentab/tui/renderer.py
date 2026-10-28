@@ -5667,9 +5667,12 @@ class Renderer:
 
     def price_card_lines(self) -> list[str]:
         """The drilled row's model card, or nothing when the drill came from elsewhere."""
-        entry = self.app.prices_entry
-        if entry is None or entry.bare != self.app.prices_model:
+        # The drill's own row, checked by the name it was opened under: a refresh may
+        # pick another alias spelling to represent the same rebuilt row.
+        captured = self.app.prices_entry
+        if captured is None or captured.bare != self.app.prices_model:
             return []
+        entry = self.app.drilled_price_entry() or captured
         tiers = (entry.card or {}).get("tiers")
         route = entry.group if self.app.prices_view == "provider" else None
         return price_view.card_lines(

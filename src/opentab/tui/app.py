@@ -235,6 +235,14 @@ class PriceEntry(NamedTuple):
 
 # Longest a held key is handled without a repaint (App._drain_repeats).
 REPEAT_DRAIN_S = 0.1
+# Cursor-follow requests the next paint consumes; a repeat never drains past a new one.
+FOLLOW_FLAGS = (
+    "_tool_follow",
+    "_change_follow",
+    "_turn_follow",
+    "_trace_call_follow",
+    "_subagent_follow",
+)
 
 # models.dev types that cannot stand in for a chat model in a `w` comparison.
 NON_CHAT_TYPES = frozenset(
@@ -4851,6 +4859,25 @@ class App:
             )
         return entries
 
+    def drilled_price_entry(self) -> PriceEntry | None:
+        """The drilled P row as the table shows it now.
+
+        A rate refresh or reload rebuilds the rows while the card is open; the card
+        must read the rebuilt row, not the one captured on Enter.
+        """
+        entry = self.prices_entry
+        if entry is None:
+            return None
+        same = [
+            e
+            for e in self.priced_model_entries()
+            if e.canon == entry.canon and e.group == entry.group
+        ]
+        exact = [e for e in same if e.routes == entry.routes]
+        if exact:
+            return exact[0]
+        return same[0] if len(same) == 1 else entry
+
     def price_tier_exposure(self, canon: str, route: str | None = None) -> tuple | None:
         """(long-context list cost, total list cost, unknown-context list cost) or None.
 
@@ -4874,20 +4901,42 @@ class App:
                 tiered, total, unknown = tiered + t, total + a, unknown + u
         return (tiered, total, unknown) if total > 0 else None
 
-    def price_cheapest_route(self, entry: PriceEntry) -> tuple[str, float, bool] | None:
-        """(provider, eff $/M, approx) of the cheapest metered route for an open model.
+    def _reasoning_fraction(self) -> float:
+        # Reasoning tokens' share of the output bucket at the P scope; _token_mix
+        # folds them into output, which hides a route's separate reasoning rate.
+        out = reasoning = 0.0
+        for rows in self._priced_model_roots().values():
+            for m in rows:
+                name = m.get("model_name")
+                if not name or is_local_provider(name):
+                    continue
+                _inp, o, r, _cr, _cw = model_row_split(m)
+                out += o + r
+                reasoning += r
+        return reasoning / out if out > 0 else 0.0
 
-        Ranked at the same token mix as eff $/M. Free (zero-rate) cards, local servers
-        and subscription routes such as Copilot are not purchasable per token. Closed
-        weights are sold legitimately only by their vendor and its clouds, so a far
-        cheaper "route" for one is grey-market resale, not advice: open weights only.
+    def price_cheapest_route(self, entry: PriceEntry) -> tuple[str, float, bool, float] | None:
+        """(provider, $/M, approx, this row's $/M) of the cheapest metered open route.
+
+        Ranked at the eff $/M token mix, with each card's own reasoning rate billing
+        the reasoning share of output (one route can sell output cheap and reasoning
+        dear), and the row is priced the same way for the comparison. Free (zero-rate)
+        cards, local servers and subscription routes such as Copilot are not
+        purchasable per token. Closed weights are sold legitimately only by their
+        vendor and its clouds, so a far cheaper "route" for one is grey-market resale,
+        not advice: open weights only.
         """
         if not (entry.card or {}).get("open"):
             return None
-        canon = entry.canon
         mix = self.price_token_mix()
         shares = mix[0] if mix else (1.0, 0.0, 0.0, 0.0)
-        if self._cheapest_routes is None or self._cheapest_routes[0] != shares:
+        frac = self._reasoning_fraction()
+
+        def cost(price: tuple, reasoning: float | None) -> tuple[float, bool]:
+            out = price[1] * (1 - frac) + (price[1] if reasoning is None else reasoning) * frac
+            return effective_price((price[0], out, price[2], price[3]), shares)
+
+        if self._cheapest_routes is None or self._cheapest_routes[0] != (shares, frac):
             best: dict[str, tuple[float, str, bool]] = {}
             for pid, mid, price, _status in catalog_models():
                 if (
@@ -4898,12 +4947,15 @@ class App:
                 ):
                     continue
                 key = canonical_model(display_model(mid.rsplit("/", 1)[-1]))
-                eff, approx = effective_price(price, shares)
+                eff, approx = cost(price, (catalog_card(pid, mid) or {}).get("reasoning"))
                 if key not in best or (eff, pid) < best[key][:2]:
                     best[key] = (eff, pid, approx)
-            self._cheapest_routes = (shares, best)
-        hit = self._cheapest_routes[1].get(canon)
-        return (hit[1], hit[0], hit[2]) if hit else None
+            self._cheapest_routes = ((shares, frac), best)
+        hit = self._cheapest_routes[1].get(entry.canon)
+        if hit is None:
+            return None
+        own = cost(tuple(entry.price), (entry.card or {}).get("reasoning"))[0]
+        return hit[1], hit[0], hit[2], own
 
     def _order_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
         # Pins always float; grouped views rank groups by spend with Other last.
@@ -7495,10 +7547,16 @@ class App:
                 key = self._read_key(stdscr, timeout_ms)
             if key == -1:
                 continue  # idle wake: check expiry and workers, then repaint
-            if not self.handle_key(stdscr, key) or not self._drain_repeats(stdscr, key):
+            follows = self._pending_follows()
+            if not self.handle_key(stdscr, key) or not self._drain_repeats(stdscr, key, follows):
                 break
 
-    def _drain_repeats(self, stdscr: curses.window, key: int | str) -> bool:
+    def _pending_follows(self) -> frozenset[str]:
+        return frozenset(flag for flag in FOLLOW_FLAGS if getattr(self, flag))
+
+    def _drain_repeats(
+        self, stdscr: curses.window, key: int | str, follows: frozenset[str] = frozenset()
+    ) -> bool:
         # A held key queues repeats faster than a frame paints, and the backlog kept
         # the cursor moving after release. Handle queued copies of the same key before
         # the next paint (still at least every REPEAT_DRAIN_S); any other key waits in
@@ -7512,7 +7570,11 @@ class App:
                 queued = self._read_key(stdscr, 0)
                 if queued == -1:
                     return True
-                if queued != key:
+                # A follow scroll this burst requested waits for the paint; a further
+                # repeat at the list's end would clear it with the cursor offscreen.
+                # `follows` were already pending before the key (a diff never
+                # consumes _change_follow), so they cannot stop the drain for good.
+                if queued != key or self._pending_follows() - follows:
                     self._pending_key = queued
                     return True
                 if not self.handle_key(stdscr, queued):

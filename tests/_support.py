@@ -175,6 +175,10 @@ CARD_CATALOG = {
             "gpt-9": {"cost": {"input": 0.5, "output": 3, "cache_read": 0.05}},
         }
     },
+    # Cheapest output, dearest reasoning: wins an output mix, loses a reasoning one.
+    "thinkdear": {
+        "models": {"qwen-plus": {"cost": {"input": 0.3, "output": 0.05, "reasoning": 50}}}
+    },
     "freeroute": {"models": {"qwen-plus": {"cost": {"input": 0, "output": 0}}}},
     "github-copilot": {
         "models": {"qwen-plus": {"cost": {"input": 0.01, "output": 0.01, "cache_read": 0.001}}}
