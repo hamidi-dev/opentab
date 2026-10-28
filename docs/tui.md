@@ -264,6 +264,9 @@ together. `get_wch` reads characters rather than UTF-8 bytes; `_read_key` return
 ASCII and special keys as integers, other characters as strings. Both forms go
 through action lookup, so non-ASCII keys can be bound as well as typed. Text
 prompts budget input length separately from visible width and scroll long input.
+A held key queues repeats faster than a frame paints; `_drain_repeats` handles
+queued copies of the same key before the next paint (at least every 100 ms), so
+motion stops on release. A different key or a click waits for that paint.
 
 Search uses `[search.edit]`, `[search]` and shared `[menu]` bindings. Its tabs,
 pickers, footer, help and mouse regions reuse existing renderers. Results splits
