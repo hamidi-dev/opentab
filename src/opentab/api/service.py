@@ -11,13 +11,16 @@ from opentab.accounting.models import API_SCHEMA_VERSION, SessionRef, Workflow
 from opentab.accounting.pricing import (
     cache_write_1h_price,
     canonical_model,
+    catalog_card,
     catalog_models,
     has_known_price,
     is_copilot_model,
     is_local_provider,
+    model_card_info,
     model_context_window,
     model_price,
     price_source_meta,
+    reasoning_price,
 )
 from opentab.accounting.tiers import (
     node_api_cost,
@@ -58,6 +61,28 @@ _TOKEN_FIELDS = (
     "cache_write_tokens",
     "cache_write_1h_tokens",
 )
+
+
+def _card_fields(card: dict) -> dict:
+    """Context tiers and models.dev card facts; absent facts are None, never guessed."""
+    return {
+        "context_tiers": [
+            {
+                "above_context_tokens": size,
+                "input_usd_per_mtok": rates[0],
+                "output_usd_per_mtok": rates[1],
+                "cache_read_usd_per_mtok": rates[2],
+                "cache_write_usd_per_mtok": rates[3],
+                "reasoning_usd_per_mtok": rates[1] if rr is None else rr,
+            }
+            for size, rates, rr in card.get("tiers", ())
+        ],
+        "release_date": card.get("released"),
+        "knowledge_cutoff": card.get("knowledge"),
+        "max_output_tokens": card.get("max_output"),
+        "open_weights": bool(card.get("open")),
+        "model_type": card.get("type", "chat") if card else None,
+    }
 
 
 class ServiceError(Exception):
@@ -1567,6 +1592,8 @@ class OpenTabService:
                     "cache_read_usd_per_mtok": price[2],
                     "cache_write_usd_per_mtok": price[3],
                     "cache_write_1h_usd_per_mtok": cache_write_1h_price(name),
+                    "reasoning_usd_per_mtok": reasoning_price(name),
+                    **_card_fields(model_card_info(name)),
                     "pinned": name in pinned_models or canonical_model(name) in pinned_models,
                 }
             )
@@ -1597,6 +1624,7 @@ class OpenTabService:
             name = f"{provider}/{model}"
             if search and search.lower() not in name.lower():
                 continue
+            card = catalog_card(provider, model)
             rows.append(
                 {
                     "model": name,
@@ -1605,6 +1633,8 @@ class OpenTabService:
                     "cache_read_usd_per_mtok": price[2],
                     "cache_write_usd_per_mtok": price[3],
                     "cache_write_1h_usd_per_mtok": cache_write_1h_price(name),
+                    "reasoning_usd_per_mtok": card.get("reasoning", price[1]),
+                    **_card_fields(card),
                     "status": status,
                     "pinned": name in pinned_models or canonical_model(name) in pinned_models,
                 }

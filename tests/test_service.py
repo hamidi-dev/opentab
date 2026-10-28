@@ -973,6 +973,14 @@ def test_model_catalog_static_path_matches_instance_api_with_state_and_paging():
                 "cache_read_usd_per_mtok": 0.5,
                 "cache_write_usd_per_mtok": 6.25,
                 "cache_write_1h_usd_per_mtok": 10.0,
+                "reasoning_usd_per_mtok": 25,
+                # A patched row has no catalog card: no tiers, no facts, nothing guessed.
+                "context_tiers": [],
+                "release_date": None,
+                "knowledge_cutoff": None,
+                "max_output_tokens": None,
+                "open_weights": False,
+                "model_type": None,
                 "status": "active",
                 "pinned": True,
             }

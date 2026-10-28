@@ -390,6 +390,12 @@ table.prices td{padding:4px 9px;text-align:right;white-space:nowrap;border-botto
 table.prices td.l{text-align:left;white-space:normal;overflow-wrap:anywhere}
 table.prices tr:last-child td{border-bottom:0}
 table.prices tr.grp td{color:var(--accent);font-weight:600;padding-top:9px;border-bottom:0}
+table.prices tr.pr-row{cursor:pointer}
+table.prices tr.pr-row:hover td,table.prices tr.pr-row.open td{background:var(--line2)}
+table.prices tr.pr-card td{text-align:left;white-space:normal;padding:6px 9px 10px 32px}
+table.prices tr.pr-card dl{display:grid;grid-template-columns:max-content 1fr;gap:3px 14px;margin:0;font-size:12px}
+table.prices tr.pr-card dt{color:var(--mut)}
+table.prices tr.pr-card dd{margin:0;color:var(--ink2)}
 table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .pr-use{display:inline-flex;align-items:center;gap:6px;justify-content:flex-end}
 .pr-use .hb{position:relative;width:64px;height:8px;background:var(--line2);border-radius:2px;overflow:hidden;display:inline-block}
@@ -736,7 +742,7 @@ let EXTRAS_REQUEST = 0;
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Projects', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null, drillTab: null, sort: 'cost', desc: true };
 const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider'], ['all', 'models.dev']];
-let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '' };
+let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '', expanded: null };
 // `w` affects only a session's Overview/tree and must remain independent of `$`.
 // It is deliberately transient: never localStorage and never the URL hash.
 let WHATIF = { model: null, open: false, q: '', i: 0, cat: false };
@@ -982,11 +988,12 @@ function modelMatches(q, model, routes, familyLabel) {
 // Mirror api_equivalent_cost exactly; the effective-price cache fallback does not apply.
 function whatifCost(tok, rates) {
   if (!tok || !rates) return 0;
-  const [inp, out, reason, cr, cw, cw1h] = tok, [ir, orr, crr, cwr, cwr1h] = rates;
+  const [inp, out, reason, cr, cw, cw1h] = tok, [ir, orr, crr, cwr, cwr1h, rr] = rates;
   // cw1h replaces a subset of cw at the long-TTL rate; it is never extra volume.
   const long = Math.min(Math.max(cw1h || 0, 0), cw || 0);
   const write = (cw - long) * cwr + long * (cwr1h || cwr);
-  return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6;
+  // Reasoning bills at output unless the card publishes its own rate (sixth slot).
+  return (inp * ir + out * orr + reason * (rr ?? orr) + cr * crr + write) / 1e6;
 }
 function requestRates(model, context) {
   let rates = WI_PRICE.get(model);
@@ -1088,11 +1095,11 @@ function tokenEconomics(ws, model) {
       b.tok.slice(0, 5).forEach((v, i) => { tokens[i] += v; });
       const p = requestRates(r.model, b.context);
       if (!p) return;
-      const [ir, orr, crr, cwr, cwr1h] = p, bt = b.tok;
+      const [ir, orr, crr, cwr, cwr1h, rr] = p, bt = b.tok;
       const long1h = Math.min(Math.max(bt[5] || 0, 0), bt[4] || 0);
       cost[0] += bt[0] * ir / 1e6;
       cost[1] += bt[1] * orr / 1e6;
-      cost[2] += bt[2] * orr / 1e6;
+      cost[2] += bt[2] * (rr ?? orr) / 1e6;
       cost[3] += bt[3] * crr / 1e6;
       cost[4] += ((bt[4] - long1h) * cwr + long1h * (cwr1h || cwr)) / 1e6;
       if (crr <= 0 && bt[3] > 0 && ir > 0) missingCache = true;
@@ -3566,7 +3573,11 @@ function catalogRows() {
       const [ir, orr, cr, cw] = c.p;
       const approx = cr <= 0 && ir > 0;
       const eff = mix[0] * ir + mix[1] * orr + mix[2] * (approx ? ir : cr) + mix[3] * cw;
-      return { model: c.m, familyLabel: '', routes: [c.r], spend: 0, share: c.u || 0, price: c.p, eff, approx, status: c.s || '' };
+      const card = {};
+      if (c.t) card.tiers = c.t;
+      if (c.rr != null) card.reasoning = c.rr;
+      if (c.y) card.type = c.y;
+      return { model: c.m, familyLabel: '', routes: [c.r], spend: 0, share: c.u || 0, price: c.p, eff, approx, status: c.s || '', card };
     });
   }
   return DATA.prices.catalogRows;
@@ -3581,7 +3592,52 @@ function priceIntro() {
     'eff $/M prices each model’s list rates at your token mix: ',
     h('b', null, p(m[0]) + ' input'), ' · ' + p(m[1]) + ' output · ' + p(m[2]) + ' cacheR · ' + p(m[3]) + ' cacheW',
     DATA.prices.mixTokens ? ' (' + hTok(DATA.prices.mixTokens) + ' tokens).' : '.',
-    ' models.dev snapshot: ' + ((DATA.meta.priceSource || {}).fetched_at || 'unavailable') + '. Copilot estimates use its route list prices.');
+    ' models.dev snapshot: ' + ((DATA.meta.priceSource || {}).fetched_at || 'unavailable') + '. Copilot estimates use its route list prices.',
+    ' ↑ marks rates that rise above a context size; click a row for its model card.');
+}
+// Mirrors views/prices.context_label: three significant digits, k below a million.
+const ctxLabel = n => n >= 1e6 ? +(n / 1e6).toPrecision(3) + 'M' : +(n / 1e3).toPrecision(3) + 'k';
+const tierTag = r => ((r.card || {}).tiers || []).length ? '↑' + ctxLabel(r.card.tiers[0][0]) : '';
+function ratesText(rates, rr) {
+  const [ir, orr, crr, cwr] = rates;
+  let t = 'in ' + ir.toFixed(2) + ' · out ' + orr.toFixed(2) + ' · cacheR ' + (crr <= 0 && ir > 0 ? '—' : crr.toFixed(2))
+    + ' · cacheW ' + cwr.toFixed(2);
+  if (rr != null && rr !== orr) t += ' · reasoning ' + rr.toFixed(2);
+  return t;
+}
+// The TUI drill-in's model card (views/prices.card_lines), as label/value rows.
+function priceCardRows(r) {
+  const card = r.card || {}, rows = [['List rates', ratesText(r.price, card.reasoning) + '  $/M']];
+  const tiers = card.tiers || [];
+  tiers.forEach(([size, rates, rr]) => rows.push(['Above ' + ctxLabel(size), ratesText(rates, rr)]));
+  if (tiers.length) rows.push(['', 'a request over the threshold bills whole at the higher rates']);
+  else if (Object.keys(card).length) rows.push(['Long context', 'no surcharge: the same rates at any request size']);
+  if (tiers.length && r.tierShare) {
+    const [tiered, total, unknown] = r.tierShare;
+    let t = 'request sizes unknown, so all of it is priced at base rates (~)';
+    if (unknown < total) {
+      t = Math.round(100 * tiered / total) + '% of your list cost ran at long-context rates';
+      if (unknown > 0) t += ' · ' + Math.round(100 * unknown / total) + '% lacks request size, priced at base (~)';
+    }
+    rows.push(['Your use', t]);
+  }
+  const facts = [];
+  if (card.released) facts.push('released ' + card.released);
+  if (card.knowledge) facts.push('knowledge ' + card.knowledge.slice(0, 7));
+  const win = card.context || r.context;
+  if (win) facts.push(ctxLabel(win) + ' context');
+  if (card.maxOutput) facts.push(ctxLabel(card.maxOutput) + ' max output');
+  if (card.open) facts.push('open weights');
+  if (card.type) facts.push(card.type + ' model');
+  if (facts.length) rows.push(['Model', facts.join(' · ')]);
+  if (r.cheapest && r.eff > 0) {
+    const [route, eff, approx] = r.cheapest;
+    if (!r.routes.includes(route) && eff < r.eff * 0.95) {
+      rows.push(['Cheapest route', route + ' ' + (approx ? '~' : '') + eff.toFixed(2) + ' eff $/M, '
+        + Math.round(100 * (1 - eff / r.eff)) + '% below this row at your mix']);
+    }
+  }
+  return rows;
 }
 function renderPrices() {
   const host = document.getElementById('prices');
@@ -3634,7 +3690,12 @@ function renderPrices() {
     const crCell = crr <= 0 && ir > 0 ? h('td', { class: 'mut' }, '—') : heatTd(crr, ranges[3], crr.toFixed(2));
     let tag = PRICES.view === 'provider' ? r.familyLabel : (r.routes.length ? r.routes.join(' ') : '');
     if (PRICES.view === 'all' && r.status) tag = tag ? tag + ' · ' + r.status : r.status;
-    body.push(h('tr', null,
+    if (PRICES.view === 'all' && (r.card || {}).type) tag = tag ? tag + ' · ' + r.card.type : r.card.type;
+    if (tierTag(r)) tag = tag ? tag + ' · ' + tierTag(r) : tierTag(r);
+    const rowKey = PRICES.view + ':' + r.routes.join(',') + ':' + r.model;
+    const open = PRICES.expanded === rowKey;
+    body.push(h('tr', { class: 'pr-row' + (open ? ' open' : ''), title: 'model card',
+      onclick: () => { PRICES.expanded = open ? null : rowKey; renderPrices(); } },
       h('td', { class: 'l' },
         h('span', { class: 'pin' + (pinnedRow ? ' on' : ''), title: pinnedRow ? 'unpin' : 'pin',
           onclick: ev => { ev.stopPropagation(); togglePin(r); renderPrices(); } }, pinnedRow ? '★' : '☆'),
@@ -3646,6 +3707,8 @@ function renderPrices() {
       heatTd(orr, ranges[2], orr.toFixed(2)),
       crCell,
       heatTd(cwr, ranges[4], cwr.toFixed(2))));
+    if (open) body.push(h('tr', { class: 'pr-card' }, h('td', { colspan: 7 },
+      h('dl', null, priceCardRows(r).flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])))));
   });
   if (cut) body.push(h('tr', { class: 'grp' }, h('td', { colspan: 7, class: 'mut' }, '… ' + cut.toLocaleString() + ' more — filter or sort to narrow')));
   const panel = h('div', { class: 'tr-panel' },

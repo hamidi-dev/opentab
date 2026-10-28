@@ -1817,7 +1817,7 @@ def test_whats_new_javascript_history_stops_at_bounds_and_requests_focus():
 def _js_whatif_cost(tok, rates):
     # The page's whatifCost(), transcribed: the client mirrors pricing.api_equivalent_cost
     # over a [input, output, reasoning, cacheRead, cacheWrite, cacheWrite1h] split, priced
-    # with (input, output, cacheRead, cacheWrite, cacheWrite1h). Written out here so the
+    # with (input, output, cacheRead, cacheWrite, cacheWrite1h, reasoning). Written out here so the
     # serialized numbers can be repriced exactly the way the page reprices them -- and so a
     # drift between the two formulas fails a test.
     #
@@ -1827,9 +1827,10 @@ def _js_whatif_cost(tok, rates):
     cw1h = tok[5] if len(tok) > 5 else 0
     ir, orr, crr, cwr = rates[:4]
     cwr1h = rates[4] if len(rates) > 4 else cwr
+    rr = rates[5] if len(rates) > 5 else orr
     long = min(max(cw1h, 0), cw)
     write = (cw - long) * cwr + long * cwr1h
-    return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6
+    return (inp * ir + out * orr + reason * rr + cr * crr + write) / 1e6
 
 
 def _js_whatif_totals(payload, session_id, target):
@@ -1867,13 +1868,16 @@ def test_web_payload_ships_the_whatif_ingredients():
     ]
     assert [m["tokens"] for m in models] == [2_000_000, 1_000_000]
     for m in models:
-        # Five rates, not four: the catalog's (input, output, cacheRead, cacheWrite) plus
-        # the DERIVED 1h-TTL write rate, which models.dev does not carry. whatifCost needs
-        # it to bill the `tok` split's long-write subset at the long-TTL price.
+        # Six rates, not four: the catalog's (input, output, cacheRead, cacheWrite), the
+        # DERIVED 1h-TTL write rate, which models.dev does not carry, and the reasoning
+        # rate (output unless the card publishes its own). whatifCost needs both to bill
+        # the `tok` split's long-write and reasoning subsets.
         assert m["price"] == [round(float(v), 6) for v in ot.model_price(m["model"])] + [
-            round(ot.cache_write_1h_price(m["model"]), 6)
+            round(ot.cache_write_1h_price(m["model"]), 6),
+            round(ot.reasoning_price(m["model"]), 6),
         ]
-        assert len(m["price"]) == 5 and m["price"][0] > 0
+        assert len(m["price"]) == 6 and m["price"][0] > 0
+        assert m["price"][5] == m["price"][1]  # Claude publishes no separate reasoning rate
         assert m["price"][4] == round(2.0 * m["price"][0], 6)  # 1h write == 2.00x input
     # ...and a rate card for every model used, armable or not: the baseline prices each
     # model's tokens at its own rates, so a model you cannot arm still has to be counted.
@@ -1890,8 +1894,9 @@ def test_web_payload_ships_the_whatif_catalog_tier():
     assert len(catalog) > 100  # the whole catalog, not just the two used models
     for c in catalog[:50]:
         assert c["p"] == [round(float(v), 6) for v in ot.model_price(c["m"])] + [
-            round(ot.cache_write_1h_price(c["m"]), 6)
-        ]  # the derived 1h-TTL write rate rides last, so arming a catalog row prices
+            round(ot.cache_write_1h_price(c["m"]), 6),
+            round(ot.reasoning_price(c["m"]), 6),
+        ]  # the derived 1h-TTL write and reasoning rates ride last, so arming a catalog row prices
         # long writes exactly the way arming a used model does
         assert set(c) == {"m", "p"}  # slim on purpose: ~1.5k rows ride in every payload
     # A catalog target the data never used still reprices client-side: whatifTotals
@@ -1944,7 +1949,7 @@ def test_web_whatif_baseline_is_the_exact_per_model_list_price():
     # The drift guard on the JS formula. Cache write is now split by TTL -- the 1h subset
     # by REPLACEMENT, so those tokens leave the 5m bucket instead of being billed twice.
     assert "const write = (cw - long) * cwr + long * (cwr1h || cwr);" in js
-    assert "return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6;" in js
+    assert "return (inp * ir + out * orr + reason * (rr ?? orr) + cr * crr + write) / 1e6;" in js
     assert "const long = Math.min(Math.max(cw1h || 0, 0), cw || 0);" in js
     # One shared reducer behind both panes (tree TOTAL + Overview summary), so they cannot
     # drift, and no per-node Δ column any more (a node's baseline isn't computable).
@@ -2524,7 +2529,7 @@ def _js_token_economics(payload, session_ids, model=None):
                 tokens[i] += v
             cost[0] += r["tok"][0] * ir / 1e6
             cost[1] += r["tok"][1] * orr / 1e6
-            cost[2] += r["tok"][2] * orr / 1e6
+            cost[2] += r["tok"][2] * (rate_row[5] if len(rate_row) > 5 else orr) / 1e6
             cost[3] += r["tok"][3] * crr / 1e6
             long1h = min(max(r["tok"][5] if len(r["tok"]) > 5 else 0, 0), r["tok"][4])
             cwr1h = rate_row[4] if len(rate_row) > 4 else cwr
@@ -2550,7 +2555,8 @@ def test_web_token_economics_matches_the_tui_split_exactly():
     # The pieces must stay pieces: summing them here would make the pane's TOTAL a second
     # implementation of the cost rather than a decomposition of the one on screen.
     assert "function tokenEconomics(" in js
-    assert "cost[2] += bt[2] * orr / 1e6" in js  # reasoning bills at the request's output rate
+    # Reasoning bills at the request's output rate unless the card publishes its own.
+    assert "cost[2] += bt[2] * (rr ?? orr) / 1e6" in js
     # A missing cache rate is flagged, never read as free reads (the TUI's rule).
     assert "if (crr <= 0 && bt[3] > 0 && ir > 0) missingCache = true;" in js
     assert "WI_LOCAL.has(r.model)" in js  # local models leave both rows

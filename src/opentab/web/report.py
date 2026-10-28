@@ -30,6 +30,7 @@ from opentab.accounting.pricing import (
     model_price,
     model_tiers,
     price_source_meta,
+    reasoning_price,
 )
 from opentab.accounting.tiers import (
     detail_api_cost,
@@ -132,10 +133,7 @@ def _whatif_payload(app: App) -> dict:
         for m in rows:
             name = str(m.get("model_name") or "")
             if name and name not in rates:
-                # The fifth rate prices the token split's 1h cache-write subset.
-                rates[name] = [round(float(v), 6) for v in model_price(name)] + [
-                    round(cache_write_1h_price(name), 6)
-                ]
+                rates[name] = _rate_card(name)
     # `unpriced` marks fallback-priced baselines as approximate. `catalog` reuses the
     # TUI's canonical ordering; `local` is excluded from both token-economics measures.
     return {
@@ -145,17 +143,13 @@ def _whatif_payload(app: App) -> dict:
         ],
         "local": sorted(name for name in rates if is_local_provider(name)),
         "catalog": [
-            {
-                "m": name,
-                "p": [round(float(v), 6) for v in model_price(name)]
-                + [round(cache_write_1h_price(name), 6)],
-            }
+            {"m": name, "p": _rate_card(name)}
             for name, _eff, _approx in app.whatif_catalog_candidates()
         ],
         "rates": rates,
         "tiers": {
             name: [
-                {"context": size, "price": list(price) + [cache_write_1h_price(name, size + 1)]}
+                {"context": size, "price": _rate_card(name, size + 1, price)}
                 for size, price in model_tiers(name)
             ]
             for name in set(rates) | {n for n, _eff, _approx in app.whatif_catalog_candidates()}
@@ -167,8 +161,50 @@ def _whatif_payload(app: App) -> dict:
     }
 
 
-def _price_entry(e) -> dict:
-    # A zero cache-read rate means missing data, never a discount.
+def _rate_card(name: str, context: float | None = None, price=None) -> list[float]:
+    # [in, out, cacheR, cacheW, 1h cacheW, reasoning]: the fifth rate prices the token
+    # split's 1h cache-write subset, the sixth its reasoning tokens.
+    price = model_price(name, context) if price is None else price
+    return [round(float(v), 6) for v in price] + [
+        round(cache_write_1h_price(name, context), 6),
+        round(reasoning_price(name, context), 6),
+    ]
+
+
+def _card_payload(card: dict | None) -> dict:
+    # Rates are rounded like every other payload price; absent facts stay absent.
+    card = card or {}
+    out = {
+        key: card[key]
+        for key in ("released", "knowledge", "open", "type", "context")
+        if key in card
+    }
+    if "max_output" in card:
+        out["maxOutput"] = card["max_output"]
+    if "reasoning" in card:
+        out["reasoning"] = round(float(card["reasoning"]), 6)
+    if card.get("tiers"):
+        out["tiers"] = [
+            [size, [round(float(v), 6) for v in rates], None if rr is None else round(float(rr), 6)]
+            for size, rates, rr in card["tiers"]
+        ]
+    return out
+
+
+def _price_entry(e, app: App | None = None, route: str | None = None) -> dict:
+    # A zero cache-read rate means missing data, never a discount. Exposure and the
+    # cheapest route are the App's own projections, so both frontends say the same.
+    extra: dict = {}
+    if app is not None:
+        if (e.card or {}).get("tiers"):
+            exposure = app.price_tier_exposure(e.canon, route)
+            if exposure is not None:
+                extra["tierShare"] = [_money6(v) for v in exposure]
+        cheapest = app.price_cheapest_route(e)
+        if cheapest is not None:
+            extra["cheapest"] = [cheapest[0], round(cheapest[1], 6), bool(cheapest[2])]
+        if not (e.card or {}).get("context"):
+            extra["context"] = model_context_window(e.bare)
     return {
         "model": e.bare,
         "canon": e.canon,
@@ -181,6 +217,8 @@ def _price_entry(e) -> dict:
         "eff": round(float(e.eff), 6),
         "approx": bool(e.approx),
         "status": getattr(e, "status", ""),
+        "card": _card_payload(e.card),
+        **extra,
     }
 
 
@@ -195,6 +233,11 @@ def _catalog_entry(e) -> dict:
         out["u"] = round(e.share, 6)
     if e.status:
         out["s"] = e.status
+    # Thousands of rows: only the rate-shaping facts travel (tiers, reasoning, type).
+    card = _card_payload(e.card)
+    for key, short in (("tiers", "t"), ("reasoning", "rr"), ("type", "y")):
+        if key in card:
+            out[short] = card[key]
     return out
 
 
@@ -206,9 +249,9 @@ def _prices_payload(app: App) -> dict:
     app.query = ""
     try:
         app.prices_view = "flat"
-        by_model = [_price_entry(e) for e in app.priced_model_entries()]
+        by_model = [_price_entry(e, app) for e in app.priced_model_entries()]
         app.prices_view = "provider"
-        by_route = [_price_entry(e) for e in app.priced_model_entries()]
+        by_route = [_price_entry(e, app, e.group) for e in app.priced_model_entries()]
         app.prices_view = "all"
         catalog = [_catalog_entry(e) for e in app.priced_model_entries()]
     finally:
