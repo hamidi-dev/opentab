@@ -202,7 +202,8 @@ def _price_entry(e, app: App | None = None, route: str | None = None) -> dict:
                 extra["tierShare"] = [_money6(v) for v in exposure]
         cheapest = app.price_cheapest_route(e)
         if cheapest is not None:
-            extra["cheapest"] = [cheapest[0], round(cheapest[1], 6), bool(cheapest[2])]
+            route, eff, approx, own = cheapest
+            extra["cheapest"] = [route, round(eff, 6), bool(approx), round(own, 6)]
         if not (e.card or {}).get("context"):
             extra["context"] = model_context_window(e.bare)
     return {

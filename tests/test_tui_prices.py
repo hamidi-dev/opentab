@@ -962,16 +962,49 @@ def test_prices_drill_in_heads_with_the_rows_model_card():
         assert any("alpha" in ln for ln in body)
 
 
+def test_open_card_follows_the_rebuilt_row_after_a_rate_refresh():
+    # A refresh landing while the card is open rebuilds the rows; the card must show
+    # the table's new rates, not the row captured on Enter.
+    with card_prices():
+        app = _card_app()
+        app.handle_key(None, ord("P"))
+        app.handle_key(None, 10)
+        app.prices_entry = app.prices_entry._replace(price=(9.0, 9.0, 9.0, 9.0))
+        text = "\n".join(app.renderer.price_card_lines())
+        assert "in 0.40 · out 1.20" in text and "9.00" not in text
+        # The refresh may elect another alias spelling for the same row: still its card.
+        app.prices_entry = app.prices_entry._replace(bare="qwen.plus")
+        app.prices_model = "qwen.plus"
+        assert "in 0.40 · out 1.20" in "\n".join(app.renderer.price_card_lines())
+
+
 def test_cheapest_route_names_only_metered_routes_for_open_weights():
     with card_prices():
         app = _card_app()
         app._model_by_root["a"].append(_model_row("openai/gpt-9", 0.0, 10))
         by_name = {e.bare: e for e in app.priced_model_entries()}
-        route, eff, approx = app.price_cheapest_route(by_name["qwen-plus"])
+        route, eff, approx, own = app.price_cheapest_route(by_name["qwen-plus"])
         # Not Copilot's subscription card (0.01) nor the zero-rate free route.
-        assert route == "deepinfra" and not approx and eff > 0
+        assert route == "deepinfra" and not approx and (eff, own) == (0.2, 0.4)
         # Closed weights: deepinfra's cheaper gpt-9 card is resale, not advice.
         assert app.price_cheapest_route(by_name["gpt-9"]) is None
+
+
+def test_cheapest_route_bills_reasoning_at_each_routes_reasoning_rate():
+    # The token mix folds reasoning into output; ranking on output alone would send a
+    # thinking-heavy user to the route that sells output cheap and reasoning dear.
+    with card_prices():
+        app = _card_app()
+        row = app._model_by_root["a"][0]
+        row.update(input=0, output=1_000_000, reasoning=0, tokens_total=1_000_000)
+        entry = next(e for e in app.priced_model_entries() if e.bare == "qwen-plus")
+        assert app.price_cheapest_route(entry) == ("thinkdear", 0.05, True, 1.2)
+        row.update(output=0, reasoning=1_000_000)
+        # Only the reasoning share changed: the route memo must notice by itself.
+        app._price_entries_memo = None
+        entry = next(e for e in app.priced_model_entries() if e.bare == "qwen-plus")
+        # deepinfra bills reasoning at its output rate; the row at alibaba's reasoning 4.
+        assert app.price_cheapest_route(entry) == ("deepinfra", 0.6, False, 4.0)
 
 
 def test_whatif_catalog_offers_only_chat_models():
@@ -991,7 +1024,8 @@ def test_web_prices_payload_carries_the_same_card_exposure_and_route():
         assert row["card"]["reasoning"] == 4.0 and row["card"]["open"] is True
         assert row["card"]["tiers"] == [[256000, [1.2, 3.6, 0.24, 1.5], 12.0]]
         assert row["tierShare"] == [1.2, 2.0, 0.4]
-        assert row["cheapest"][0] == "deepinfra"
+        # The route and this row, both costed with reasoning at each card's own rate.
+        assert row["cheapest"] == ["deepinfra", 0.2, False, 0.4]
         # The slim catalog carries only the rate-shaping facts.
         catalog = {(c["r"], c["m"]): c for c in prices["catalog"]}
         assert catalog[("alibaba", "qwen-plus")]["rr"] == 4.0

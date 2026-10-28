@@ -297,7 +297,7 @@ def test_card_lines_show_rates_tiers_exposure_facts_and_a_meaningfully_cheaper_r
         card_entry(card),
         context_window=1_000_000,
         exposure=(2.0, 8.0, 1.0),
-        cheapest=("deepinfra", 1.0, False),
+        cheapest=("deepinfra", 1.0, False, 2.0),
     )
     text = "\n".join(lines)
     assert lines[0].startswith("List rates") and "reasoning 4.00" in lines[0]
@@ -318,7 +318,7 @@ def test_card_lines_show_rates_tiers_exposure_facts_and_a_meaningfully_cheaper_r
     flat = prices.card_lines(card_entry({"context": 1_000_000}))
     assert flat[1].startswith("Long context") and "same rates at any request size" in flat[1]
     # A route within rounding noise, or the row's own route, is not news.
-    for cheapest in (("deepinfra", 1.95, False), ("alibaba", 1.0, False)):
+    for cheapest in (("deepinfra", 1.95, False, 2.0), ("alibaba", 1.0, False, 2.0)):
         assert not any(
             ln.startswith("Cheapest") for ln in prices.card_lines(card_entry({}), cheapest=cheapest)
         )

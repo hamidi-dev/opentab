@@ -259,12 +259,13 @@ def card_lines(
     *,
     context_window: int | None = None,
     exposure: tuple[float, float, float] | None = None,
-    cheapest: tuple[str, float, bool] | None = None,
+    cheapest: tuple[str, float, bool, float] | None = None,
 ) -> list[str]:
     """The drill-in's model card: rates, context tiers, your tier exposure, facts.
 
     ``exposure`` is (long-context list cost, total list cost, unknown-context list
-    cost); ``cheapest`` is (provider, eff $/M, approx) at the same mix as eff $/M.
+    cost); ``cheapest`` is (provider, $/M, approx, this row's $/M), both at the eff
+    $/M mix with reasoning billed at each card's reasoning rate.
     """
     card = getattr(entry, "card", None) or {}
     label = CARD_LABEL_W
@@ -301,13 +302,12 @@ def card_lines(
         facts.append(f"{card['type']} model")
     if facts:
         lines.append(f"{'Model':<{label}}{' · '.join(facts)}")
-    if cheapest is not None and entry.eff > 0:
-        route, eff, approx = cheapest
-        own = set(entry.routes)
-        if route not in own and eff < entry.eff * (1 - CHEAPER_ROUTE_MARGIN):
+    if cheapest is not None and cheapest[3] > 0:
+        route, eff, approx, row_eff = cheapest
+        if route not in entry.routes and eff < row_eff * (1 - CHEAPER_ROUTE_MARGIN):
             lines.append(
                 f"{'Cheapest route':<{label}}{route} {'~' if approx else ''}{eff:.2f} eff $/M, "
-                f"{1 - eff / entry.eff:.0%} below this row at your mix"
+                f"{1 - eff / row_eff:.0%} below this row at your mix"
             )
     return lines
 

@@ -3630,11 +3630,11 @@ function priceCardRows(r) {
   if (card.open) facts.push('open weights');
   if (card.type) facts.push(card.type + ' model');
   if (facts.length) rows.push(['Model', facts.join(' · ')]);
-  if (r.cheapest && r.eff > 0) {
-    const [route, eff, approx] = r.cheapest;
-    if (!r.routes.includes(route) && eff < r.eff * 0.95) {
+  if (r.cheapest && r.cheapest[3] > 0) {
+    const [route, eff, approx, own] = r.cheapest;
+    if (!r.routes.includes(route) && eff < own * 0.95) {
       rows.push(['Cheapest route', route + ' ' + (approx ? '~' : '') + eff.toFixed(2) + ' eff $/M, '
-        + Math.round(100 * (1 - eff / r.eff)) + '% below this row at your mix']);
+        + Math.round(100 * (1 - eff / own)) + '% below this row at your mix']);
     }
   }
   return rows;

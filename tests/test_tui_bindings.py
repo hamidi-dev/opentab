@@ -177,6 +177,28 @@ def test_held_key_repeats_are_handled_before_the_next_paint():
     assert app._drain_repeats(screen, ord("j"))
     assert handled == [ord("j")] * 3 and app._pending_key == ord("k") and not screen.events
     app._pending_key = None
+    # A one-shot cursor follow waits for its paint: at a list's end the next repeat
+    # would clear it and leave the cursor offscreen.
+    handled.clear()
+
+    def follow(_screen, key):
+        handled.append(key)
+        app._tool_follow = True
+        return True
+
+    app.handle_key = follow
+    screen = Input(["j", "j", "j"])
+    assert app._drain_repeats(screen, ord("j"))
+    assert handled == [ord("j")] and app._pending_key == ord("j") and screen.events == ["j"]
+    app._pending_key = None
+    # A follow already pending before the key (a diff never consumes _change_follow)
+    # cannot switch draining off for good.
+    handled.clear()
+    app.handle_key = lambda _screen, key: handled.append(key) or True
+    screen = Input(["j", "j"])
+    assert app._drain_repeats(screen, ord("j"), frozenset({"_tool_follow"}))
+    assert handled == [ord("j")] * 2 and app._pending_key is None
+    app._tool_follow = False
     # A click is never batched: its target comes from the painted layout.
     screen = Input([ot.curses.KEY_MOUSE])
     assert app._drain_repeats(screen, ot.curses.KEY_MOUSE) and screen.events
