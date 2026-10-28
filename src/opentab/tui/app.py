@@ -233,6 +233,9 @@ class PriceEntry(NamedTuple):
     card: dict | None = None
 
 
+# Longest a held key is handled without a repaint (App._drain_repeats).
+REPEAT_DRAIN_S = 0.1
+
 # models.dev types that cannot stand in for a chat model in a `w` comparison.
 NON_CHAT_TYPES = frozenset(
     {"embedding", "image", "video", "speech", "transcription", "reranking", "realtime"}
@@ -418,6 +421,7 @@ class App:
         # (UI-state key, entries) for the P table: the models.dev view rebuilds ~7k
         # rows, too slow to redo on every keypress and paint while j is held.
         self._price_entries_memo: tuple | None = None
+        self._pending_key: int | str | None = None
         self._models_loaded = False
         self._tool_by_session: dict[str, list[dict]] = {}
         self._turns_by_session: dict[str, list[dict]] = {}
@@ -7483,13 +7487,39 @@ class App:
             ):
                 self._announce_whats_new()
                 continue
-            timeout_ms = self._input_timeout_ms()
-            stdscr.timeout(timeout_ms)
-            key = self._read_key(stdscr, timeout_ms)
+            if self._pending_key is not None:
+                key, self._pending_key = self._pending_key, None
+            else:
+                timeout_ms = self._input_timeout_ms()
+                stdscr.timeout(timeout_ms)
+                key = self._read_key(stdscr, timeout_ms)
             if key == -1:
                 continue  # idle wake: check expiry and workers, then repaint
-            if not self.handle_key(stdscr, key):
+            if not self.handle_key(stdscr, key) or not self._drain_repeats(stdscr, key):
                 break
+
+    def _drain_repeats(self, stdscr: curses.window, key: int | str) -> bool:
+        # A held key queues repeats faster than a frame paints, and the backlog kept
+        # the cursor moving after release. Handle queued copies of the same key before
+        # the next paint (still at least every REPEAT_DRAIN_S); any other key waits in
+        # _pending_key for the paint, so a click never lands on an unpainted layout.
+        if key in (curses.KEY_MOUSE, curses.KEY_RESIZE):
+            return True
+        deadline = time.monotonic() + REPEAT_DRAIN_S
+        try:
+            while time.monotonic() < deadline:
+                stdscr.timeout(0)
+                queued = self._read_key(stdscr, 0)
+                if queued == -1:
+                    return True
+                if queued != key:
+                    self._pending_key = queued
+                    return True
+                if not self.handle_key(stdscr, queued):
+                    return False
+            return True
+        finally:
+            stdscr.timeout(self._input_timeout_ms())
 
     @staticmethod
     def _read_key(stdscr: curses.window, timeout_ms: int = -1) -> int | str:

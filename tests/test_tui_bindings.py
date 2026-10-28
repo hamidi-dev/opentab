@@ -3,6 +3,7 @@ import tempfile
 from unittest.mock import patch
 
 import opentab as ot
+from opentab.tui import app as tui_app
 from opentab.tui import bindings
 
 from tests._support import app_with, workflow
@@ -151,6 +152,39 @@ def test_shift_space_terminal_decoding_preserves_other_keys_and_input_timeout():
     for event, expected in ((" ", 32), ("界", "界"), (ot.curses.KEY_UP, ot.curses.KEY_UP)):
         assert ot.App._read_key(Input([event])) == expected
     assert ot.App._read_key(Input([])) == -1
+
+
+def test_held_key_repeats_are_handled_before_the_next_paint():
+    # Repeats queued while a frame paints are drained in one go, so the cursor stops
+    # when j is released; a different key waits for the paint instead.
+    class Input:
+        def __init__(self, events):
+            self.events = list(events)
+            self.delay = 500
+
+        def get_wch(self):
+            if not self.events:
+                raise ot.curses.error()
+            return self.events.pop(0)
+
+        def timeout(self, delay):
+            self.delay = delay
+
+    app = app_with([])
+    handled = []
+    app.handle_key = lambda _screen, key: handled.append(key) or True
+    screen = Input(["j", "j", "j", "k"])
+    assert app._drain_repeats(screen, ord("j"))
+    assert handled == [ord("j")] * 3 and app._pending_key == ord("k") and not screen.events
+    app._pending_key = None
+    # A click is never batched: its target comes from the painted layout.
+    screen = Input([ot.curses.KEY_MOUSE])
+    assert app._drain_repeats(screen, ot.curses.KEY_MOUSE) and screen.events
+    # The drain is bounded, so a key held forever still repaints.
+    screen = Input(["j"] * 10_000)
+    with patch.object(tui_app, "REPEAT_DRAIN_S", 0.0):
+        assert app._drain_repeats(screen, ord("j"))
+    assert len(screen.events) == 10_000
 
 
 def test_every_default_conf_roundtrip_is_silent_and_identical():
