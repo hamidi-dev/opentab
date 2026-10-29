@@ -659,6 +659,25 @@ def test_model_price_uses_embedded_table_without_cache():
                 os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
+def test_read_only_catalogs_use_the_parse_cache_without_adding_to_it():
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    catalog = {"providers": {"anthropic": {"models": {"claude-x": {"cost": [1, 2, 3, 4]}}}}}
+    raw = json.dumps(catalog).encode()
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CACHE_HOME": tmp}):
+        with pricing.read_only_catalogs():
+            assert pricing._parse_catalog_bytes(raw, "fetched")[0]["claude-x"][0] == 1.0
+        assert os.listdir(tmp) == []
+        written = pricing._parse_catalog_bytes(raw, "fetched")
+        assert os.listdir(os.path.join(tmp, "opentab", "catalog"))
+        with pricing.read_only_catalogs(), patch.object(
+            pricing, "_parse_catalog", side_effect=AssertionError("served from the cache")
+        ):
+            assert pricing._parse_catalog_bytes(raw, "fetched")[0] == written[0]
+
+
 def test_bundled_catalog_is_the_offline_price_source():
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")

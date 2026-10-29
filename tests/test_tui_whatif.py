@@ -431,15 +431,15 @@ def test_whatif_target_is_not_tagged_into_the_header():
         app.can_switch_source = lambda: False  # the bare test Args carries no source flags
         screen, footer = _Scr(24, 130), _Scr(24, 130)
         # color_pair()/init_pair()/ACS_* need a live initscr(); stub them for headless.
-        orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
-        ot.curses.color_pair = lambda n: 0
-        ot.curses.init_pair = lambda *a: None
-        ot.curses.ACS_HLINE = getattr(ot.curses, "ACS_HLINE", ord("-"))
-        try:
+        with patch.multiple(
+            ot.curses,
+            create=True,
+            color_pair=lambda n: 0,
+            init_pair=lambda *a: None,
+            ACS_HLINE=ord("-"),
+        ):
             app.renderer.draw_header(screen, 130)
             app.renderer.draw_footer(footer, 24, 130)
-        finally:
-            ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
         header = screen_text(screen).splitlines()[0]
         assert "WHAT-IF" not in header and "opus" not in header
         assert ot.money(1.94) in header  # still the actual spend

@@ -645,6 +645,7 @@ def test_herdr_splits_require_the_current_pane_id():
                     == "HERDR_PANE_ID is required for Herdr splits"
                 )
     finally:
+        os.environ.pop("HERDR_PANE_ID", None)
         if old_pane is not None:
             os.environ["HERDR_PANE_ID"] = old_pane
 

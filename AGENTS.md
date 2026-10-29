@@ -49,6 +49,7 @@ relevant topic, not the entire documentation tree:
 pip install -e .
 python3 run_tests.py                     # custom stdlib runner, not pytest
 python3 run_tests.py pricing             # module/test substring filter
+python3 run_tests.py -j 1 pricing        # in-process and in order, for pdb
 ruff check src/opentab tests run_tests.py
 ruff format --check src/opentab tests run_tests.py
 python3 -m compileall -q src/opentab
@@ -57,6 +58,8 @@ python3 -m opentab --demo
 
 Tests belong to the module they exercise; shared builders live in
 `tests/_support.py`. `tests/__init__.py` isolates all XDG roots before imports.
+Tests run on parallel workers in no fixed order: no test may rely on another's files
+or globals.
 Do not wrap fixed-width TUI strings to satisfy line length (`E501` is ignored).
 Check both frontends when changing a feature they share.
 

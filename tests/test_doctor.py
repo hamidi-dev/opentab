@@ -935,6 +935,7 @@ def test_the_report_creates_nothing():
     # doctor must do neither, or the report describes the state it just made rather than
     # the one that produced the bug.
     with tempfile.TemporaryDirectory() as tmp, _clean_env(), _xdg_roots(tmp) as roots:
+        ot.invalidate_price_cache()  # In memory it would skip the parse that gets cached.
         with contextlib.redirect_stdout(io.StringIO()):
             doctor.doctor_command(_args(tmp))
         assert not any(os.path.exists(p) for p in roots.values())
