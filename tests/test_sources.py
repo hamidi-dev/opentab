@@ -386,8 +386,13 @@ def test_a_db_that_is_not_opencodes_exits_cleanly_instead_of_a_sqlite_traceback(
         w.commit()
         w.execute("begin exclusive")
         w.execute("insert into session values ('s1', null, 1780000000000)")
+        real_connect = sqlite3.connect
         try:
-            kind, msg = ot.sources.opencode_db_verdict(locked)
+            # Without SQLite's default 5s busy wait: the verdict is what is under test.
+            with patch.object(
+                ot.sources.sqlite3, "connect", lambda *a, **k: real_connect(*a, timeout=0, **k)
+            ):
+                kind, msg = ot.sources.opencode_db_verdict(locked)
             assert kind == "unreadable" and "could not be read" in msg
         finally:
             w.rollback()

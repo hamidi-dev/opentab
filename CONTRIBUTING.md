@@ -37,9 +37,16 @@ per-backend builders in `tests/_support.py`. `run_tests.py` is a custom runner (
 pytest); `tests/__init__.py` prepends `src/` to `sys.path`, so it works without an install:
 
 ```sh
-python3 run_tests.py             # whole suite
+python3 run_tests.py             # whole suite, one worker per CPU
 python3 run_tests.py pricing     # only modules/tests matching a substring
+python3 run_tests.py -j 1 pricing  # in this process, in order (pdb, print debugging)
 ```
+
+Workers are fresh interpreters that pull tests from a queue, so a test can land in any
+worker after any other. Set up what a test needs and restore what it changes: never
+rely on an earlier test's files or globals. A `FAIL` prints the test's own stdout and
+stderr after its traceback; the output of passing tests is dropped. A worker that dies
+fails the test it was running, and the rest of the suite still runs.
 
 Measure Python line and branch coverage with the same runner (install the
 development tools with `pip install -e '.[dev]'`):
@@ -53,7 +60,8 @@ python3 -m coverage html         # open htmlcov/index.html for missed lines/bran
 
 The denominator includes every module under `src/opentab`, including unimported
 modules. The report measures Python execution in the test process, not JavaScript
-or child interpreters; browser regressions still run as part of the suite. Do not
+or child interpreters, so the runner stays in-process under coverage unless `-j` says
+otherwise; browser regressions still run as part of the suite. Do not
 exclude difficult code or weaken assertions just to increase the percentage.
 
 With Node.js on `PATH`, the suite also executes the browser navigation regression

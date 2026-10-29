@@ -994,6 +994,7 @@ def env_rows(full: bool = False) -> list[Row]:
     return rows or [Row(INFO, "(none set)", "no opentab environment variable is in effect")]
 
 
+@pricing.read_only_catalogs()
 def build_report(args: argparse.Namespace, full: bool = False) -> list:
     return [
         (

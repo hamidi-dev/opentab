@@ -9,7 +9,8 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -514,6 +515,7 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
 
 
 _PARSER_DIGEST: str | None = None
+_PARSE_CACHE_WRITES = True
 
 
 def _parser_digest() -> str:
@@ -546,6 +548,17 @@ def _decode_catalog(raw: bytes):
     # Strict UTF-8 text, as the old text-mode reads were: json.loads(bytes) would also
     # accept a BOM or UTF-16, turning a catalog that used to be rejected into rates.
     return json.loads(raw.decode("utf-8"))
+
+
+@contextmanager
+def read_only_catalogs() -> Iterator[None]:
+    """Serve parsed catalogs from the marshal cache without adding to it."""
+    global _PARSE_CACHE_WRITES
+    saved, _PARSE_CACHE_WRITES = _PARSE_CACHE_WRITES, False
+    try:
+        yield
+    finally:
+        _PARSE_CACHE_WRITES = saved
 
 
 def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
@@ -586,6 +599,8 @@ def _parse_catalog_bytes(raw: bytes, kind: str) -> tuple:
     except (OSError, EOFError, ValueError, TypeError):
         pass
     parsed = _parse_catalog(_decode_catalog(raw))
+    if not _PARSE_CACHE_WRITES:
+        return parsed
     tmp = None
     try:
         os.makedirs(folder, exist_ok=True)

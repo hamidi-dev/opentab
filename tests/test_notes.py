@@ -10,6 +10,14 @@ import opentab.persistence.notes as notes_module
 from tests._support import FakeScreen, _app_on_session, app_with, box_cells, workflow
 
 
+def _hand_write_notes(text):
+    # What an editor or a crash leaves behind, with no earlier save to make the folder.
+    path = ot.notes_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text)
+
+
 def test_note_saves_to_its_own_file_and_survives_a_restart():
     # A note is the one thing opentab persists that it cannot rebuild, so it gets
     # its own file (not state.json) and is written on the edit, not at quit.
@@ -199,8 +207,7 @@ def test_note_save_keeps_entries_it_does_not_understand():
     # null/0/{} entries below have to come back too. Only "" goes, because an empty note
     # is exactly what clearing one leaves behind.
     foreign = {"weird": {"shape": "from v2"}, "nulled": None, "zero": 0, "empty": ""}
-    with open(ot.notes_path(), "w") as fh:
-        json.dump({"version": 1, "notes": dict(foreign, a="mine")}, fh)
+    _hand_write_notes(json.dumps({"version": 1, "notes": dict(foreign, a="mine")}))
     assert ot.load_notes() == {"a": "mine"}  # the UI shows only what it can render
 
     app = _app_on_session([workflow("b", "2026-06-01 12:00:00")], "b")
@@ -254,8 +261,7 @@ def test_note_save_fails_cleanly_on_content_json_cannot_write():
     # JSON will happily LOAD an escaped lone surrogate that a UTF-8 stream then cannot
     # write. The save must fail as a save (the caller says so), leave the existing file
     # intact, and not litter a half-written temp file next to it.
-    with open(ot.notes_path(), "w") as fh:
-        fh.write('{"version": 1, "notes": {"a": "\\ud800"}}')  # valid JSON, unwritable text
+    _hand_write_notes('{"version": 1, "notes": {"a": "\\ud800"}}')  # valid JSON, unwritable text
 
     app = _app_on_session([workflow("b", "2026-06-01 12:00:00")], "b")
     app.set_note(app.current_session(), "new note")
@@ -292,8 +298,7 @@ def test_unreadable_notes_file_is_never_overwritten():
     # A corrupt (or unreadable) notes.json used to read as "{}", and the next `n` would
     # replace a file full of notes with a file holding exactly one. Refuse instead, and
     # say which file is in the way — losing a written note is the worst bug here.
-    with open(ot.notes_path(), "w") as fh:
-        fh.write('{"notes": {"a": "precious"')  # truncated mid-write
+    _hand_write_notes('{"notes": {"a": "precious"')  # truncated mid-write
     notes, readable = ot.read_notes()
     assert (notes, readable) == ({}, False)
 
