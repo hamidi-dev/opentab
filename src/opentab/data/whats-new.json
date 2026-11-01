@@ -1,6 +1,33 @@
 {
   "releases": [
     {
+      "version": "1.33.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Chart tokens instead of cost over time, so usage stays comparable after moving from pay-per-token to a flat subscription.", "hint": {"text": "Switch the chart metric; the choice persists", "binding": {"context": "main", "action": "chart_metric"}}},
+            {"text": "Open a model card from the price table: rates by context size, how much of your list cost ran at long-context rates, and a cheaper route for open-weight models.", "hint": {"text": "Open the price table, then press Enter on a row", "binding": {"context": "main", "action": "prices"}}},
+            {"text": "Read full turn traces in the browser, subagents included: narration, reasoning and tool calls.", "availability": "web", "hint": {"text": "Off by default. Run opentab web --allow-raw-content"}}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Start faster, cold and warm: OpenCode and Claude Code history parse in parallel, and cached model rows load only when needed."}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "Scrolling stops when you release a held key.", "availability": "tui"},
+            {"text": "OpenCode Changes on SQLite 3.54.1 names the cause instead of showing nothing; cost, tokens and turns were never affected."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.33.0"
+    },
+    {
       "version": "1.32.0",
       "sections": [
         {
