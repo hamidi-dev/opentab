@@ -309,7 +309,7 @@ _HARNESSES = (
     ("hermes", "hermes_db", _FILE, "", "", "pass --hermes-db to point at a Hermes state.db"),
     ("csv", "csv", _FILE, "", "", "point --csv at a CSV of logged API requests"),
     ("jsonl", "jsonl", _FILE, "", "", "point --jsonl at an NDJSON of logged API requests"),
-    ("copilot", "copilot_dir", _COPILOT, "**/*.jsonl", "", "the OTEL export is opt-in and the CLI records tokens nowhere else"),
+    ("copilot", "copilot_dir", _COPILOT, "**/*.jsonl", "", "the OTEL export is opt-in and adds per-call detail"),
     ("vscode", "vscode_dir", _VSCODE, "", "", "point --vscode-dir at a VS Code User directory holding Copilot Chat sessions"),
     ("pi", "pi_dir", _TREE, "**/*.jsonl", "", "pi-agent writes sessions under ~/.pi/agent/sessions; it honors $PI_AGENT_DIR, or pass --pi-dir"),
     ("omp", "omp_dir", _TREE, "**/*.jsonl", "", "omp writes sessions under ~/.omp/agent/sessions; set $OMP_AGENT_DIR, or pass --omp-dir"),
@@ -370,9 +370,20 @@ def _copilot_detail(
             if files
             else []
         )
+        exported = bool(files) or bool(env and os.path.isfile(env))
         if env and os.path.isfile(env):
             parts.append(f"$COPILOT_OTEL_FILE_EXPORTER_PATH → {_tilde(env, full)}")
-        return OK, f"{_tilde(root, full)} · " + " · ".join(parts), ""
+        logs = sources.copilot_state_logs(args)
+        if logs:
+            parts.append(f"{_n(len(logs), 'saved session')} in session-state")
+        hint = ""
+        if not exported:
+            # Saved totals already count; the export only adds per-call rows.
+            target = _export(
+                "COPILOT_OTEL_FILE_EXPORTER_PATH", "~/.copilot/otel/usage.jsonl", _shell()[1]
+            )
+            hint = f"session totals only, no Turns: `{target}` before launching Copilot adds per-call detail"
+        return OK, f"{_tilde(root, full)} · " + " · ".join(parts), hint
     if env:
         # Export configuration affects only Copilot sessions started after it was set.
         return (

@@ -1944,3 +1944,177 @@ def test_copilot_conversation_service_index_search_copy_and_permission_gates():
             hits = service.search_conversations("needle", harness="copilot")["hits"]
             assert len(hits) == 1 and hits[0]["execution_id"] == "s"
             assert hits[0]["match_fields"] == ["text"]
+
+
+def _metrics(count, inp, out, cache_read=0, cache_write=0, reasoning=0, nano_aiu=0):
+    # One model's entry in session.shutdown's modelMetrics; inputTokens includes the cache.
+    return {
+        "requests": {"count": count, "cost": 1},
+        "usage": {
+            "inputTokens": inp,
+            "outputTokens": out,
+            "cacheReadTokens": cache_read,
+            "cacheWriteTokens": cache_write,
+            "reasoningTokens": reasoning,
+        },
+        "totalNanoAiu": nano_aiu,
+    }
+
+
+def _shutdown(agents, total, eid="sd", ts="2026-10-02T07:00:00Z"):
+    models = {}
+    for per_model in agents.values():
+        models.update(per_model)
+    event = _event(
+        "session.shutdown",
+        {
+            "totalNanoAiu": total,
+            "modelMetrics": models,
+            "agentMetrics": {aid: {"modelMetrics": m} for aid, m in agents.items()},
+        },
+        eid,
+    )
+    event["timestamp"] = ts
+    return event
+
+
+def _checkpoint(total, model, eid, ts="2026-10-02T07:30:00Z"):
+    event = _event(
+        "session.usage_checkpoint",
+        {"totalNanoAiu": total, "promptCacheBreakState": [{"lastActiveModel": model}]},
+        eid,
+    )
+    event["timestamp"] = ts
+    return event
+
+
+def test_copilot_session_state_totals_stand_in_for_a_missing_export():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        os.makedirs(otel)  # the export was never turned on
+        sonnet, mini = "claude-sonnet-5.5", "gpt-5.4-mini"
+        _write_events(
+            otel,
+            "app",
+            [
+                _event("user.message", {"messageId": "u", "content": "Fix login"}, "u"),
+                _event(
+                    "subagent.started", {"agentName": "explore", "toolCallId": "t"}, "sp", "kid"
+                ),
+                _shutdown(
+                    {
+                        "main": {sonnet: _metrics(4, 1000, 50, 600, 300, nano_aiu=2e9)},
+                        # Reasoning above output still counts, once.
+                        "kid": {mini: _metrics(3, 400, 20, 200, reasoning=30, nano_aiu=5e8)},
+                    },
+                    2.5e9,
+                ),
+            ],
+        )
+        _workspace_yaml(otel, "app", f"client_name: github/autopilot\nname: Login\ncwd: {tmp}\n")
+        # A log that never used a model adds no session.
+        _write_events(otel, "idle", [_event("user.message", {"content": "hi"}, "u")])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.records_cost and store._sessions is None  # probe, no parse
+        (w,) = store.workflows()
+        assert (w.id, w.title, w.directory) == ("app", "Login", tmp)
+        assert (w.total_cost, w.root_cost, w.subagents) == (0.025, 0.02, 1)
+        assert w.total_tokens == (100 + 600 + 300 + 50) + (200 + 200 + 30)
+        assert w.created_at and w.ended_at and w.created_at <= w.ended_at
+        rows = {r["model_name"]: r for r in store.model_breakdown()}
+        assert (rows["anthropic/" + sonnet]["runs"], rows["openai/" + mini]["runs"]) == (4, 3)
+        assert (rows["anthropic/" + sonnet]["input"], rows["openai/" + mini]["output"]) == (100, 30)
+        nodes = store.workflow_nodes("app")
+        assert [(n["depth"], n["agent"], n["cost"]) for n in nodes] == [
+            (0, "-", 0.02),
+            (1, "explore", 0.005),
+        ]
+        assert store.session_client("app") == "GitHub Copilot app"
+        # Totals are no calls: no Turns, but the saved conversation is still there.
+        assert not store.supports_turns("app") and not store.supports_turn_content("app")
+        assert store.supports_conversation("app")
+
+
+def test_copilot_session_state_counts_resumes_once_and_charges_after_the_last_shutdown():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        os.makedirs(otel)
+        sonnet, terra = "claude-sonnet-5.5", "gpt-5.6-terra"
+        totals = {"main": {sonnet: _metrics(2, 1000, 10, 900, nano_aiu=1e9)}}
+        _write_events(
+            otel,
+            "resumed",
+            [
+                _shutdown(totals, 1e9, "sd1"),
+                # Resumed: the next shutdown repeats the cumulative totals...
+                _shutdown(totals, 1e9, "sd2", "2026-10-02T08:00:00Z"),
+                # ...and a later checkpoint charged more before any further shutdown.
+                _checkpoint(1.5e9, terra, "c1", "2026-10-02T09:00:00Z"),
+            ],
+        )
+        _write_events(otel, "running", [_checkpoint(3e9, terra, "c1")])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        rows = {w.id: w for w in store.workflows()}
+        assert (rows["resumed"].total_cost, rows["resumed"].total_tokens) == (0.015, 1010)
+        assert (rows["running"].total_cost, rows["running"].total_tokens) == (0.03, 0)
+        late = [r for r in store.model_breakdown() if r["root_id"] == "resumed"]
+        assert {(r["model_name"], r["runs"], r["cost"]) for r in late} == {
+            ("anthropic/" + sonnet, 2, 0.01),
+            ("openai/" + terra, 0, 0.005),
+        }
+
+
+def test_copilot_export_wins_over_session_state_for_the_same_session():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        model = "claude-sonnet-5.5"
+        _write_otel(otel, [_charged(_otel_chat("s", model, 1000, 20, resp="r"), 1e9)])
+        _write_events(
+            otel,
+            "s",
+            [
+                _event("assistant.message", {"apiCallId": "r", "model": model}, "a"),
+                _shutdown({"main": {model: _metrics(9, 9000, 90, nano_aiu=9e9)}}, 9e9),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        (w,) = store.workflows()
+        assert (w.total_cost, w.total_tokens) == (0.01, 1020)
+        assert store.supports_turns("s") and store.supports_turn_content("s")
+
+
+def test_copilot_saved_totals_never_pose_as_turns_beside_exported_calls():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        model = "claude-sonnet-5.5"
+        # An exported coordinator whose desktop-app child only left saved totals.
+        _write_otel(otel, [_charged(_otel_chat("coord", model, 1000, 20, resp="r"), 1e9)])
+        _write_events(
+            otel, "kid", [_shutdown({"main": {model: _metrics(20, 5000, 50, nano_aiu=3e9)}}, 3e9)]
+        )
+        _app_links(otel, [("kid", "coord")])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        (w,) = store.workflows()
+        assert (w.id, w.total_cost, w.subagents) == ("coord", 0.04, 1)
+        assert store.supports_turns("coord")
+        (turn,) = store.message_timeline("coord")  # the real call only
+        assert (turn["cost"], turn["input"]) == (0.01, 1000)
+        assert store.node_timeline("coord", "kid") == []
+        assert [n["cost"] for n in store.workflow_nodes("coord")] == [0.01, 0.03]
+
+
+def test_copilot_non_finite_saved_numbers_count_as_zero_instead_of_aborting():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        os.makedirs(otel)
+        model = "claude-sonnet-5.5"
+        bad = _metrics(1, "Infinity", float("inf"), nano_aiu=1e9)
+        _write_events(otel, "bad", [_shutdown({"main": {model: bad}}, 1e9)])
+        _write_events(
+            otel, "ok", [_shutdown({"main": {model: _metrics(1, 100, 5, nano_aiu=2e9)}}, 2e9)]
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.records_cost
+        rows = {w.id: w for w in store.workflows()}
+        assert (rows["bad"].total_cost, rows["bad"].total_tokens) == (0.01, 0)
+        assert (rows["ok"].total_cost, rows["ok"].total_tokens) == (0.02, 105)

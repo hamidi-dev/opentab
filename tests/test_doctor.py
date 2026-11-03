@@ -1221,3 +1221,17 @@ def test_redaction_keeps_folding_a_windows_home_to_a_tilde():
         os.environ.pop("HOME", None)
         if home is not None:
             os.environ["HOME"] = home
+
+
+def test_copilot_saved_sessions_count_without_the_export():
+    from tests._support import _event, _write_events
+
+    with tempfile.TemporaryDirectory() as tmp, _clean_env(), _fake_home(tmp) as home:
+        otel = os.path.join(home, ".copilot", "otel")
+        _write_events(otel, "s", [_event("session.usage_checkpoint", {"totalNanoAiu": 1e9}, "c")])
+        args = _args(tmp, copilot_dir=otel)
+        assert "copilot" in doctor.sources.available_sources(args)
+        row = next(r for r in doctor.harness_rows(args) if r.label == "Copilot")
+        assert row.status == doctor.OK
+        assert "1 saved session in session-state" in row.detail
+        assert "COPILOT_OTEL_FILE_EXPORTER_PATH" in row.hint and "no Turns" in row.hint

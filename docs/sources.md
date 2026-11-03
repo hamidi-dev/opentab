@@ -64,7 +64,7 @@ trends. On top of that:
 ¹ Codex logs a running total, not each request's prompt size, so no honest curve
 exists. ² Only for sessions still covered by Hermes' rotating agent log.
 ³ When matching saved session events are kept; otherwise Turns have no prompt
-headers. ⁴ With a `tool` column. ⁵ Only with a real `session_id` column.
+headers. Copilot sessions read without the export have no Turns, Trace or Context. ⁴ With a `tool` column. ⁵ Only with a real `session_id` column.
 
 | Column | Meaning |
 |--------|---------|
@@ -160,16 +160,29 @@ under the repository. See [Pricing & the `$` view](pricing.md).
 
 ## [GitHub Copilot CLI](https://github.com/github/copilot-cli)
 
-*OpenTelemetry export · opt-in · AI-credit charges recorded, the rest estimated*
+*Saved sessions · nothing to enable · OpenTelemetry export opt-in for per-call detail ·
+AI-credit charges recorded, the rest estimated*
 
 - **Reads** `~/.copilot/otel/**/*.jsonl` (`--copilot-dir`) and the file in
-  `$COPILOT_OTEL_FILE_EXPORTER_PATH`. Titles and projects come from the sibling
-  `session-store.db`; session details from `session-state/<id>/events.jsonl`.
-- **Set up**: turn on the OpenTelemetry export before you start or resume a session.
-  Sessions from then on appear.
+  `$COPILOT_OTEL_FILE_EXPORTER_PATH`, plus the sibling `session-state/<id>/events.jsonl`.
+  Titles and projects come from `session-store.db`.
+- **Without setup**: every session Copilot kept in `session-state` appears with its
+  charge and per-model tokens, split by subagent, but without Turns. A running session
+  shows its charge so far; its tokens arrive when it ends.
+- **For per-call detail** (Turns, prompt headers, Trace, Context), turn on the
+  OpenTelemetry export before you start or resume a session. A session the export saw
+  is read from the export alone.
 
   ```sh
   export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl
+  ```
+
+  A desktop app or IDE started from the Start menu or Dock doesn't see a variable your
+  shell exports. On Windows, set it once for your user and restart the app completely
+  (quit it from the tray too):
+
+  ```powershell
+  setx COPILOT_OTEL_FILE_EXPORTER_PATH "%USERPROFILE%\.copilot\otel\usage.jsonl"
   ```
 
 - **Cost**: GitHub's AI-credit charge on each call (1 credit = $0.01) counts as real
@@ -180,7 +193,8 @@ under the repository. See [Pricing & the `$` view](pricing.md).
 
 The same runtime serves the CLI, the GitHub Copilot desktop app, the JetBrains plugin
 and VS Code's *Copilot CLI* sessions. The session overview shows which one ran as
-**Client**. A client appears only once it writes the export:
+**Client**. Every client's saved sessions appear on their own; this is how each one
+turns on the export:
 
 | Client | How to turn on the export |
 |--------|---------------------------|
@@ -191,7 +205,9 @@ and VS Code's *Copilot CLI* sessions. The session overview shows which one ran a
 ### Good to know
 
 - Without matching saved events, Turns have no prompt headers; the Context curve
-  still works. Event logs alone don't add sessions.
+  still works.
+- A session the export picked up only partway (the export turned on, then an older
+  session resumed) counts only its exported calls.
 - Subagents with a recorded identity get their own nodes, Turns and traces.
 - Sessions the desktop app starts with its `create_session` tool fold into the session
   that created them, which then includes their cost.

@@ -306,6 +306,19 @@ def _copilot_otel_available(args: argparse.Namespace) -> bool:
     return bool(extra) and os.path.isfile(extra)
 
 
+def copilot_state_logs(args: argparse.Namespace) -> list[str]:
+    """Saved session logs beside the export directory, which carry their own totals."""
+    root = getattr(args, "copilot_dir", "") or ""
+    if not root:
+        return []
+    home = os.path.dirname(os.path.normpath(root))
+    return glob.glob(os.path.join(glob.escape(home), "session-state", "*", "events.jsonl"))
+
+
+def _copilot_available(args: argparse.Namespace) -> bool:
+    return _copilot_otel_available(args) or bool(copilot_state_logs(args))
+
+
 def _vscode_available(args: argparse.Namespace) -> bool:
     # Empty chat-panel files are not usage; require token markers and stop at the first hit.
     for user_dir in _vscode_dirs(args):
@@ -412,7 +425,7 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("csv")
     if os.path.exists(getattr(args, "jsonl", "")):
         keys.append("jsonl")
-    if _copilot_otel_available(args):
+    if _copilot_available(args):
         keys.append("copilot")
     if _vscode_available(args):
         keys.append("vscode")
@@ -661,11 +674,11 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
             raise SystemExit(f"JSONL file not found: {path}")
         return JsonlStore(path, args), "OpenTab: loading API-request JSONL…\r"
     if key == "copilot":
-        if not _copilot_otel_available(args):
+        if not _copilot_available(args):
             raise SystemExit(
-                "No GitHub Copilot CLI usage found. Enable its OpenTelemetry file export "
-                "(set COPILOT_OTEL_FILE_EXPORTER_PATH before launching Copilot, or point "
-                "--copilot-dir at the export) -- see docs/sources.md."
+                "No GitHub Copilot usage found: no OpenTelemetry export and no saved "
+                "sessions in session-state. Point --copilot-dir at <copilot home>/otel, or set "
+                "COPILOT_OTEL_FILE_EXPORTER_PATH before launching Copilot -- see docs/sources.md."
             )
         return CopilotStore(args.copilot_dir, args), "OpenTab: loading Copilot CLI sessions…\r"
     if key == "vscode":
