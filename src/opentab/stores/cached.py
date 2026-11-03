@@ -23,7 +23,7 @@ from opentab.accounting.models import Workflow
 from opentab.accounting.tiers import valid_pricing
 from opentab.persistence import paths, usage_cache
 
-CACHE_VERSION = 23  # model rows moved to a lazily read sidecar
+CACHE_VERSION = 24  # Copilot sessions without an export come from session-state
 # Beside each cache: the digest this release wrote it with. A match proves the rows
 # are the ones its own parse produced, so the per-row pricing check is skipped.
 TRUST_SUFFIX = ".trust"

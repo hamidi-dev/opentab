@@ -62,7 +62,7 @@ falls back to plain ASCII frames when the locale can't encode its box characters
 ## A tool I use isn't showing up
 
 **Cause**: one of several cases that look the same from outside: the harness isn't
-installed, has nothing recorded, needs an opt-in export (GitHub Copilot), or a
+installed, has nothing recorded, or a
 `--*-dir` flag points one level too deep. VS Code chats may exist but have no tokens.
 A remembered `H` choice can also pin you to one harness without saying so.
 

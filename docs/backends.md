@@ -297,7 +297,7 @@ no corresponding assistant message in SQLite.
 Reader: [`stores/copilot.py`](../src/opentab/stores/copilot.py), with
 [`copilot_events.py`](../src/opentab/stores/copilot_events.py) for saved-event enrichment.
 
-The opt-in OpenTelemetry export is the usage ledger; the CLI's session database
+The opt-in OpenTelemetry export is the per-call usage ledger; the CLI's session database
 only enriches titles and projects, with `session-state/<id>/workspace.yaml` (`name`,
 `cwd`) as the fallback and the source of the `client_name` label. The database and its
 `-wal` both join the cache fingerprint: new rows reach the WAL long before a checkpoint.
@@ -312,6 +312,25 @@ input, keeping their sum within the recorded input budget. Copilot's shutdown
 `tokenDetails` uses this same disjoint split. Output already includes reasoning: the
 AI-credit charge reproduces from output alone, so adding reasoning counts it twice.
 Total-only records need back-filling rather than being discarded.
+
+A session with no exported call falls back to its own `events.jsonl`. The last
+`session.shutdown` carries `agentMetrics`: `main` plus each subagent's `agentId`, each
+with per-model `usage` (`inputTokens` inclusive of cache reads and writes, output
+inclusive of reasoning), `requests.count` and `totalNanoAiu`. Each agent and model
+becomes one accounting row with that request count; a subagent row attaches to its
+node only when the log's `subagent.started` names that agent, otherwise to the root.
+Both shutdown and `session.usage_checkpoint` totals are cumulative: a resumed
+session's next shutdown repeats the earlier totals rather than restarting at zero, so
+only the last of each counts. When the last checkpoint's `totalNanoAiu` exceeds the
+shutdown's (a session still running, or resumed and not yet shut down), the
+difference is charged to the checkpoint's `lastActiveModel` without tokens: a
+checkpoint records only the latest request's prompt, never output. On the developer's
+corpus the fallback reproduces the export's charge, tokens and subagent count exactly,
+except where the JetBrains export dropped a call (there the fallback is higher).
+These rows are totals, not calls, so such sessions report no Turns. A session the
+export saw at all is read from the export alone, never merged with its totals: the
+two would overlap, and a partial export (enabled mid-session) undercounts rather
+than double-counts.
 
 The desktop app's `create_session` tool starts child sessions. Its own `data.db`
 records the parent: `workspace_parent_links` nests a child's workspace under the

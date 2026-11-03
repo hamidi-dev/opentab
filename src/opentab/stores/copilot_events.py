@@ -1,9 +1,11 @@
 """Read-only, session-bound Copilot CLI event enrichment.
 
-OTEL remains the usage ledger. Persisted events supply exact response/execution
-identities; prompts, arguments and results are read only for session details and
-never retained in accounting rollups. Internal model.* events (including the
-title generator) are not assistant conversation records.
+OTEL is the per-call usage ledger. A session without OTEL calls falls back to the
+runtime's own totals in ``session.shutdown`` and ``session.usage_checkpoint``.
+Persisted events supply exact response/execution identities; prompts, arguments and
+results are read only for session details and never retained in accounting rollups.
+Internal model.* events (including the title generator) are not assistant
+conversation records.
 """
 from __future__ import annotations
 
@@ -64,6 +66,43 @@ class CopilotEvents:
         if os.path.realpath(path) != os.path.abspath(path):
             return None
         return path
+
+    def sessions(self) -> list[str]:
+        """Every session id with a saved event log."""
+        try:
+            names = os.listdir(self.root)
+        except OSError:
+            return []
+        out = []
+        for name in sorted(names):
+            path = self.path(name)
+            if path is not None and os.path.isfile(path):
+                out.append(name)
+        return out
+
+    _USAGE_KINDS = frozenset({"session.start", "session.usage_checkpoint", "session.shutdown"})
+
+    def usage(self, session: str) -> dict | None:
+        """The runtime's own usage totals, or None when the log records none.
+
+        Both events are cumulative: a resumed session's next shutdown repeats the
+        earlier totals instead of starting from zero, so the last of each counts.
+        """
+        start = end = shutdown = checkpoint = None
+        for event in self.records(session, set(self._USAGE_KINDS)):
+            ts = timestamp_ms(event.get("timestamp"))
+            if event["type"] == "session.start":
+                start = ts
+                continue
+            if ts is not None:
+                end = ts if end is None else max(end, ts)
+            if event["type"] == "session.shutdown":
+                shutdown = event["data"]
+            else:
+                checkpoint = event["data"]
+        if shutdown is None and checkpoint is None:
+            return None
+        return {"start": start, "end": end, "shutdown": shutdown, "checkpoint": checkpoint}
 
     def records(self, session: str, kinds: set[str] | None = None):
         path = self.path(session)
@@ -436,6 +475,16 @@ class CopilotEvents:
                         }
                     )
         return sorted(rows, key=lambda r: r["est_tokens"], reverse=True)
+
+
+def timestamp_ms(value) -> int | None:
+    """An event's ISO-8601 timestamp as epoch milliseconds."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def local_time(value: str) -> str:

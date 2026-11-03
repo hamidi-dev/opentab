@@ -1,4 +1,4 @@
-"""GitHub Copilot CLI OpenTelemetry backend."""
+"""GitHub Copilot CLI backend: OpenTelemetry export, with session-state as fallback."""
 from __future__ import annotations
 
 import argparse
@@ -26,6 +26,9 @@ class CopilotStore:
     (``github.copilot.nano_aiu``), kept as recorded spend; calls without it stay unpriced
     for "$". OTEL records no prompt text. Session cwd and title are enriched read-only
     from the sibling ``session-store.db``.
+
+    A session the export never saw still counts: the runtime's own per-agent, per-model
+    totals in ``session-state/<id>/events.jsonl`` stand in for its calls (``_fold_state``).
     """
 
     records_reasoning = True  # readable reasoningText/blocks when the model records them
@@ -124,11 +127,18 @@ class CopilotStore:
                     attrs = rec.get("attributes") if isinstance(rec, dict) else None
                     if isinstance(attrs, dict) and self._nano_aiu_usd(attrs) > 0:
                         return True
+        for sid in self._events.sessions():
+            usage = self._events.usage(sid)
+            if usage is not None and any(c["cost"] > 0 for c in self._state_calls(usage)):
+                return True
         return False
 
     @classmethod
     def _nano_aiu_usd(cls, attrs: dict) -> float:
-        value = attrs.get(cls._NANO_AIU_ATTR)
+        return cls._nano_usd(attrs.get(cls._NANO_AIU_ATTR))
+
+    @classmethod
+    def _nano_usd(cls, value) -> float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return 0.0
         if not math.isfinite(value) or value <= 0:
@@ -153,7 +163,8 @@ class CopilotStore:
     @classmethod
     def _add(cls, acc: dict, turn: dict) -> None:
         # Calls without a recorded charge stay unpriced so "$" estimates only those.
-        acc["runs"] += 1
+        # A session-state total stands for its recorded request count, not one call.
+        acc["runs"] += turn.get("runs", 1)
         acc["cost"] += turn["cost"]
         for field in cls._FIELDS:
             acc[field] += turn[field]
@@ -167,16 +178,18 @@ class CopilotStore:
     @staticmethod
     def _num(value) -> int:
         # OTEL numbers arrive as ints, floats or numeric strings; non-numeric/neg -> 0.
+        # Infinity/NaN (JSON 1e309, "Infinity") count as 0, never abort the parse.
         if isinstance(value, bool):
+            return 0
+        if isinstance(value, str):
+            try:
+                value = float(value.strip())
+            except ValueError:
+                return 0
+        if isinstance(value, float) and not math.isfinite(value):
             return 0
         if isinstance(value, (int, float)):
             return int(value) if value >= 0 else 0
-        if isinstance(value, str):
-            try:
-                n = int(float(value.strip()))
-            except ValueError:
-                return 0
-            return n if n >= 0 else 0
         return 0
 
     @classmethod
@@ -495,6 +508,13 @@ class CopilotStore:
                     self._halve(c)
             for c in calls:
                 self._fold(sessions, c)
+        # The export is opt-in and covers only sessions started after it was enabled.
+        # Every other session with saved totals still counts, from session-state.
+        for sid in self._events.sessions():
+            if sid not in sessions:
+                usage = self._events.usage(sid)
+                if usage is not None:
+                    self._fold_state(sessions, sid, usage)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         # Drop sessions with no recorded usage (non-LLM-only files): they would only add
@@ -945,6 +965,122 @@ class CopilotStore:
             acc = s["models"][c["model"]] = self._new_acc()
         self._add(acc, turn)
 
+    @classmethod
+    def _state_calls(cls, usage: dict) -> list[dict]:
+        """Per-agent, per-model totals from a session's saved usage events.
+
+        ``session.shutdown`` splits usage by agent (``main`` plus each subagent's id) and
+        model. ``inputTokens`` includes cache reads and writes, like OTEL's input; output
+        includes reasoning. A later checkpoint's larger charge (a session still running,
+        or resumed after its last shutdown) is added without tokens: the checkpoint
+        records only the latest request's prompt, never output.
+        """
+        shutdown = usage.get("shutdown") or {}
+        agents = shutdown.get("agentMetrics")
+        if not isinstance(agents, dict) or not agents:
+            agents = {"main": {"modelMetrics": shutdown.get("modelMetrics")}}
+        calls = []
+        for agent, metrics in agents.items():
+            models = metrics.get("modelMetrics") if isinstance(metrics, dict) else None
+            if not isinstance(agent, str) or not isinstance(models, dict):
+                continue
+            for model, m in models.items():
+                if not isinstance(model, str) or not isinstance(m, dict):
+                    continue
+                calls.append(cls._state_call("" if agent == "main" else agent, model, m))
+        cp = usage.get("checkpoint") or {}
+        total = max(
+            cls._nano_usd(shutdown.get("totalNanoAiu")), cls._nano_usd(cp.get("totalNanoAiu"))
+        )
+        extra = total - sum(c["cost"] for c in calls)
+        if extra > 1e-9:
+            model = cls._checkpoint_model(cp) or (calls[0]["model"] if calls else "unknown")
+            nano = {"totalNanoAiu": extra / cls._USD_PER_NANO_AIU}
+            calls.append(cls._state_call("", model, nano))
+        return [c for c in calls if c["cost"] > 0 or c["tokens_total"] > 0]
+
+    @classmethod
+    def _state_call(cls, agent: str, model: str, m: dict) -> dict:
+        usage = m.get("usage") if isinstance(m.get("usage"), dict) else {}
+        inp = cls._num(usage.get("inputTokens"))
+        out = cls._num(usage.get("outputTokens"))
+        cache_read = cls._num(usage.get("cacheReadTokens"))
+        cache_write = cls._num(usage.get("cacheWriteTokens"))
+        reasoning = cls._num(usage.get("reasoningTokens"))
+        details = m.get("tokenDetails")
+        if not (inp or out) and isinstance(details, dict):
+            # The disjoint form of the same totals.
+            def count(key: str) -> int:
+                d = details.get(key)
+                return cls._num(d.get("tokenCount")) if isinstance(d, dict) else 0
+
+            cache_read, cache_write, out = (
+                count("cache_read"),
+                count("cache_write"),
+                count("output"),
+            )
+            inp = count("input") + cache_read + cache_write
+        cache_read = min(inp, cache_read)
+        cache_write = min(inp - cache_read, cache_write)
+        uncached = inp - cache_read - cache_write
+        out = max(out, reasoning)
+        requests = m.get("requests")
+        return {
+            "agent": agent,
+            "model": cls._prefix_model(model),
+            "runs": cls._num(requests.get("count")) if isinstance(requests, dict) else 0,
+            "cost": cls._nano_usd(m.get("totalNanoAiu")),
+            "input": uncached,
+            "output": out,
+            "cache_read": cache_read,
+            "cache_write": cache_write,
+            "tokens_total": uncached + out + cache_read + cache_write,
+        }
+
+    @staticmethod
+    def _checkpoint_model(cp: dict) -> str | None:
+        for key, field in (
+            ("promptCacheBreakState", "lastActiveModel"),
+            ("modelCacheState", "modelId"),
+        ):
+            states = cp.get(key)
+            for state in reversed(states if isinstance(states, list) else []):
+                if isinstance(state, dict) and isinstance(state.get(field), str) and state[field]:
+                    return state[field]
+        return None
+
+    def _fold_state(self, sessions: dict[str, dict], sid: str, usage: dict) -> None:
+        """A session from its saved totals alone: one row per agent and model."""
+        calls = self._state_calls(usage)
+        if not calls:
+            return
+        s = sessions[sid] = self._new_session()
+        s["ts_min"] = usage["start"] if usage["start"] is not None else usage["end"]
+        s["ts_max"] = usage["end"] if usage["end"] is not None else usage["start"]
+        for c in calls:
+            turn = {
+                "ts": s["ts_max"] or 0,
+                "depth": 0,
+                "agent": "-",
+                "content_key": "",
+                "effort": "",
+                "model_name": c["model"],
+                "cost": c["cost"],
+                "input": c["input"],
+                "context_tokens": None,  # totals span many requests
+                "output": c["output"],
+                "reasoning": 0,
+                "cache_read": c["cache_read"],
+                "cache_write": c["cache_write"],
+                "tokens_total": c["tokens_total"],
+                "session": sid,
+                "runs": c["runs"],
+                "state_agent": c["agent"],
+                "synthetic": True,  # accounting only, never shown as a Turns row
+            }
+            s["turns"].append(turn)
+            self._add(s["models"].setdefault(c["model"], self._new_acc()), turn)
+
     def _finalize(self, sid: str, s: dict) -> None:
         cwd, summary = self._load_meta().get(sid, ("", ""))
         self._links()
@@ -974,6 +1110,11 @@ class CopilotStore:
         for turn in s["turns"]:
             identity = ownership.get(turn["content_key"])
             aid = ""
+            if turn.get("state_agent"):
+                # A saved per-agent total: its node only when the log started that agent.
+                identity = None
+                if turn["state_agent"] in agents:
+                    aid = turn["state_agent"]
             if identity is not None:
                 candidate, model = identity
                 if not model or model == canonical_model(turn["model_name"]):
@@ -1254,7 +1395,8 @@ class CopilotStore:
         s = self._parse().get(workflow_id)
         if not s:
             return []
-        turns = sorted(s["turns"], key=lambda r: r["ts"])
+        # Saved totals are no calls, also when folded beside real ones in a family.
+        turns = sorted((t for t in s["turns"] if not t.get("synthetic")), key=lambda r: r["ts"])
         if execution is not None:
             turns = [t for t in turns if t["execution_id"] == execution]
         if not self.demo:
@@ -1280,7 +1422,9 @@ class CopilotStore:
         return out
 
     def supports_turns(self, workflow_id: str) -> bool:
-        return True
+        # Saved totals are no calls; a row per model would pose as one.
+        s = self._parse().get(workflow_id)
+        return s is None or any(not t.get("synthetic") for t in s["turns"])
 
     def supports_turn_content(self, workflow_id: str) -> bool:
         return not self.demo and bool(self._parse().get(workflow_id, {}).get("event_backed"))
