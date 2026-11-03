@@ -402,10 +402,10 @@ rollup fingerprint so execution ownership updates invalidate cached root shares.
   is a context snapshot, not a replacement token ledger or inferred invoice.
 
 Without matching saved events, OTEL-only sessions retain headerless Turns and the
-measured Context curve. Event enrichment does not create usage for sessions lacking
-an OTEL ledger. Raw traces enter web details only with `--allow-raw-content`, never
-rollup caches or fleet summaries. Demo blocks real event content and execution-detail
-reads; web traces use synthetic fixtures.
+measured Context curve. Sessions with no exported call take their usage from the
+`events.jsonl` fallback described above. Raw traces enter web details only with
+`--allow-raw-content`, never rollup caches or fleet summaries. Demo blocks real event
+content and execution-detail reads; web traces use synthetic fixtures.
 
 The fresh conversation reader is independent of the OTEL join: it retains all saved
 `user.message` and `assistant.message` occurrences, including zero-usage replies and
