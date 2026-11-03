@@ -1,5 +1,5 @@
 {
- "fetched_at": "2026-11-01T13:26:28Z",
+ "fetched_at": "2026-11-03T20:30:56Z",
  "providers": {
   "302ai": {
    "models": {
@@ -7170,18 +7170,6 @@
      "open": true,
      "released": "2023-08-10"
     },
-    "ibm-granite/granite-4.0-h-micro": {
-     "cost": [
-      0.017986,
-      0.118496,
-      0.0,
-      0.0
-     ],
-     "limit": 131000,
-     "max_output": 131000,
-     "open": true,
-     "released": "2025-10-02"
-    },
     "inception/mercury-2": {
      "cost": [
       0.2645,
@@ -8204,19 +8192,6 @@
      "open": true,
      "released": "2024-08-28"
     },
-    "sao10k/l3.3-euryale-70b": {
-     "cost": [
-      0.6877,
-      0.7935,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2023-12-31",
-     "limit": 131072,
-     "max_output": 16384,
-     "open": true,
-     "released": "2024-12-18"
-    },
     "stepfun/step-5-preview": {
      "cost": [
       1.058,
@@ -8376,23 +8351,11 @@
      "open": true,
      "released": "2023-07-22"
     },
-    "upstage/solar-pro-3": {
-     "cost": [
-      0.1587,
-      0.6348,
-      0.01587,
-      0.0
-     ],
-     "knowledge": "2025-07",
-     "limit": 128000,
-     "max_output": 8192,
-     "released": "2026-01-26"
-    },
     "upstage/solar-pro4": {
      "cost": [
-      0.03174,
-      0.12696,
-      0.006348,
+      0.09522,
+      0.38088,
+      0.019044,
       0.0
      ],
      "knowledge": "2026-02",
@@ -21023,6 +20986,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "moonshotai/kimi-k3": {
@@ -23156,19 +23120,6 @@
   },
   "cortecs": {
    "models": {
-    "apertus-70b": {
-     "cost": [
-      1.393,
-      2.228,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2025-09",
-     "limit": 65536,
-     "max_output": 16384,
-     "open": true,
-     "released": "2025-09-02"
-    },
     "claude-4-5-sonnet": {
      "cost": [
       2.989,
@@ -24005,8 +23956,8 @@
       0.06,
       0.0
      ],
-     "limit": 1048576,
-     "max_output": 1048576,
+     "limit": 1000000,
+     "max_output": 500000,
      "open": true,
      "released": "2026-06-01"
     },
@@ -24019,6 +23970,7 @@
      ],
      "limit": 1048576,
      "max_output": 64000,
+     "open": true,
      "released": "2026-10-19"
     },
     "ministral-14b-2512": {
@@ -24389,8 +24341,8 @@
     },
     "qwen3.6-35b-a3b": {
      "cost": [
-      0.167,
-      0.557,
+      0.279,
+      1.671,
       0.0,
       0.0
      ],
@@ -24422,18 +24374,6 @@
      "max_output": 500000,
      "open": true,
      "released": "2026-08-14"
-    },
-    "qwen3.8-flash-next": {
-     "cost": [
-      0.201,
-      0.5,
-      0.05,
-      0.0
-     ],
-     "limit": 262144,
-     "max_output": 64000,
-     "open": true,
-     "released": "2026-08-27"
     },
     "qwen3guard-gen-0.6b": {
      "cost": [
@@ -28280,6 +28220,7 @@
      ],
      "limit": 1048576,
      "max_output": 1048576,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistral-3-14B": {
@@ -31370,9 +31311,9 @@
     },
     "greenpt/deepseek-v4-flash-0731": {
      "cost": [
-      0.156408,
-      0.39102,
-      0.044688,
+      0.156506,
+      0.391265,
+      0.044716,
       0.0
      ],
      "knowledge": "2025-05",
@@ -31383,9 +31324,9 @@
     },
     "greenpt/deepseek-v4.1-flash": {
      "cost": [
-      0.245784,
-      1.22892,
-      0.012289,
+      0.245938,
+      1.229691,
+      0.012297,
       0.0
      ],
      "knowledge": "2025-05",
@@ -31396,8 +31337,8 @@
     },
     "greenpt/gpt-oss-120b": {
      "cost": [
-      0.22344,
-      0.78204,
+      0.22358,
+      0.78253,
       0.0,
       0.0
      ],
@@ -31409,8 +31350,8 @@
     },
     "greenpt/llama-3.3-70b-instruct": {
      "cost": [
-      1.22892,
-      1.22892,
+      1.229691,
+      1.229691,
       0.0,
       0.0
      ],
@@ -31422,8 +31363,8 @@
     },
     "greenpt/qwen3-235b-a22b-instruct-2507": {
      "cost": [
-      1.00548,
-      3.01644,
+      1.00611,
+      3.018331,
       0.0,
       0.0
      ],
@@ -31496,8 +31437,8 @@
     },
     "infomaniak/mistralai/Ministral-3-14B-Instruct-2512": {
      "cost": [
-      0.33516,
-      0.44688,
+      0.33537,
+      0.44716,
       0.0,
       0.0
      ],
@@ -31508,8 +31449,8 @@
     },
     "ionos/Qwen/Qwen3-Coder-Next": {
      "cost": [
-      0.16758,
-      0.89376,
+      0.167685,
+      0.89432,
       0.0,
       0.0
      ],
@@ -31521,8 +31462,8 @@
     },
     "ionos/meta-llama/Llama-3.3-70B-Instruct": {
      "cost": [
-      0.72618,
-      0.72618,
+      0.726635,
+      0.726635,
       0.0,
       0.0
      ],
@@ -31534,8 +31475,8 @@
     },
     "ionos/openai/gpt-oss-120b": {
      "cost": [
-      0.16758,
-      0.72618,
+      0.167685,
+      0.726635,
       0.0,
       0.0
      ],
@@ -31675,13 +31616,14 @@
     },
     "minimax/MiniMax-M3.1-Flash": {
      "cost": [
-      0.15,
-      0.6,
-      0.015,
+      0.075,
+      0.3,
+      0.0075,
       0.0
      ],
      "limit": 1048576,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistral/codestral-2508": {
@@ -33213,9 +33155,9 @@
     },
     "scaleway/deepseek-v4-flash-0731": {
      "cost": [
-      0.44688,
-      0.89376,
-      0.089376,
+      0.44716,
+      0.89432,
+      0.089432,
       0.0
      ],
      "knowledge": "2025-05",
@@ -33239,9 +33181,9 @@
     },
     "scaleway/deepseek-v4.1-flash-1017": {
      "cost": [
-      0.67032,
-      2.01096,
-      0.134064,
+      0.67074,
+      2.012221,
+      0.134148,
       0.0
      ],
      "knowledge": "2025-05",
@@ -33265,8 +33207,8 @@
     },
     "scaleway/gpt-oss-120b": {
      "cost": [
-      0.16758,
-      0.67032,
+      0.167685,
+      0.67074,
       0.0,
       0.0
      ],
@@ -33278,8 +33220,8 @@
     },
     "scaleway/llama-3.3-70b-instruct": {
      "cost": [
-      1.00548,
-      1.00548,
+      1.00611,
+      1.00611,
       0.0,
       0.0
      ],
@@ -33291,8 +33233,8 @@
     },
     "scaleway/qwen3-235b-a22b-instruct-2507": {
      "cost": [
-      0.8379,
-      2.5137,
+      0.838425,
+      2.515276,
       0.0,
       0.0
      ],
@@ -34730,6 +34672,7 @@
      ],
      "limit": 1048576,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistral-small-4": {
@@ -36303,6 +36246,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "accounts/fireworks/models/minimax-m3p1-flash-priority": {
@@ -36314,6 +36258,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "accounts/fireworks/models/muse-spark-open": {
@@ -40140,6 +40085,19 @@
      "open": true,
      "released": "2026-09-10"
     },
+    "deepseek-v4.1-flash-1017": {
+     "cost": [
+      0.402192,
+      1.61994,
+      0.044688,
+      0.0
+     ],
+     "knowledge": "2025-05",
+     "limit": 1000000,
+     "max_output": 384000,
+     "open": true,
+     "released": "2026-10-17"
+    },
     "devstral-2-123b-instruct-2512": {
      "cost": [
       0.57,
@@ -42126,6 +42084,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "Qwen/Qwen2.5-Coder-32B-Instruct": {
@@ -43109,7 +43068,7 @@
       0.0
      ],
      "knowledge": "2025-05",
-     "limit": 1048576,
+     "limit": 1000000,
      "max_output": 262144,
      "open": true,
      "released": "2026-09-10"
@@ -43261,6 +43220,19 @@
      "max_output": 512000,
      "open": true,
      "released": "2026-06-01"
+    },
+    "muse-spark-open": {
+     "cost": [
+      1.4,
+      4.65,
+      0.17,
+      0.0
+     ],
+     "knowledge": "2026-01-04",
+     "limit": 1048576,
+     "max_output": 1048576,
+     "open": true,
+     "released": "2026-10-15"
     },
     "prism": {
      "cost": [
@@ -44575,9 +44547,9 @@
     },
     "moonshotai/Kimi-K2.6": {
      "cost": [
-      0.6821,
-      3.5,
-      0.1831,
+      0.7795,
+      3.75,
+      0.2092,
       0.0
      ],
      "knowledge": "2025-01",
@@ -44603,7 +44575,7 @@
      "cost": [
       1.4,
       4.4,
-      0.16,
+      0.19,
       0.0
      ],
      "limit": 1048576,
@@ -44614,7 +44586,7 @@
     "zai-org/GLM-5.3": {
      "cost": [
       1.4,
-      2.64,
+      3.96,
       0.14,
       0.0
      ],
@@ -44625,9 +44597,9 @@
     },
     "zai-org/GLM-5.3-Flash": {
      "cost": [
-      0.19,
+      0.16,
       0.6,
-      0.06,
+      0.04,
       0.0
      ],
      "limit": 1048576,
@@ -48193,13 +48165,13 @@
     },
     "google/gemma-4-26b-a4b-it": {
      "cost": [
-      0.024,
-      0.1,
+      0.04,
+      0.15,
       0.01,
       0.0
      ],
      "limit": 262144,
-     "max_output": 235929,
+     "max_output": 32768,
      "open": true,
      "released": "2026-04-02"
     },
@@ -48331,17 +48303,6 @@
      "open": true,
      "released": "2026-09-29"
     },
-    "inclusionai/ling-3.1-flash-1019-free": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 1000000,
-     "max_output": 262144,
-     "released": "2025-08-26"
-    },
     "inference-net/schematron-v2-small": {
      "cost": [
       0.05,
@@ -48434,17 +48395,6 @@
      "max_output": 8192,
      "released": "2026-08-11"
     },
-    "liquid/lfm-2.5-2.6b:free": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 65536,
-     "max_output": 8192,
-     "released": "2026-08-11"
-    },
     "liquid/lfm-2.5-24b-a2b": {
      "cost": [
       0.05,
@@ -48482,14 +48432,14 @@
     },
     "meta-llama/llama-3.1-70b-instruct": {
      "cost": [
-      0.4,
-      0.4,
+      0.72,
+      0.72,
       0.0,
       0.0
      ],
      "knowledge": "2023-12",
      "limit": 131072,
-     "max_output": 16384,
+     "max_output": 8192,
      "open": true,
      "released": "2024-07-23"
     },
@@ -48527,8 +48477,8 @@
       0.0
      ],
      "knowledge": "2023-12",
-     "limit": 131072,
-     "max_output": 117964,
+     "limit": 80000,
+     "max_output": 72000,
      "open": true,
      "released": "2024-09-25"
     },
@@ -48541,7 +48491,7 @@
      ],
      "knowledge": "2023-12",
      "limit": 131072,
-     "max_output": 16384,
+     "max_output": 128000,
      "open": true,
      "released": "2024-12-06"
     },
@@ -48660,7 +48610,7 @@
      ],
      "knowledge": "2026-01-04",
      "limit": 1048576,
-     "max_output": 131072,
+     "max_output": 943718,
      "open": true,
      "released": "2026-10-15"
     },
@@ -48788,6 +48738,7 @@
      ],
      "limit": 1048576,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistralai/codestral-2508": {
@@ -49202,34 +49153,6 @@
      "max_output": 235929,
      "released": "2026-09-08"
     },
-    "nousresearch/hermes-3-llama-3.1-405b": {
-     "cost": [
-      1.0,
-      1.0,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2023-12-31",
-     "limit": 131072,
-     "max_output": 16384,
-     "open": true,
-     "released": "2024-08-16",
-     "status": "deprecated"
-    },
-    "nousresearch/hermes-3-llama-3.1-70b": {
-     "cost": [
-      0.7,
-      0.7,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2023-12-31",
-     "limit": 131072,
-     "max_output": 16384,
-     "open": true,
-     "released": "2024-08-18",
-     "status": "deprecated"
-    },
     "nousresearch/hermes-4-405b": {
      "cost": [
       1.0,
@@ -49245,9 +49168,9 @@
     },
     "nvidia/nemotron-3-nano-30b-a3b": {
      "cost": [
-      0.05,
-      0.2,
-      0.0,
+      0.06,
+      0.24,
+      0.012,
       0.0
      ],
      "knowledge": "2025-06-25",
@@ -49316,18 +49239,6 @@
      ],
      "limit": 131072,
      "max_output": 117964,
-     "open": true,
-     "released": "2026-06-02"
-    },
-    "nvidia/nemotron-3.5-content-safety:free": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000,
-     "max_output": 8192,
      "open": true,
      "released": "2026-06-02"
     },
@@ -50000,9 +49911,9 @@
     },
     "openai/gpt-oss-120b": {
      "cost": [
-      0.018,
-      0.067,
-      0.0,
+      0.022,
+      0.081,
+      0.02,
       0.0
      ],
      "knowledge": "2024-06",
@@ -50013,14 +49924,14 @@
     },
     "openai/gpt-oss-20b": {
      "cost": [
-      0.005,
-      0.02,
-      0.0,
+      0.018,
+      0.09,
+      0.009,
       0.0
      ],
      "knowledge": "2024-06",
      "limit": 131072,
-     "max_output": 117964,
+     "max_output": 32768,
      "open": true,
      "released": "2025-08-05"
     },
@@ -50288,13 +50199,13 @@
     },
     "qwen/qwen3-235b-a22b-2507": {
      "cost": [
-      0.09,
-      0.55,
-      0.0,
+      0.14,
+      0.8,
+      0.05,
       0.0
      ],
-     "limit": 262144,
-     "max_output": 16384,
+     "limit": 131072,
+     "max_output": 117964,
      "open": true,
      "released": "2025-07-21"
     },
@@ -50362,8 +50273,8 @@
     },
     "qwen/qwen3-coder-30b-a3b-instruct": {
      "cost": [
-      0.07,
-      0.28,
+      0.15,
+      0.6,
       0.0,
       0.0
      ],
@@ -50400,14 +50311,14 @@
     },
     "qwen/qwen3-next-80b-a3b-instruct": {
      "cost": [
-      0.09,
+      0.1,
       1.1,
-      0.0,
+      0.07,
       0.0
      ],
      "knowledge": "2025-04",
      "limit": 262144,
-     "max_output": 16384,
+     "max_output": 235929,
      "open": true,
      "released": "2025-09"
     },
@@ -50701,17 +50612,6 @@
      "max_output": 131072,
      "released": "2026-09-17"
     },
-    "recursive/flint-v1.0:free": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 262144,
-     "max_output": 235929,
-     "released": "2026-10-21"
-    },
     "reflection/beam-1.0-501b-a23b": {
      "cost": [
       0.25,
@@ -50974,9 +50874,9 @@
     },
     "tencent/hy3": {
      "cost": [
-      0.132,
-      0.528,
-      0.033,
+      0.0825,
+      0.33,
+      0.020625,
       0.0
      ],
      "limit": 262144,
@@ -50998,9 +50898,9 @@
     },
     "tencent/hy4-preview": {
      "cost": [
-      0.834,
-      2.501,
-      0.042,
+      0.7506,
+      2.2509,
+      0.0378,
       0.0
      ],
      "limit": 1048576,
@@ -51278,8 +51178,8 @@
     },
     "xiaomi/mimo-v2.6-flash": {
      "cost": [
-      0.087,
-      0.187,
+      0.1,
+      0.28,
       0.003,
       0.0
      ],
@@ -51290,9 +51190,9 @@
     },
     "xiaomi/mimo-v2.6-pro": {
      "cost": [
-      0.43,
+      0.435,
       0.87,
-      0.0036,
+      0.004,
       0.0
      ],
      "limit": 1048576,
@@ -51311,17 +51211,6 @@
      "max_output": 131072,
      "open": true,
      "released": "2026-09-21"
-    },
-    "xingchen-agi/xing4.0-29b-a4b:free": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 262144,
-     "max_output": 235929,
-     "released": "2026-10-16"
     },
     "z-ai/glm-4.5": {
      "cost": [
@@ -51489,12 +51378,23 @@
      "cost": [
       0.37,
       1.25,
-      0.09,
+      0.075,
       0.0
      ],
      "limit": 1048576,
      "max_output": 131072,
      "released": "2026-09-18"
+    },
+    "z-ai/glm-5.3-flashx-legal": {
+     "cost": [
+      0.37,
+      1.25,
+      0.075,
+      0.0
+     ],
+     "limit": 1048576,
+     "max_output": 131072,
+     "released": "2026-11-02"
     },
     "z-ai/glm-5.3-prime": {
      "cost": [
@@ -51566,8 +51466,8 @@
     "~deepseek/deepseek-flash-latest": {
      "cost": [
       0.035,
-      0.5,
-      0.005,
+      0.315,
+      0.006,
       0.0
      ],
      "limit": 1048576,
@@ -51587,7 +51487,7 @@
     },
     "~deepseek/deepseek-v4-flash-latest": {
      "cost": [
-      0.0434,
+      0.059,
       0.3,
       0.035,
       0.0
@@ -51620,9 +51520,9 @@
     },
     "~moonshotai/kimi-latest": {
      "cost": [
-      0.1495,
-      7.15,
-      0.07475,
+      0.151,
+      10.5354,
+      0.15,
       0.0
      ],
      "limit": 1048576,
@@ -51708,9 +51608,9 @@
     },
     "~z-ai/glm-flash-latest": {
      "cost": [
-      0.0285,
-      0.0923,
-      0.0285,
+      0.0313,
+      0.0784,
+      0.03,
       0.0
      ],
      "limit": 1048576,
@@ -53825,6 +53725,7 @@
      ],
      "limit": 1048576,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimax-text-01": {
@@ -56035,6 +55936,18 @@
      "open": true,
      "released": "2026-08-26"
     },
+    "baidu/kimi-k3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
+      0.0
+     ],
+     "limit": 1048576,
+     "max_output": 1048576,
+     "open": true,
+     "released": "2026-07-16"
+    },
     "bytedance/deepseek-v3.2": {
      "cost": [
       0.28,
@@ -57144,6 +57057,7 @@
      ],
      "limit": 1000000,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "luminal/deepseek-v4.1-flash": {
@@ -57329,6 +57243,7 @@
      ],
      "limit": 1048576,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimax/minimax-text-01": {
@@ -57583,6 +57498,7 @@
      ],
      "limit": 1048576,
      "max_output": 1048576,
+     "open": true,
      "released": "2026-10-19"
     },
     "novita/deepseek-v4-flash": {
@@ -57906,6 +57822,7 @@
      ],
      "limit": 1000000,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "novita/qwen3-vl-30b-a3b-instruct": {
@@ -58486,9 +58403,9 @@
     },
     "reka-ai/deepseek-v4.1-flash-1017": {
      "cost": [
-      0.15,
-      0.6,
-      0.0054,
+      0.155,
+      0.62,
+      0.006,
       0.0
      ],
      "knowledge": "2025-05",
@@ -59309,6 +59226,7 @@
      ],
      "limit": 1048576,
      "max_output": 1048576,
+     "open": true,
      "released": "2026-10-19"
     },
     "together-ai/muse-glimmer-30b": {
@@ -62312,6 +62230,7 @@
      ],
      "limit": 1000000,
      "max_output": 128000,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistral/codestral-latest": {
@@ -64274,6 +64193,7 @@
      ],
      "limit": 1000000,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     }
    },
@@ -64394,6 +64314,7 @@
      ],
      "limit": 1000000,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     }
    },
@@ -64500,6 +64421,7 @@
      ],
      "limit": 1000000,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "MiniMax-M3.1-Flash-Preview": {
@@ -64618,6 +64540,7 @@
      ],
      "limit": 1000000,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "MiniMax-M3.1-Flash-Preview": {
@@ -65596,6 +65519,7 @@
      ],
      "limit": 1048576,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "deepseek/deepseek-v4.1-flash": {
@@ -66194,18 +66118,6 @@
      "max_output": 16384,
      "open": true,
      "released": "2025-09-25"
-    },
-    "EVA-UNIT-01/EVA-Qwen2.5-32B-v0.2": {
-     "cost": [
-      0.799,
-      0.799,
-      0.3995,
-      0.0
-     ],
-     "limit": 16384,
-     "max_output": 8192,
-     "open": true,
-     "released": "2025-07-26"
     },
     "EVA-UNIT-01/EVA-Qwen2.5-72B-v0.2": {
      "cost": [
@@ -68186,18 +68098,6 @@
      "open": true,
      "released": "2025-08-21"
     },
-    "deepcogito/cogito-v1-preview-qwen-32B": {
-     "cost": [
-      1.8,
-      1.8,
-      0.9,
-      0.0
-     ],
-     "limit": 128000,
-     "max_output": 32768,
-     "open": true,
-     "released": "2025-05-10"
-    },
     "deepseek-ai/DeepSeek-R1-0528": {
      "cost": [
       0.5,
@@ -68321,9 +68221,9 @@
     },
     "deepseek/deepseek-latest": {
      "cost": [
-      0.2838,
-      0.8514,
-      0.00903,
+      0.3696,
+      1.1088,
+      0.01176,
       0.0
      ],
      "limit": 1048576,
@@ -68398,9 +68298,9 @@
     },
     "deepseek/deepseek-v4-flash-0731": {
      "cost": [
-      0.04444,
-      0.13332,
-      0.001414,
+      0.05,
+      0.16,
+      0.013,
       0.0
      ],
      "knowledge": "2025-05",
@@ -68411,9 +68311,9 @@
     },
     "deepseek/deepseek-v4-flash-0731:thinking": {
      "cost": [
-      0.04444,
-      0.13332,
-      0.001414,
+      0.05,
+      0.16,
+      0.013,
       0.0
      ],
      "knowledge": "2025-05",
@@ -68426,7 +68326,7 @@
      "cost": [
       0.1,
       0.6,
-      0.005,
+      0.0042,
       0.0
      ],
      "limit": 1048576,
@@ -68474,9 +68374,9 @@
     },
     "deepseek/deepseek-v4-pro-0813": {
      "cost": [
-      0.2838,
-      0.8514,
-      0.00903,
+      0.3696,
+      1.1088,
+      0.01176,
       0.0
      ],
      "limit": 1048576,
@@ -68486,9 +68386,9 @@
     },
     "deepseek/deepseek-v4-pro-0813:thinking": {
      "cost": [
-      0.2838,
-      0.8514,
-      0.00903,
+      0.3696,
+      1.1088,
+      0.01176,
       0.0
      ],
      "limit": 1048576,
@@ -68511,9 +68411,9 @@
     },
     "deepseek/deepseek-v4.1-flash": {
      "cost": [
-      0.0447,
-      0.1788,
-      0.000894,
+      0.033,
+      0.132,
+      0.00066,
       0.0
      ],
      "knowledge": "2025-05",
@@ -68550,7 +68450,7 @@
      "cost": [
       0.1,
       0.6,
-      0.005,
+      0.0042,
       0.0
      ],
      "knowledge": "2025-05",
@@ -68587,7 +68487,7 @@
      "cost": [
       0.1,
       0.6,
-      0.005,
+      0.0042,
       0.0
      ],
      "knowledge": "2025-05",
@@ -68622,9 +68522,9 @@
     },
     "deepseek/deepseek-v4.1-flash:thinking": {
      "cost": [
-      0.0447,
-      0.1788,
-      0.000894,
+      0.033,
+      0.132,
+      0.00066,
       0.0
      ],
      "knowledge": "2025-05",
@@ -69482,9 +69382,9 @@
     },
     "google/gemma-4-26b-a4b-it": {
      "cost": [
+      0.07,
+      0.24,
       0.046,
-      0.138,
-      0.023,
       0.0
      ],
      "limit": 262144,
@@ -69506,9 +69406,9 @@
     },
     "google/gemma-4-26b-a4b-it:thinking": {
      "cost": [
+      0.07,
+      0.24,
       0.046,
-      0.138,
-      0.023,
       0.0
      ],
      "limit": 262144,
@@ -69668,18 +69568,6 @@
      "max_output": 16384,
      "open": true,
      "released": "2025-08-08"
-    },
-    "huihui-ai/Qwen2.5-32B-Instruct-abliterated": {
-     "cost": [
-      0.7,
-      0.7,
-      0.35,
-      0.0
-     ],
-     "limit": 32768,
-     "max_output": 8192,
-     "open": true,
-     "released": "2025-01-06"
     },
     "ibm-granite/granite-4.2-8b": {
      "cost": [
@@ -70139,17 +70027,6 @@
      "open": true,
      "released": "2025-10-27"
     },
-    "minimax/minimax-m2-her": {
-     "cost": [
-      0.302,
-      1.207,
-      0.151,
-      0.0
-     ],
-     "limit": 65532,
-     "max_output": 2048,
-     "released": "2026-01-23"
-    },
     "minimax/minimax-m2.1": {
      "cost": [
       0.3,
@@ -70219,6 +70096,7 @@
      ],
      "limit": 1048576,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimax/minimax-m3:thinking": {
@@ -70677,9 +70555,9 @@
     },
     "moonshotai/kimi-k3": {
      "cost": [
-      0.1495,
-      7.15,
-      0.07475,
+      0.45,
+      9.6,
+      0.13,
       0.0
      ],
      "limit": 1048576,
@@ -70960,18 +70838,6 @@
      "max_output": 16384,
      "open": true,
      "released": "2026-10-15"
-    },
-    "openai/gpt-4-turbo": {
-     "cost": [
-      10.0,
-      30.0,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2023-12",
-     "limit": 128000,
-     "max_output": 4096,
-     "released": "2023-11-06"
     },
     "openai/gpt-4.1": {
      "cost": [
@@ -71495,9 +71361,9 @@
     },
     "openai/gpt-oss-20b": {
      "cost": [
-      0.004,
-      0.017,
-      0.0,
+      0.02,
+      0.1,
+      0.014,
       0.0
      ],
      "knowledge": "2024-06",
@@ -71576,30 +71442,6 @@
      "max_output": 100000,
      "released": "2025-04-16"
     },
-    "openai/o3-mini": {
-     "cost": [
-      1.1,
-      4.4,
-      0.55,
-      0.0
-     ],
-     "knowledge": "2024-05",
-     "limit": 200000,
-     "max_output": 100000,
-     "released": "2024-12-20"
-    },
-    "openai/o3-mini-high": {
-     "cost": [
-      1.1,
-      4.4,
-      0.55,
-      0.0
-     ],
-     "knowledge": "2024-05",
-     "limit": 200000,
-     "max_output": 100000,
-     "released": "2024-12-20"
-    },
     "openai/o3-mini-low": {
      "cost": [
       1.1,
@@ -71624,29 +71466,27 @@
      "max_output": 100000,
      "released": "2025-06-10"
     },
-    "openai/o4-mini": {
+    "orca/orcacyber-minimax-m3.1-flash": {
      "cost": [
-      1.1,
-      4.4,
-      0.55,
+      0.8,
+      1.6,
+      0.15,
       0.0
      ],
-     "knowledge": "2024-05",
-     "limit": 200000,
-     "max_output": 100000,
-     "released": "2025-04-16"
+     "limit": 261632,
+     "max_output": 131072,
+     "released": "2026-11-02"
     },
-    "openai/o4-mini-high": {
+    "orca/orcacyber-qwen3.8-flash-next": {
      "cost": [
-      1.1,
-      4.4,
-      0.55,
+      0.8,
+      1.6,
+      0.15,
       0.0
      ],
-     "knowledge": "2024-05",
-     "limit": 200000,
-     "max_output": 100000,
-     "released": "2025-04-16"
+     "limit": 261632,
+     "max_output": 131072,
+     "released": "2026-11-02"
     },
     "orca/orcacyber-zero-1.5": {
      "cost": [
@@ -71661,9 +71501,9 @@
     },
     "ornith-ai/ornith-1.5-122b": {
      "cost": [
-      0.26,
-      2.08,
-      0.07,
+      0.2,
+      0.8,
+      0.02,
       0.0
      ],
      "limit": 262144,
@@ -71773,40 +71613,16 @@
       0.075,
       0.0
      ],
-     "limit": 10000000,
+     "limit": 250000,
      "max_output": 60000,
      "released": "2026-08-04"
     },
-    "poolside/laguna-s-2.1": {
-     "cost": [
-      0.1,
-      0.2,
-      0.01,
-      0.0
-     ],
-     "limit": 1048576,
-     "max_output": 131072,
-     "open": true,
-     "released": "2026-07-21"
-    },
-    "poolside/laguna-s-2.1:thinking": {
-     "cost": [
-      0.1,
-      0.2,
-      0.01,
-      0.0
-     ],
-     "limit": 1048576,
-     "max_output": 131072,
-     "open": true,
-     "released": "2026-07-21"
-    },
     "pqhaz/DeepSeek-V4.1-Flash-1017-heretic": {
      "cost": [
-      0.1854,
-      0.7416,
-      0.01236,
-      0.1854
+      0.198,
+      0.792,
+      0.0132,
+      0.198
      ],
      "limit": 512000,
      "max_output": 128000,
@@ -71815,10 +71631,10 @@
     },
     "pqhaz/DeepSeek-V4.1-Flash-1017-heretic:thinking": {
      "cost": [
-      0.1854,
-      0.7416,
-      0.01236,
-      0.1854
+      0.198,
+      0.792,
+      0.0132,
+      0.198
      ],
      "limit": 512000,
      "max_output": 128000,
@@ -71860,17 +71676,6 @@
      "max_output": 8192,
      "open": true,
      "released": "2025-07-03"
-    },
-    "qwen/qwen-long": {
-     "cost": [
-      0.1003,
-      0.408,
-      0.05015,
-      0.0
-     ],
-     "limit": 10000000,
-     "max_output": 8192,
-     "released": "2024-08-01"
     },
     "qwen/qwen-max": {
      "cost": [
@@ -72319,7 +72124,7 @@
       0.0
      ],
      "limit": 1048576,
-     "max_output": 16384,
+     "max_output": 65536,
      "open": true,
      "released": "2026-04-17"
     },
@@ -72331,7 +72136,7 @@
       0.0
      ],
      "limit": 1048576,
-     "max_output": 16384,
+     "max_output": 65536,
      "open": true,
      "released": "2026-04-17"
     },
@@ -72446,7 +72251,7 @@
       0.0
      ],
      "limit": 1048576,
-     "max_output": 32768,
+     "max_output": 65536,
      "open": true,
      "released": "2026-08-14"
     },
@@ -72626,7 +72431,7 @@
       0.0
      ],
      "limit": 1048576,
-     "max_output": 32768,
+     "max_output": 65536,
      "open": true,
      "released": "2026-08-14"
     },
@@ -72816,18 +72621,6 @@
      "open": true,
      "released": "2024-01-01"
     },
-    "soob3123/Veiled-Calla-12B": {
-     "cost": [
-      0.3,
-      0.3,
-      0.15,
-      0.0
-     ],
-     "limit": 32768,
-     "max_output": 8192,
-     "open": true,
-     "released": "2025-04-13"
-    },
     "soob3123/amoral-gemma3-27B-v2": {
      "cost": [
       0.3,
@@ -72939,9 +72732,9 @@
     },
     "tencent/hy4-preview": {
      "cost": [
-      0.834,
-      2.501,
-      0.042,
+      0.7506,
+      2.2509,
+      0.0378,
       0.0
      ],
      "limit": 1048576,
@@ -73259,9 +73052,9 @@
     },
     "xiaomi/mimo-v2.5-pro": {
      "cost": [
-      0.435,
-      0.87,
-      0.0036,
+      0.49,
+      0.97,
+      0.004,
       0.0
      ],
      "knowledge": "2024-12",
@@ -73272,9 +73065,9 @@
     },
     "xiaomi/mimo-v2.5-pro:thinking": {
      "cost": [
-      0.435,
-      0.87,
-      0.0036,
+      0.49,
+      0.97,
+      0.004,
       0.0
      ],
      "knowledge": "2024-12",
@@ -73698,7 +73491,7 @@
     },
     "z-ai/glm-5.2": {
      "cost": [
-      0.07,
+      0.087,
       1.4,
       0.069,
       0.0
@@ -73710,7 +73503,7 @@
     },
     "z-ai/glm-5.2:thinking": {
      "cost": [
-      0.07,
+      0.087,
       1.4,
       0.069,
       0.0
@@ -73791,6 +73584,17 @@
      "max_output": 32768,
      "open": true,
      "released": "2026-07-29"
+    },
+    "z-ai/glm-5.3-flashx-legal": {
+     "cost": [
+      0.37,
+      1.25,
+      0.075,
+      0.0
+     ],
+     "limit": 1048576,
+     "max_output": 131072,
+     "released": "2026-11-02"
     },
     "z-ai/glm-5.3-uncensored": {
      "cost": [
@@ -74659,6 +74463,7 @@
      ],
      "limit": 1048576,
      "max_output": 1048576,
+     "open": true,
      "released": "2026-10-19"
     },
     "NousResearch/Hermes-4-405B": {
@@ -76709,6 +76514,7 @@
      ],
      "limit": 1000000,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimaxai/minimax-m1-80k": {
@@ -77054,7 +76860,7 @@
       0.15,
       0.47,
       0.016,
-      0.0
+      0.2
      ],
      "limit": 1000000,
      "max_output": 131072,
@@ -77511,6 +77317,7 @@
      ],
      "limit": 262144,
      "max_output": 262144,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistralai/magistral-small-2506": {
@@ -80330,6 +80137,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistral-large-3:675b": {
@@ -81923,6 +81731,17 @@
      "max_output": 128000,
      "released": "2026-09-28"
     },
+    "crouton-alpha-free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576,
+     "max_output": 270000,
+     "released": "2026-11-03"
+    },
     "deepseek-v4-flash": {
      "cost": [
       0.14,
@@ -83226,6 +83045,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19",
      "status": "deprecated"
     },
@@ -83363,6 +83183,17 @@
      "open": true,
      "released": "2026-06-09",
      "status": "deprecated"
+    },
+    "pulse-alpha-free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576,
+     "max_output": 131072,
+     "released": "2026-11-02"
     },
     "qwen3-coder": {
      "cost": [
@@ -83918,6 +83749,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimax-m3.1-flash-free": {
@@ -83929,6 +83761,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19",
      "status": "deprecated"
     },
@@ -84828,9 +84661,9 @@
     },
     "deepseek/deepseek-v4-flash-0731": {
      "cost": [
-      0.119,
-      0.238,
-      0.0238,
+      0.059,
+      0.3,
+      0.035,
       0.0
      ],
      "knowledge": "2025-05",
@@ -84880,7 +84713,7 @@
      "cost": [
       0.045,
       0.5,
-      0.006,
+      0.012,
       0.0
      ],
      "knowledge": "2025-05",
@@ -85318,13 +85151,13 @@
     },
     "google/gemma-4-26b-a4b-it": {
      "cost": [
-      0.0675,
-      0.225,
-      0.0375,
+      0.077,
+      0.23,
+      0.038,
       0.0
      ],
      "limit": 262144,
-     "max_output": 235929,
+     "max_output": 32768,
      "open": true,
      "released": "2026-04-02"
     },
@@ -85565,14 +85398,14 @@
     },
     "meta-llama/llama-3.1-70b-instruct": {
      "cost": [
-      0.4,
-      0.4,
+      0.72,
+      0.72,
       0.0,
       0.0
      ],
      "knowledge": "2023-12",
      "limit": 131072,
-     "max_output": 16384,
+     "max_output": 8192,
      "open": true,
      "released": "2024-07-23"
     },
@@ -85604,27 +85437,27 @@
     },
     "meta-llama/llama-3.2-3b-instruct": {
      "cost": [
-      0.05,
-      0.33,
+      0.0509,
+      0.335,
       0.0,
       0.0
      ],
      "knowledge": "2023-12",
      "limit": 131072,
-     "max_output": 117964,
+     "max_output": 72000,
      "open": true,
      "released": "2024-09-25"
     },
     "meta-llama/llama-3.3-70b-instruct": {
      "cost": [
+      0.2,
+      0.52,
       0.1,
-      0.32,
-      0.0,
       0.0
      ],
      "knowledge": "2023-12",
      "limit": 131072,
-     "max_output": 16384,
+     "max_output": 128000,
      "open": true,
      "released": "2024-12-06"
     },
@@ -85743,7 +85576,7 @@
      ],
      "knowledge": "2026-01-04",
      "limit": 1048576,
-     "max_output": 131072,
+     "max_output": 943718,
      "open": true,
      "released": "2026-10-15"
     },
@@ -85869,13 +85702,14 @@
     },
     "minimax/minimax-m3.1-flash": {
      "cost": [
-      0.15,
-      0.6,
-      0.015,
+      0.075,
+      0.3,
+      0.0075,
       0.0
      ],
      "limit": 1048576,
      "max_output": 524288,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistralai/codestral-2508": {
@@ -86227,9 +86061,9 @@
     },
     "moonshotai/kimi-k3": {
      "cost": [
-      0.192,
+      0.2,
       15.0,
-      0.182,
+      0.19,
       0.0
      ],
      "limit": 1048576,
@@ -86293,34 +86127,6 @@
      "max_output": 235929,
      "open": true,
      "released": "2026-09-08"
-    },
-    "nousresearch/hermes-3-llama-3.1-405b": {
-     "cost": [
-      1.0,
-      1.0,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2023-12-31",
-     "limit": 131072,
-     "max_output": 16384,
-     "open": true,
-     "released": "2024-08-16",
-     "status": "deprecated"
-    },
-    "nousresearch/hermes-3-llama-3.1-70b": {
-     "cost": [
-      0.7,
-      0.7,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2023-12-31",
-     "limit": 131072,
-     "max_output": 16384,
-     "open": true,
-     "released": "2024-08-18",
-     "status": "deprecated"
     },
     "nousresearch/hermes-4-405b": {
      "cost": [
@@ -87374,9 +87180,9 @@
     },
     "openai/gpt-oss-120b": {
      "cost": [
-      0.017,
-      0.062,
-      0.0,
+      0.15,
+      0.6,
+      0.075,
       0.0
      ],
      "knowledge": "2024-06",
@@ -87650,13 +87456,13 @@
     },
     "qwen/qwen3-235b-a22b-2507": {
      "cost": [
-      0.09,
-      0.55,
-      0.0,
+      0.14,
+      0.8,
+      0.05,
       0.0
      ],
      "limit": 262144,
-     "max_output": 16384,
+     "max_output": 117964,
      "open": true,
      "released": "2025-07-21"
     },
@@ -87724,8 +87530,8 @@
     },
     "qwen/qwen3-coder-30b-a3b-instruct": {
      "cost": [
-      0.07,
-      0.28,
+      0.15,
+      0.6,
       0.0,
       0.0
      ],
@@ -87788,14 +87594,14 @@
     },
     "qwen/qwen3-next-80b-a3b-instruct": {
      "cost": [
-      0.09,
+      0.1,
       1.1,
-      0.0,
+      0.07,
       0.0
      ],
      "knowledge": "2025-04",
      "limit": 262144,
-     "max_output": 16384,
+     "max_output": 235929,
      "open": true,
      "released": "2025-09"
     },
@@ -88140,7 +87946,7 @@
       0.0375,
       0.0
      ],
-     "limit": 1000000,
+     "limit": 1024000,
      "max_output": 235929,
      "open": true,
      "released": "2026-08-14"
@@ -88471,9 +88277,9 @@
     },
     "tencent/hy3": {
      "cost": [
-      0.132,
-      0.528,
-      0.033,
+      0.0825,
+      0.33,
+      0.020625,
       0.0
      ],
      "limit": 262144,
@@ -88495,9 +88301,9 @@
     },
     "tencent/hy4-preview": {
      "cost": [
-      0.834,
-      2.501,
-      0.042,
+      0.7506,
+      2.2509,
+      0.0378,
       0.0
      ],
      "limit": 1048576,
@@ -89070,9 +88876,9 @@
     },
     "z-ai/glm-5.3-flash": {
      "cost": [
-      0.0285,
-      0.0923,
-      0.0285,
+      0.0313,
+      0.0846,
+      0.03,
       0.0
      ],
      "limit": 1048576,
@@ -89084,12 +88890,23 @@
      "cost": [
       0.37,
       1.25,
-      0.09,
+      0.075,
       0.0
      ],
      "limit": 1048576,
      "max_output": 131072,
      "released": "2026-09-18"
+    },
+    "z-ai/glm-5.3-flashx-legal": {
+     "cost": [
+      0.37,
+      1.25,
+      0.075,
+      0.0
+     ],
+     "limit": 1048576,
+     "max_output": 131072,
+     "released": "2026-11-02"
     },
     "z-ai/glm-5.3-prime": {
      "cost": [
@@ -89175,8 +88992,8 @@
     "~deepseek/deepseek-flash-latest": {
      "cost": [
       0.035,
-      0.5,
-      0.005,
+      0.315,
+      0.006,
       0.0
      ],
      "limit": 1048576,
@@ -89196,7 +89013,7 @@
     },
     "~deepseek/deepseek-v4-flash-latest": {
      "cost": [
-      0.0434,
+      0.059,
       0.3,
       0.035,
       0.0
@@ -89245,9 +89062,9 @@
     },
     "~moonshotai/kimi-latest": {
      "cost": [
-      0.1495,
-      7.15,
-      0.07475,
+      0.2,
+      15.0,
+      0.19,
       0.0
      ],
      "limit": 1048576,
@@ -89407,9 +89224,9 @@
     },
     "~z-ai/glm-flash-latest": {
      "cost": [
-      0.0285,
-      0.0923,
-      0.0285,
+      0.0313,
+      0.0846,
+      0.03,
       0.0
      ],
      "limit": 1048576,
@@ -94796,10 +94613,10 @@
     },
     "deepseek/deepseek-v4.1-flash": {
      "cost": [
-      0.3,
+      0.156,
       1.2,
-      0.006,
-      0.3
+      0.0048,
+      0.156
      ],
      "knowledge": "2025-05",
      "limit": 1048576,
@@ -94809,10 +94626,10 @@
     },
     "deepseek/deepseek-v4.1-flash-1017": {
      "cost": [
-      0.3,
+      0.156,
       1.2,
       0.006,
-      0.3
+      0.156
      ],
      "knowledge": "2025-05",
      "limit": 1048576,
@@ -94925,7 +94742,7 @@
      ],
      "knowledge": "2023-12",
      "limit": 131072,
-     "max_output": 16384,
+     "max_output": 128000,
      "open": true,
      "released": "2024-12-06"
     },
@@ -94938,7 +94755,7 @@
      ],
      "knowledge": "2026-01-04",
      "limit": 1048576,
-     "max_output": 131072,
+     "max_output": 943718,
      "open": true,
      "released": "2026-10-15"
     },
@@ -95467,10 +95284,10 @@
     },
     "z-ai/glm-5.3": {
      "cost": [
-      0.98,
+      0.5,
       3.08,
-      0.182,
-      0.98
+      0.093,
+      0.5
      ],
      "limit": 1048576,
      "max_output": 131072,
@@ -99189,6 +99006,7 @@
      ],
      "limit": 1000000,
      "max_output": 128000,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimax-m3.1-flash@eu": {
@@ -99200,6 +99018,7 @@
      ],
      "limit": 1048576,
      "max_output": 1048576,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimax-m3@eu": {
@@ -107934,7 +107753,7 @@
      ],
      "knowledge": "2025-05",
      "limit": 1000000,
-     "max_output": 131072,
+     "max_output": 262144,
      "open": true,
      "released": "2026-09-10"
     },
@@ -107947,7 +107766,7 @@
      ],
      "knowledge": "2025-05",
      "limit": 1000000,
-     "max_output": 131072,
+     "max_output": 262144,
      "open": true,
      "released": "2026-10-17"
     },
@@ -107984,7 +107803,7 @@
      ],
      "knowledge": "2025-05",
      "limit": 1000000,
-     "max_output": 32768,
+     "max_output": 262144,
      "open": true,
      "released": "2026-04-24"
     },
@@ -107997,7 +107816,7 @@
      ],
      "knowledge": "2025-05",
      "limit": 1000000,
-     "max_output": 32768,
+     "max_output": 262144,
      "open": true,
      "released": "2026-07-31"
     },
@@ -108023,7 +107842,7 @@
      ],
      "knowledge": "2025-05",
      "limit": 1000000,
-     "max_output": 32768,
+     "max_output": 262144,
      "open": true,
      "released": "2026-04-24"
     },
@@ -108035,7 +107854,7 @@
       0.0
      ],
      "limit": 1000000,
-     "max_output": 32768,
+     "max_output": 262144,
      "open": true,
      "released": "2026-08-13"
     },
@@ -108181,7 +108000,7 @@
       0.0
      ],
      "limit": 256000,
-     "max_output": 8192,
+     "max_output": 16384,
      "open": true,
      "released": "2026-04-02"
     },
@@ -108194,7 +108013,7 @@
      ],
      "knowledge": "2025-01",
      "limit": 256000,
-     "max_output": 8192,
+     "max_output": 16384,
      "open": true,
      "released": "2026-04-02"
     },
@@ -108374,20 +108193,6 @@
        }
       }
      ]
-    },
-    "hermes-3-llama-3.1-405b": {
-     "cost": [
-      1.1,
-      3.0,
-      0.0,
-      0.0
-     ],
-     "knowledge": "2023-12-31",
-     "limit": 128000,
-     "max_output": 16384,
-     "open": true,
-     "released": "2024-08-16",
-     "status": "deprecated"
     },
     "hy4-preview": {
      "cost": [
@@ -108578,6 +108383,7 @@
      ],
      "limit": 1000000,
      "max_output": 131072,
+     "open": true,
      "released": "2026-10-19"
     },
     "minimax-m3-preview": {
@@ -108588,7 +108394,7 @@
       0.0
      ],
      "limit": 524288,
-     "max_output": 65536,
+     "max_output": 131072,
      "open": true,
      "released": "2026-06-12"
     },
@@ -108637,7 +108443,7 @@
       0.0
      ],
      "limit": 262144,
-     "max_output": 32768,
+     "max_output": 102400,
      "open": true,
      "released": "2026-10-15"
     },
@@ -111023,9 +110829,9 @@
     },
     "inclusionai/ling-3.1-flash-1019": {
      "cost": [
-      0.0,
-      0.0,
-      0.0,
+      0.3,
+      0.9,
+      0.06,
       0.0
      ],
      "limit": 1000000,
@@ -111076,7 +110882,7 @@
      "max_output": 8200,
      "released": "2026-10-13"
     },
-    "meituan/longcat-2.5-preview": {
+    "meituan/longcat-2.5": {
      "cost": [
       0.3,
       1.2,
@@ -111085,7 +110891,7 @@
      ],
      "limit": 1048576,
      "max_output": 131072,
-     "released": "2026-09-25"
+     "released": "2026-11-02"
     },
     "meta/llama-3.1-70b": {
      "cost": [
@@ -111369,6 +111175,7 @@
      ],
      "limit": 1048576,
      "max_output": 1048576,
+     "open": true,
      "released": "2026-10-19"
     },
     "mistral/codestral": {
@@ -113544,32 +113351,6 @@
      "open": true,
      "released": "2026-07-30"
     },
-    "xiaomi/mimo-v2.5": {
-     "cost": [
-      0.119,
-      0.238,
-      0.0025,
-      0.0
-     ],
-     "knowledge": "2024-12",
-     "limit": 1050000,
-     "max_output": 131100,
-     "open": true,
-     "released": "2026-04-22"
-    },
-    "xiaomi/mimo-v2.5-pro": {
-     "cost": [
-      0.3045,
-      0.609,
-      0.0028,
-      0.0
-     ],
-     "knowledge": "2024-12",
-     "limit": 1050000,
-     "max_output": 131000,
-     "open": true,
-     "released": "2026-04-22"
-    },
     "xiaomi/mimo-v2.6-flash": {
      "cost": [
       0.14,
@@ -113803,6 +113584,17 @@
      "max_output": 131072,
      "open": true,
      "released": "2026-08-26"
+    },
+    "zai/glm-5.3-flashx-legal": {
+     "cost": [
+      0.37,
+      1.25,
+      0.075,
+      0.0
+     ],
+     "limit": 1000000,
+     "max_output": 131072,
+     "released": "2026-11-02"
     },
     "zai/glm-5v-turbo": {
      "cost": [
@@ -115653,8 +115445,8 @@
     },
     "zai-org/GLM-5.3": {
      "cost": [
-      1.2,
-      4.0,
+      0.75,
+      3.0,
       0.19,
       0.0
      ],
@@ -117542,6 +117334,7 @@
      ],
      "limit": 1000000,
      "max_output": 512000,
+     "open": true,
      "released": "2026-10-19"
     },
     "moonshotai/kimi-k2.6": {
