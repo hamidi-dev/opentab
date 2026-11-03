@@ -141,7 +141,11 @@ class CopilotStore:
     def _nano_usd(cls, value) -> float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return 0.0
-        if not math.isfinite(value) or value <= 0:
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:  # an int beyond the float range
+            return 0.0
+        if not finite or value <= 0:
             return 0.0
         return value * cls._USD_PER_NANO_AIU
 
@@ -717,7 +721,7 @@ class CopilotStore:
         for event in self._events.records(sid, {"session.usage_checkpoint"}):
             value = event["data"].get("totalNanoAiu")
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                checkpoint = value * self._USD_PER_NANO_AIU
+                checkpoint = self._nano_usd(value)
         # Exactly half, or a little over when the export also dropped a call outright.
         return checkpoint is not None and 0.45 <= checkpoint / charged <= 0.75
 

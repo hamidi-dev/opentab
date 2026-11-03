@@ -2118,3 +2118,23 @@ def test_copilot_non_finite_saved_numbers_count_as_zero_instead_of_aborting():
         rows = {w.id: w for w in store.workflows()}
         assert (rows["bad"].total_cost, rows["bad"].total_tokens) == (0.01, 0)
         assert (rows["ok"].total_cost, rows["ok"].total_tokens) == (0.02, 105)
+
+
+def test_copilot_saved_charges_beyond_the_float_range_count_as_zero():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        os.makedirs(otel)
+        model = "claude-sonnet-5.5"
+        huge = 10**400
+        big = _metrics(1, 100, 5, nano_aiu=huge)
+        _write_events(
+            otel, "big", [_shutdown({"main": {model: big}}, huge), _checkpoint(huge, model, "c")]
+        )
+        _write_events(
+            otel, "ok", [_shutdown({"main": {model: _metrics(1, 100, 5, nano_aiu=2e9)}}, 2e9)]
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert store.records_cost
+        rows = {w.id: w for w in store.workflows()}
+        assert (rows["big"].total_cost, rows["big"].total_tokens) == (0, 105)
+        assert (rows["ok"].total_cost, rows["ok"].total_tokens) == (0.02, 105)
