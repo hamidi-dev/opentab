@@ -166,9 +166,9 @@ AI-credit charges recorded, the rest estimated*
 - **Reads** `~/.copilot/otel/**/*.jsonl` (`--copilot-dir`) and the file in
   `$COPILOT_OTEL_FILE_EXPORTER_PATH`, plus the sibling `session-state/<id>/events.jsonl`.
   Titles and projects come from `session-store.db`.
-- **Without setup**: every session Copilot kept in `session-state` appears with its
-  charge and per-model tokens, split by subagent, but without Turns. A running session
-  shows its charge so far; its tokens arrive when it ends.
+- **Without setup**: every session Copilot kept in `session-state` that recorded
+  usage appears with its charge and per-model tokens, split by subagent, but without
+  Turns. A running session shows its charge so far; its tokens arrive when it ends.
 - **For per-call detail** (Turns, prompt headers, Trace, Context), turn on the
   OpenTelemetry export before you start or resume a session. A session the export saw
   is read from the export alone.
@@ -193,7 +193,7 @@ AI-credit charges recorded, the rest estimated*
 
 The same runtime serves the CLI, the GitHub Copilot desktop app, the JetBrains plugin
 and VS Code's *Copilot CLI* sessions. The session overview shows which one ran as
-**Client**. Every client's saved sessions appear on their own; this is how each one
+**Client**. Each client's top-level sessions appear on their own; this is how each one
 turns on the export:
 
 | Client | How to turn on the export |
