@@ -1,6 +1,24 @@
 {
   "releases": [
     {
+      "version": "1.34.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "See GitHub Copilot sessions without any setup: the charge and per-model tokens, split by subagent, come from the sessions Copilot already saves.", "hint": {"text": "Turn on Copilot's OpenTelemetry export for Turns, Trace and Context"}}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "A Copilot session with an impossibly large saved charge no longer breaks loading; that charge counts as zero."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.34.0"
+    },
+    {
       "version": "1.33.0",
       "sections": [
         {
