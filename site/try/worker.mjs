@@ -50,28 +50,47 @@ function fetchSync(url) {
 // (so the cache still hits), and the bytes are fetched on the first read, when a session
 // is opened. Emscripten's own lazy file would issue a HEAD per stat instead. A transcript
 // is one file; a database (chunk > 0) is split so a query fetches only the pages it reads.
-function mountLazy(py, files, version) {
+// `preloaded` holds chunks already downloaded (name "<n>-<i>" → bytes).
+function mountLazy(py, files, lazyURL, preloaded) {
   files.forEach(([rel, size, mtime, chunk = 0], n) => {
     const path = `${HOME}/${rel}`, slash = path.lastIndexOf("/");
     py.FS.mkdirTree(path.slice(0, slash));
-    const part = i => new URL(chunk ? `./data/lazy/${n}-${i}.json?v=${version}` : `./data/lazy/${n}.json?v=${version}`, import.meta.url).href;
+    const part = i => lazyURL(chunk ? `${n}-${i}` : `${n}`);
     const node = py.FS.createLazyFile(path.slice(0, slash), path.slice(slash + 1), part(0), true, false);
     const lazy = node.contents;
     const span = chunk || Math.max(size, 1);
+    const want = i => Math.min(span, size - i * span);
     lazy._length = size;
     lazy._chunkSize = span;
     lazy.lengthKnown = true;
     lazy.setDataGetter(i => {
       if (!lazy.chunks[i]) {
         const bytes = fetchSync(part(i));
-        const want = Math.min(span, size - i * span);
-        if (bytes.length !== want) throw new Error(`${rel}: expected ${want} bytes, got ${bytes.length}`);
+        if (bytes.length !== want(i)) throw new Error(`${rel}: expected ${want(i)} bytes, got ${bytes.length}`);
         lazy.chunks[i] = bytes;
       }
       return lazy.chunks[i];
     });
+    if (chunk) for (let i = 0; i * span < size; i++) {
+      const bytes = preloaded.get(`${n}-${i}`);
+      if (bytes && bytes.length === want(i)) lazy.chunks[i] = bytes;
+    }
     py.FS.utime(path, mtime * 1000, mtime * 1000);
   });
+}
+
+// Downloads the database chunks every lookup walks through, all at once and at low
+// priority, while Python downloads and starts. Sequentially on demand, against a cold
+// edge, they cost about half a second each. A failed one is fetched on demand instead.
+async function preloadHot(names, lazyURL) {
+  const got = new Map();
+  await Promise.all(names.map(async name => {
+    try {
+      const res = await fetch(lazyURL(name), { priority: "low" });
+      if (res.ok) got.set(name, new Uint8Array(await res.arrayBuffer()));
+    } catch { /* fetched on demand */ }
+  }));
+  return got;
 }
 
 // Downloads several files at once under one progress label. Sizes come from build.json:
@@ -117,6 +136,11 @@ onmessage = async (e) => {
   sleeper = new Int32Array(new SharedArrayBuffer(4));
   try {
     const build = await (await fetch("./build.json", { cache: "no-store" })).json();
+    const lazyURL = name => new URL(`./data/lazy/${name}.json?v=${build.lazy}`, import.meta.url).href;
+    const getJSON = async url => { const res = await fetch(url); if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`); return res.json(); };
+    const lazyPlan = Promise.all([getJSON(lazyURL("manifest")), getJSON(lazyURL("prefetch"))]);
+    const hot = lazyPlan.then(([, plan]) => preloadHot(plan.hot, lazyURL));
+    hot.catch(() => {});
     const indexURL = new URL("./vendor/pyodide/", import.meta.url).href;
     const wasmURL = indexURL + "pyodide.asm.wasm";
     const stdLibURL = new URL(`./stdlib/core.zip?v=${build.stdlib}`, import.meta.url).href;
@@ -135,8 +159,11 @@ onmessage = async (e) => {
     const [data] = await fetchAll([`./data/home.tar.gz?v=${build.data}`], [build.sizes.data], "Downloading a synthetic year of agent history", 52, 30);
     status("Unpacking history", 82);
     py.unpackArchive(data, "gztar", { extractDir: HOME });
-    const lazy = await (await fetch(`./data/lazy/manifest.json?v=${build.lazy}`)).json();
-    mountLazy(py, lazy, build.lazy);
+    const [manifest, plan] = await lazyPlan;
+    mountLazy(py, manifest, lazyURL, await hot);
+    // The page fetches the rest into the browser cache after the first paint; this worker
+    // can't, since Python blocks it while waiting for keys.
+    postMessage({ type: "prefetch", urls: plan.later.map(lazyURL) });
 
     status("Opening OpenTab", 92);
     py.runPython(`

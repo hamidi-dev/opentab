@@ -15,6 +15,16 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 rm -rf "$home"
 python3 "$repo/dev/fixtures/showcase/generate.py" --out "$home" >/dev/null
 if grep -rlq "/Users/" "$home"; then echo "build-try: /Users/ path in the fixture" >&2; exit 2; fi
+# The generator inserts row by row, which spreads every table and index over the whole
+# OpenCode database; in the browser each page touched is a 256 KB request, so one session
+# lookup cost ~30 sequential requests. VACUUM lays each b-tree out contiguously.
+python3 - "$home/.local/share/opencode/opencode.db" <<'PY'
+import os, sqlite3, sys
+if os.path.exists(sys.argv[1]):
+    db = sqlite3.connect(sys.argv[1])
+    db.execute("vacuum")
+    db.close()
+PY
 
 # 2. Whole-second mtimes survive tar and the browser filesystem exactly.
 python3 - "$home" <<'PY'
@@ -59,15 +69,20 @@ fi
 #    (its cache hits once otboot rebinds the unpacked file's identity) is split into
 #    data/lazy/<n>-<i>.json chunks, so opening a session fetches only the pages it reads.
 #    The .json name gets the chunks compressed in transit; the worker reads raw bytes.
+#    data/lazy/prefetch.json orders them for preloading, since each first request can take
+#    half a second while Cloudflare's edge is cold: "hot" are the database chunks every
+#    lookup walks through (index and interior pages), which the worker fetches in parallel
+#    during startup; "later" (transcripts newest first, then the other database chunks) is
+#    what the page fetches into the browser cache after the first paint.
 rm -rf "$try/data/lazy"
 mkdir -p "$try/data/lazy"
 python3 - "$home" "$try/data/lazy" <<'PY'
-import json, os, shutil, sys
+import json, os, shutil, sqlite3, sys
 home, out = sys.argv[1:]
 roots = (".claude/projects", ".codex/sessions", ".gemini/tmp", ".pi/agent/sessions")
 databases = (".local/share/opencode/opencode.db",)
 CHUNK = 256 * 1024  # a multiple of SQLite's page size
-files = []
+files, hot_names, cold_names = [], [], []
 for root in roots:
     for dirpath, _, names in os.walk(os.path.join(home, root)):
         for name in sorted(names):
@@ -84,13 +99,27 @@ for rel in databases:
         sys.exit(f"build-try: {rel} has a WAL; checkpoint it before splitting")
     st = os.stat(path)
     n = len(files)
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    page = db.execute("pragma page_size").fetchone()[0]
+    pages = db.execute("select d.pageno, d.pagetype, s.type, s.tbl_name from dbstat d"
+                       " left join sqlite_schema s on s.name = d.name").fetchall()
+    db.close()
+    # Leaf pages of the big tables hold one session's rows each; everything else is shared.
+    big = {"message", "part"}
+    hot = {(p - 1) * page // CHUNK for p, kind, typ, table in pages
+           if typ == "index" or kind == "internal" or table not in big}
     with open(path, "rb") as fh:
         for i, data in enumerate(iter(lambda: fh.read(CHUNK), b"")):
             with open(os.path.join(out, f"{n}-{i}.json"), "wb") as part:
                 part.write(data)
+            (hot_names if i in hot else cold_names).append(f"{n}-{i}")
     os.remove(path)
     files.append([rel, st.st_size, int(st.st_mtime), CHUNK])
+transcripts = sorted((n for n, f in enumerate(files) if len(f) == 3), key=lambda n: -files[n][2])
+later = [str(n) for n in transcripts] + cold_names
 json.dump(files, open(os.path.join(out, "manifest.json"), "w"), separators=(",", ":"))
+json.dump({"hot": hot_names, "later": later}, open(os.path.join(out, "prefetch.json"), "w"), separators=(",", ":"))
+print(f"try: {len(hot_names)} database chunks preload at startup")
 print(f"try: {len(files)} files load lazily ({sum(f[1] for f in files) / 1048576:.0f} MB)")
 PY
 
@@ -140,13 +169,16 @@ PY
 python3 - "$try" <<'PY'
 import hashlib, json, os, sys
 try_dir = sys.argv[1]
-def digest(rel):
-    with open(os.path.join(try_dir, rel), "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()[:12]
+def digest(*rels):
+    h = hashlib.sha256()
+    for rel in rels:
+        with open(os.path.join(try_dir, rel), "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()[:12]
 # Decoded sizes for the progress bar: compressed responses carry no Content-Length.
 size = lambda rel: os.path.getsize(os.path.join(try_dir, rel))
 json.dump({"app": digest("app.tar.gz"), "data": digest("data/home.tar.gz"),
-           "lazy": digest("data/lazy/manifest.json"),
+           "lazy": digest("data/lazy/manifest.json", "data/lazy/prefetch.json"),
            "stdlib": digest("stdlib/core.zip"), "rest": digest("stdlib/rest.zip"),
            "sizes": {"wasm": size("vendor/pyodide/pyodide.asm.wasm"), "stdlib": size("stdlib/core.zip"),
                      "app": size("app.tar.gz"), "data": size("data/home.tar.gz")}},

@@ -37,6 +37,17 @@
 /datenschutz/*
   Content-Security-Policy: default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'
 
+# Fetched only by content-hashed URLs (?v=<hash> from try/build.json), so a browser may keep
+# them for good; the page's prefetch and the worker's lazy reads then share the cached copy.
+/try/data/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/try/stdlib/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/try/app.tar.gz
+  Cache-Control: public, max-age=31536000, immutable
+
 /try/*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp

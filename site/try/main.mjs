@@ -70,13 +70,31 @@ new ResizeObserver(([entry]) => {
   });
 }).observe(document.getElementById("term"));
 
+// Session data the worker would otherwise fetch one request at a time when a session is
+// opened: transcripts newest first, then the rest of the database. Six at a time into the
+// browser cache (the files are immutable, see _headers), after the first paint so they
+// never compete with startup. Skipped under Save-Data.
+let prefetchURLs = null, prefetchStarted = false;
+function prefetch() {
+  if (prefetchStarted || !prefetchURLs || !loader.classList.contains("done")) return;
+  prefetchStarted = true;
+  if (navigator.connection?.saveData) return;
+  const queue = prefetchURLs.slice();
+  const next = () => {
+    const url = queue.shift();
+    if (url) fetch(url, { priority: "low" }).then(r => r.arrayBuffer()).catch(() => {}).then(next);
+  };
+  for (let i = 0; i < 6; i++) next();
+}
+
 let painted = 0;
 const worker = new Worker(new URL("./worker.mjs", import.meta.url), { type: "module" });
 worker.onmessage = ({ data: m }) => {
   if (m.type === "out") {
     term.write(m.data);
-    if (!loader.classList.contains("done") && painted++ > 0) { bar.style.width = "100%"; loader.classList.add("done"); if (document.hasFocus()) term.focus(); console.log("[opentab] first paint", Math.round(performance.now()) + "ms"); }
+    if (!loader.classList.contains("done") && painted++ > 0) { bar.style.width = "100%"; loader.classList.add("done"); if (document.hasFocus()) term.focus(); console.log("[opentab] first paint", Math.round(performance.now()) + "ms"); prefetch(); }
   }
+  else if (m.type === "prefetch") { prefetchURLs = m.urls; prefetch(); }
   else if (m.type === "status") { step.textContent = m.text; if (m.pct != null) bar.style.width = m.pct + "%"; }
   else if (m.type === "ready") { step.textContent = "Reading a year of history"; bar.style.width = "96%"; }
   else if (m.type === "copy") navigator.clipboard?.writeText(m.data).catch(() => {});
