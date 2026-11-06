@@ -623,6 +623,12 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
         "with --html requires --include-details or --details-dir",
     )
     web.add_argument(
+        "--include-annotations",
+        action="store_true",
+        # Experimental tags/work items stay unannounced: accepted but kept out of --help.
+        help=argparse.SUPPRESS,
+    )
+    web.add_argument(
         "--include-details",
         action="store_true",
         help="with --html, embed available Turns, Tools and Context for every exported session; "
@@ -1078,6 +1084,8 @@ def _validate_web_args(parser: argparse.ArgumentParser, args: argparse.Namespace
             parser.error("web: --include-details requires --html")
         if getattr(args, "details_dir", None):
             parser.error("web: --details-dir requires --html")
+        if getattr(args, "include_annotations", False):
+            parser.error("web: --include-annotations requires --html")
         return
     if getattr(args, "include_details", False) and getattr(args, "details_dir", None):
         parser.error("web: use --include-details or --details-dir, not both")
@@ -2250,6 +2258,9 @@ def web_command(args: argparse.Namespace) -> int:
         app._refresh_backend = _make_refresh_fn(args)
     if use_state:
         apply_state(app, args, state)
+    # Tags are authored data like notes: --no-state and demo never read them.
+    app.notes_enabled = not args.no_state
+    app.refresh_tags()
     # The browser can close this report's modal but cannot write OpenTab's state.
     _offer_retention_warnings(app, args, source_key, can_persist=False)
     app._ensure_models()
@@ -2391,7 +2402,7 @@ def _run(args: argparse.Namespace) -> int:
     app.configure_whats_new_hint(__version__, enabled=use_state)
     _offer_retention_warnings(app, args, source_key, can_persist=use_state)
     # Refresh after apply_state, which clears notices and would erase a notes warning.
-    notes_ok = app.refresh_notes()
+    notes_ok = app.refresh_authored()
     app.announce_keymap_warnings()
     # One notice can paint, so rank the three by what is unrecoverable: notes loss
     # first, then a fleet import that silently dropped what the user named, then a

@@ -39,7 +39,9 @@ from opentab.accounting.tiers import (
     row_estimate_reasons,
 )
 from opentab.accounting.tools import tool_calls_from_turns
-from opentab.presentation.themes import DEFAULT_THEME
+from opentab.persistence.session_tags import TagError
+from opentab.persistence.work_items import WorkItemError
+from opentab.presentation.themes import DEFAULT_THEME, state_color_hex
 from opentab.presentation.whats_new import public_payload
 from opentab.util import (
     cached_share,
@@ -269,8 +271,170 @@ def _prices_payload(app: App) -> dict:
     return out
 
 
-def build_payload(app: App) -> dict:
-    """Serialize the visible App dataset, including both cost modes."""
+def tags_payload(app: App, *, static: bool = False) -> dict | None:
+    """Allowlisted snapshot; static exports retain only catalog-referenced labels."""
+    if not app.tags_active:
+        return None
+    keys = {app.session_tag_key(w) for w in app.all_workflows}
+    tags = app.tags
+    referenced = {tag_id for key in keys for tag_id in tags.snapshot.tags_of(key)}
+    if static:
+        return {
+            "editable": False,
+            "defs": [
+                {"id": tag_id, "label": label}
+                for tag_id, label in tags.definitions()
+                if tag_id in referenced
+            ],
+            "assign": {
+                key: {"ids": list(ids)}
+                for key, (ids, _) in tags.snapshot.assignments.items()
+                if key in keys and ids
+            },
+        }
+    affected: dict[str, int] = {}
+    for ids, _ in tags.snapshot.assignments.values():
+        for tag_id in ids:
+            affected[tag_id] = affected.get(tag_id, 0) + 1
+    return {
+        "revision": tags.snapshot.revision,
+        "editable": tags.editable,
+        "refusal": tags.edit_refusal(),
+        "error": tags.error,
+        "defs": [
+            {
+                "id": tag_id,
+                "label": label,
+                "rev": tags.snapshot.tag_revisions.get(tag_id, 0),
+                "affected": affected.get(tag_id, 0),
+            }
+            for tag_id, label in tags.definitions()
+        ],
+        "assign": {
+            key: {"ids": list(ids), "rev": rev}
+            for key, (ids, rev) in tags.snapshot.assignments.items()
+            if key in keys
+        },
+    }
+
+
+def work_payload(app: App, *, static: bool = False) -> dict | None:
+    """Work is an independent all-date live catalog, never ordinary accounting scope."""
+    if not getattr(app, "work_items_active", False) or app.store.demo or not app.notes_enabled:
+        return None
+    work = app.work_items
+    catalog = app.all_workflows if static else app.work_catalog()
+    counts: dict[str, int] = {}
+    for w in catalog:
+        key = app.session_tag_key(w)
+        counts[key] = counts.get(key, 0) + 1
+    roots = []
+    machine_meta = app.machine_meta()
+    for w in catalog:
+        key = app.session_tag_key(w)
+        if counts[key] != 1:
+            continue
+        row = {
+            "key": key,
+            "id": w.id,
+            "title": w.title,
+            "date": w.created_at,
+            "project": app.project_root(w.directory),
+            "source": w.source,
+            "machine": app.machine_of(w),
+            "dur": w.worked_seconds,
+            "real": None
+            if w.real_total_cost == 0 and w.unpriced_tokens
+            else _money6(w.real_total_cost),
+            "api": None
+            if w.api_total_cost == 0 and w.unpriced_tokens
+            else _money6(w.api_total_cost),
+        }
+        if not static:
+            row["tagIds"] = list(app.tags.tag_ids(key)) if app.tags_active else []
+            machine = w.machine or ""
+            remote = bool(
+                machine
+                and (
+                    not (machine_meta[machine] or {}).get("live")
+                    if machine in machine_meta
+                    else machine != app.local_machine_name
+                )
+            )
+            command = None if remote and not app.machine_ssh_target(w) else app.resume_command(w)
+            row["resume"] = command
+            row["resumeReason"] = (
+                ""
+                if command
+                else (
+                    "Remote snapshot has no SSH handoff"
+                    if remote
+                    else "This source/session cannot be resumed"
+                )
+            )
+        roots.append(row)
+    keys = {r["key"] for r in roots}
+    referenced = {
+        m.item_id for key, m in work.snapshot.memberships.items() if key in keys and m.item_id
+    }
+    items = []
+    for ident, item in work.snapshot.items.items():
+        if static and ident not in referenced:
+            continue
+        row = {
+            "id": ident,
+            "title": item.title,
+            "stateId": item.state_id,
+            "archived": item.archived,
+            "linked": len(work.snapshot.keys_of(ident)),
+        }
+        if not static:
+            row.update(nextStep=item.next_step, rev=item.revision)
+        items.append(row)
+    state_ids = {r["stateId"] for r in items}
+    out = {
+        "editable": False if static else work.editable,
+        "incomplete": static,
+        "states": [
+            {
+                "id": s.id,
+                "label": s.label,
+                "done": s.done,
+                "colors": [state_color_hex(s.color, True), state_color_hex(s.color, False)],
+            }
+            for s in work.states
+            if not static or s.id in state_ids
+        ],
+        "items": items,
+        "roots": roots,
+        "memberships": {
+            key: ({"itemId": m.item_id} if static else {"itemId": m.item_id, "rev": m.revision})
+            for key, m in work.snapshot.memberships.items()
+            if (not static or key in keys and m.item_id in referenced)
+        },
+    }
+    if not static:
+        out.update(error=work.error, refusal=work.edit_refusal(), revision=work.snapshot.revision)
+    return out
+
+
+def build_payload(app: App, *, live_tags: bool = False, include_annotations: bool = False) -> dict:
+    """Serialize the visible App dataset, including both cost modes.
+
+    ``live_tags`` adds authored tags and session keys for the live server only.
+    """
+    work_active = getattr(app, "work_items_active", False)
+    if include_annotations and (
+        not (app.tags_active or work_active) or app.store.demo or not app.notes_enabled
+    ):
+        raise ValueError(
+            "annotation export requires enabled tags or work items and state (outside demo)"
+        )
+    if include_annotations and app.tags_active and not app.tags.readable:
+        raise ValueError("annotation export refused: tag records are unreadable")
+    if include_annotations and work_active and not app.work_items.readable:
+        raise ValueError("annotation export refused: work records are unreadable")
+    tags = tags_payload(app, static=not live_tags) if live_tags or include_annotations else None
     app._ensure_models()
     store = app.store
     rows = app.all_workflows
@@ -300,6 +464,8 @@ def build_payload(app: App) -> dict:
                 "machine": app.machine_of(w),
             }
         )
+        if tags is not None or (live_tags or include_annotations) and work_active:
+            workflows[-1]["key"] = app.session_tag_key(w)
         # What-if totals require per-model rows even when no subagent nodes exist.
         mix = app.model_mix(w.id)
         if mix:
@@ -328,7 +494,7 @@ def build_payload(app: App) -> dict:
         "home": os.path.expanduser("~"),
         "serve": False,
     }
-    return {
+    out = {
         "meta": meta,
         "warnings": app.startup_warnings(),
         "workflows": workflows,
@@ -339,6 +505,13 @@ def build_payload(app: App) -> dict:
         "whatsNew": public_payload(__version__),
         "machineMeta": _machine_meta_payload(app),
     }
+    if tags is not None:
+        out["tags"] = tags
+    if live_tags or include_annotations:
+        work = work_payload(app, static=not live_tags)
+        if work is not None:
+            out["work"] = work
+    return out
 
 
 def _machine_meta_payload(app: App) -> dict:
@@ -714,7 +887,13 @@ def _write_detail_files(
 
 
 def html_command(app: App, args: argparse.Namespace) -> int:
-    payload = build_payload(app)
+    try:
+        payload = build_payload(
+            app, include_annotations=getattr(args, "include_annotations", False)
+        )
+    except ValueError as exc:
+        print(f"OpenTab: {exc}", file=sys.stderr)
+        return 2
     path = os.path.expanduser(args.html or DEFAULT_REPORT)
     detail_files = None
     traces = getattr(args, "allow_raw_content", False)
@@ -775,6 +954,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_json(self, data: dict) -> None:
         self._send(200, "application/json; charset=utf-8", json.dumps(data).encode("utf-8"))
 
+    def _read_json(self, limit: int):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (ValueError, TypeError):
+            return None
+        if not 0 < length <= limit:
+            return None
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, OSError):
+            return None
+
     def _check_host(self) -> bool:
         # Reject DNS rebinding on loopback; an explicit non-loopback bind opts out.
         if self.server.server_address[0] not in ("127.0.0.1", "::1"):
@@ -830,6 +1021,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(500, "text/plain; charset=utf-8", b"trace unavailable")
         elif path == "/api/node-prompt":
             self._send_json(server.node_prompt(self.path.partition("?")[2]))
+        elif path == "/api/tags":
+            # A read-only conflict reload; never creates files.
+            self._send_json({"ok": True, "tags": server.read_tags()})
+        elif path == "/api/work":
+            server.app.refresh_work_items()
+            self._send_json({"ok": True, "work": work_payload(server.app)})
         else:
             self._send(404, "text/plain; charset=utf-8", b"not found")
 
@@ -853,6 +1050,12 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/reload":
             server.reload()
             self._send_json({"ok": True})
+        elif path == "/api/tags":
+            status, body = server.save_tags(self._read_json(TAG_REQUEST_BYTES))
+            self._send(status, "application/json; charset=utf-8", json.dumps(body).encode("utf-8"))
+        elif path == "/api/work":
+            status, body = server.save_work(self._read_json(16 * 1024))
+            self._send(status, "application/json; charset=utf-8", json.dumps(body).encode("utf-8"))
         elif path == "/api/refresh":
             # Refresh is POST-only and requires one string name; malformed input must
             # never fall through to the "refresh every machine" API.
@@ -876,6 +1079,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, "text/plain; charset=utf-8", b"not found")
 
 
+TAG_REQUEST_BYTES = 64 * 1024
+_TAG_STATUS = {
+    "disabled": 403,
+    "unavailable": 403,
+    "unsupported": 403,
+    "stale": 409,
+    "unwritable": 500,
+}
+
+
 class ReportServer(HTTPServer):
     """Serve a cached page and lazy session extras.
 
@@ -893,12 +1106,234 @@ class ReportServer(HTTPServer):
 
     def page(self) -> str:
         if self._page is None:
-            payload = build_payload(self.app)
+            # Each page load sees authored tags as they are now, not as of startup.
+            self.app.refresh_tags()
+            self.app.refresh_work_items()
+            payload = build_payload(self.app, live_tags=True)
             payload["meta"]["serve"] = True
-            self._node_snapshot = secrets.token_urlsafe()
+            # A tag edit re-renders the page without expiring open node-prompt links.
+            if self._node_snapshot is None:
+                self._node_snapshot = secrets.token_urlsafe()
             payload["meta"]["nodeSnapshot"] = self._node_snapshot
             self._page = render_html(payload)
         return self._page
+
+    def read_tags(self) -> dict | None:
+        self.app.refresh_tags()
+        return tags_payload(self.app)
+
+    def save_work(self, body) -> tuple[int, dict]:
+        """Exact CAS mutations; no harness detail/content reads or launch execution."""
+        invalid = (400, {"ok": False, "code": "invalid", "message": "invalid work request"})
+        app = self.app
+        if app.store.demo or not app.notes_enabled:
+            return 403, {"ok": False, "code": "disabled", "message": "work items are off"}
+        if not isinstance(body, dict):
+            return invalid
+        op = body.get("op")
+        allowed = {
+            "create": {"op", "title", "stateId", "nextStep", "key", "expected"},
+            "edit": {"op", "id", "expected", "title", "stateId", "nextStep", "archived"},
+            "attach": {"op", "key", "id", "expected"},
+            "detach": {"op", "key", "expected"},
+            "move": {"op", "key", "id", "expected", "confirm"},
+        }
+        if not isinstance(op, str) or op not in allowed or set(body) - allowed[op]:
+            return invalid
+        expected = body.get("expected", 0 if op == "create" else None)
+        if not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
+            return invalid
+        if op in ("edit", "attach", "move") and not isinstance(body.get("id"), str):
+            return invalid
+        for field, limit in (("title", 200), ("nextStep", 2000), ("stateId", 100)):
+            if field in body and (not isinstance(body[field], str) or len(body[field]) > limit):
+                return invalid
+        if "archived" in body and not isinstance(body["archived"], bool):
+            return invalid
+        key = body.get("key")
+        if op in ("attach", "detach", "move") or "key" in body:
+            if not isinstance(key, str) or not key:
+                return invalid
+            if op != "detach":
+                if sum(app.session_tag_key(w) == key for w in app.work_catalog()) != 1:
+                    return 404, {
+                        "ok": False,
+                        "code": "unknown_session",
+                        "message": "root is not uniquely available here",
+                    }
+        if op == "move" and body.get("confirm") is not True:
+            return invalid
+        try:
+            ident = body.get("id")
+            if op == "create":
+                if "title" not in body:
+                    return invalid
+                ident = app.work_items.create(
+                    body["title"],
+                    body.get("stateId"),
+                    body.get("nextStep", ""),
+                    key=key,
+                    expected=expected,
+                )
+            elif op == "edit":
+                fields = {
+                    dest: body[src]
+                    for src, dest in (
+                        ("title", "title"),
+                        ("stateId", "state_id"),
+                        ("nextStep", "next_step"),
+                        ("archived", "archived"),
+                    )
+                    if src in body
+                }
+                if not fields:
+                    return invalid
+                app.work_items.edit(ident, expected, **fields)
+            elif op == "detach":
+                # Removing a retained membership is safe even when its root is missing.
+                app.work_items.detach(key, expected)
+            elif op == "attach":
+                app.work_items.attach(key, ident, expected)
+            else:
+                app.work_items.move(key, ident, expected)
+        except WorkItemError as exc:
+            out = {"ok": False, "code": exc.code, "message": exc.message}
+            if exc.current is not None:
+                out["current"] = exc.current
+            return {
+                "disabled": 403,
+                "unavailable": 403,
+                "stale": 409,
+                "move_required": 409,
+                "unwritable": 500,
+            }.get(exc.code, 400), out
+        self._page = None
+        return 200, {"ok": True, "id": ident, "work": work_payload(app)}
+
+    def save_tags(self, body) -> tuple[int, dict]:
+        """Validate one exact, revisioned replacement of a loaded session's tags."""
+        invalid = (400, {"ok": False, "code": "invalid", "message": "invalid tag request"})
+        if isinstance(body, dict) and "op" in body:
+            return self.mutate_tags(body)
+        if not isinstance(body, dict) or set(body) - {"key", "expected", "tagIds", "create"}:
+            return invalid
+        key, expected = body.get("key"), body.get("expected")
+        tag_ids, create = body.get("tagIds", []), body.get("create", [])
+        if (
+            not isinstance(key, str)
+            or not isinstance(expected, int)
+            or isinstance(expected, bool)
+            or not isinstance(tag_ids, list)
+            or not isinstance(create, list)
+            or len(tag_ids) > 64
+            or len(create) > 16
+            or not all(isinstance(v, str) and v for v in tag_ids + create)
+        ):
+            return invalid
+        app = self.app
+        if app.store.demo or not app.notes_enabled:
+            return 403, {"ok": False, "code": "disabled", "message": "tags are off"}
+        if sum(app.session_tag_key(w) == key for w in app.loaded) != 1:
+            return 404, {
+                "ok": False,
+                "code": "unknown_session",
+                "message": "that session is not uniquely loaded here",
+            }
+        try:
+            snapshot = app.tags.set_tags(key, tag_ids, expected, create=create)
+        except TagError as exc:
+            out = {"ok": False, "code": exc.code, "message": exc.message}
+            if exc.code == "stale" and exc.current is not None:
+                out["current"] = {"ids": exc.current["tag_ids"], "rev": exc.current["revision"]}
+            tags = tags_payload(app)
+            if tags is not None:
+                out["defs"] = tags["defs"]
+            return _TAG_STATUS.get(exc.code, 400), out
+        self._page = None
+        tags = tags_payload(app) or {"defs": []}
+        return 200, {
+            "ok": True,
+            "assignment": {"ids": list(snapshot.tags_of(key)), "rev": snapshot.revision_of(key)},
+            "defs": tags["defs"],
+            "revision": snapshot.revision,
+        }
+
+    def mutate_tags(self, body: dict) -> tuple[int, dict]:
+        """Bounded bulk and definition operations on this server's owning thread."""
+        from opentab.persistence.session_tags import MAX_BULK_SESSIONS
+
+        invalid = (400, {"ok": False, "code": "invalid", "message": "invalid tag request"})
+        app = self.app
+        if app.store.demo or not app.notes_enabled:
+            return 403, {"ok": False, "code": "disabled", "message": "tags are off"}
+
+        def revision(value):
+            return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+        op = body.get("op")
+        try:
+            if op == "bulk":
+                if set(body) - {"op", "targets", "add", "remove"}:
+                    return invalid
+                targets = body.get("targets")
+                add, remove = body.get("add", []), body.get("remove", [])
+                if (
+                    not isinstance(targets, dict)
+                    or not 0 < len(targets) <= MAX_BULK_SESSIONS
+                    or not all(isinstance(k, str) and revision(v) for k, v in targets.items())
+                    or not isinstance(add, list)
+                    or not isinstance(remove, list)
+                    or len(add) > 32
+                    or len(remove) > 32
+                    or not all(isinstance(v, str) and v for v in add + remove)
+                ):
+                    return invalid
+                counts: dict[str, int] = {}
+                for w in app.loaded:
+                    key = app.session_tag_key(w)
+                    counts[key] = counts.get(key, 0) + 1
+                if any(counts.get(key) != 1 for key in targets):
+                    return 404, {
+                        "ok": False,
+                        "code": "unknown_session",
+                        "message": "a target is not uniquely loaded here",
+                    }
+                app.tags.bulk_update(targets, add=add, remove=remove)
+            elif op in ("rename", "delete"):
+                allowed = (
+                    {"op", "id", "expected", "label"}
+                    if op == "rename"
+                    else {"op", "id", "expected", "expectedDocument", "confirm"}
+                )
+                if (
+                    set(body) - allowed
+                    or not isinstance(body.get("id"), str)
+                    or not revision(body.get("expected"))
+                ):
+                    return invalid
+                if op == "rename":
+                    if not isinstance(body.get("label"), str):
+                        return invalid
+                    app.tags.rename(body["id"], body["label"], expected=body["expected"])
+                else:
+                    if body.get("confirm") is not True or not revision(
+                        body.get("expectedDocument")
+                    ):
+                        return invalid
+                    app.tags.delete(body["id"], body["expected"], body["expectedDocument"])
+            else:
+                return invalid
+        except TagError as exc:
+            out = {
+                "ok": False,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            if exc.current is not None:
+                out["current"] = exc.current
+            return _TAG_STATUS.get(exc.code, 400), out
+        self._page = None
+        return 200, {"ok": True, "tags": tags_payload(app)}
 
     def node_prompt(self, query: str) -> dict:
         """Resolve only an explicitly selected execution from the current page."""

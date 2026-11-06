@@ -10,11 +10,60 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, NamedTuple, Union
 
+from opentab.tui.bindings import BY_NAME, parse_key, pretty_key
+
 if TYPE_CHECKING:  # Avoid a runtime App import cycle.
     from opentab.tui.app import App
 
 Text = Union[str, Callable[["App"], str]]
 Ctx = Union[str, Callable[["App"], str]]
+
+ORG_ACTIONS = frozenset(
+    {
+        "work",
+        "work_from_session",
+        "assign_work",
+        "work_state",
+        "edit_tags",
+        "filter_tags",
+        "browse_tags",
+        "select_root",
+        "clear_selection",
+        "bulk_add_tags",
+        "bulk_remove_tags",
+        "export_annotated",
+    }
+)
+
+
+def org_browsing(app: App) -> bool:
+    return not in_conversation_search(app) and not _on_trace(app)
+
+
+def _effective_labels(app: App, ctx: str, action: str) -> list[str]:
+    if ctx == "org" or not app.org_available:
+        return app.keymap.labels(ctx, action)
+    return [
+        pretty_key(spec)
+        for spec in app.keymap.specs(ctx, action)
+        if ctx
+        not in {
+            "main",
+            "work",
+            "prices",
+            "prices.sessions",
+            "trends",
+            "trends.chart",
+            "trends.drill",
+        }
+        or not org_browsing(app)
+        or all(app.org_action(code) is None for code in parse_key(spec))
+    ]
+
+
+def _effective_label(app: App, ctx: str, action: str) -> str:
+    labels = _effective_labels(app, ctx, action)
+    return labels[0] if labels else ""
 
 
 def _keys_text(app: App, ctx: str, tokens: tuple[str, ...], between: str, within: str) -> str:
@@ -22,7 +71,7 @@ def _keys_text(app: App, ctx: str, tokens: tuple[str, ...], between: str, within
     parts = []
     for token in tokens:
         every = token.endswith("*")
-        labels = app.keymap.labels(ctx, token.rstrip("*"))
+        labels = _effective_labels(app, ctx, token.rstrip("*"))
         if not labels:
             continue
         parts.append(within.join(labels) if every else labels[0])
@@ -43,9 +92,14 @@ class Key(NamedTuple):
     segments: Callable[[App], list] | None = None
 
     def context(self, app: App) -> str:
+        if self.actions and self.actions[0] in ORG_ACTIONS:
+            return "org"
         return self.ctx(app) if callable(self.ctx) else self.ctx
 
     def shown(self, app: App) -> bool:
+        if self.actions and self.actions[0] in ORG_ACTIONS:
+            if not app.org_active or not org_browsing(app):
+                return False
         return self.when is None or bool(self.when(app))
 
     def text(self, app: App) -> str:
@@ -126,7 +180,11 @@ def in_trends(app: App) -> bool:
 
 
 def in_main(app: App) -> bool:
-    return not app.overlay_top and not in_conversation_search(app)
+    return (
+        not app.overlay_top
+        and not in_conversation_search(app)
+        and getattr(app, "work_workspace", None) is None
+    )
 
 
 def in_conversation_search(app: App) -> bool:
@@ -157,6 +215,8 @@ def binding_context(app: App) -> str:
         if workspace.filter_menu:
             return "menu.search-project" if workspace.filter_menu == "project" else "menu"
         return "search.edit" if workspace.editing or workspace.filter_field else "search"
+    if app.work_workspace is not None:
+        return "work"
     if in_prices(app):
         return "prices.sessions" if in_price_drill(app) else "prices"
     if in_trends(app):
@@ -187,6 +247,13 @@ def _sort_ctx(app: App) -> str:
 
 
 def context_label(app: App) -> str:
+    prefix = "ORG · " if app.org_active else ""
+    return prefix + _context_label(app)
+
+
+def _context_label(app: App) -> str:
+    if app.work_workspace is not None:
+        return "Work · item" if app.work_workspace.item_id else "Work"
     if in_conversation_search(app):
         workspace = app.conversation_search
         return "Conversation search · reader" if workspace.reader else "Conversation search"
@@ -268,7 +335,7 @@ def _trend_enter(app: App) -> str:
 
 def _trend_close_summary(app: App) -> str:
     if app.trend_focus or app.trend_drill is not None:
-        back = app.keymap.label(binding_context(app), "back")
+        back = _effective_label(app, binding_context(app), "back")
         close = _keys_text(app, binding_context(app), ("close*",), between="", within=" / ")
         return f"leave the focused chart / the drill ({back}), or close ({close})"
     return "close"
@@ -375,7 +442,7 @@ def _enter_summary(app: App) -> str:
 
 
 def _aliases_summary(app: App, ctx: str, actions: tuple[str, ...], base: str) -> str:
-    extra = " ".join(lab for a in actions for lab in app.keymap.labels(ctx, a)[1:])
+    extra = " ".join(lab for a in actions for lab in _effective_labels(app, ctx, a)[1:])
     return f"{base} ({extra} too)" if extra else base
 
 
@@ -383,13 +450,13 @@ def _panel_keys_label(app: App) -> str:
     digits = _keys_text(app, "main", ("panel_1",), between=" ", within=" ")
     if not app.flat_browse_mode:
         digits = _keys_text(app, "main", ("panel_1", "panel_2", "panel_3"), between=" ", within=" ")
-    detail = app.keymap.label("main", "panel_detail")
+    detail = _effective_label(app, "main", "panel_detail")
     return f"{digits}  {detail}" if detail else digits
 
 
 def _panel_summary(app: App) -> str:
-    p1 = app.keymap.label("main", "panel_1")
-    p0 = app.keymap.label("main", "panel_detail")
+    p1 = _effective_label(app, "main", "panel_1")
+    p0 = _effective_label(app, "main", "panel_detail")
     if app.flat_browse_mode:
         return f"{p1} the {app.browse_mode_spec.label} list · {p0} the detail pane"
     return "jump to a panel — its number is in its title"
@@ -403,18 +470,22 @@ def _mode_keys(app: App) -> str:
 def _mode_segments(app: App) -> list:
     # Derive from BROWSE_MODES so newly registered modes reach the footer automatically.
     segs: list = []
-    for i, mode in enumerate(app.BROWSE_MODES):
-        if i:
+    for mode in app.BROWSE_MODES:
+        label = _effective_label(app, "main", mode.action)
+        if not label:
+            continue
+        if segs:
             segs.append(("/", False))
-        segs.append((app.keymap.label("main", mode.action), app.browse_mode == mode.key))
-    segs.append((" mode", False))
+        segs.append((label, app.browse_mode == mode.key))
+    if segs:
+        segs.append((" mode", False))
     return segs
 
 
 def _tab_focus_segments(app: App) -> list:
     if app.view != "browse" or app.browse_mode != "time":
         return []
-    tab = app.keymap.label("main", "cycle_panel")
+    tab = _effective_label(app, "main", "cycle_panel")
     return [
         (f"{tab} ", False),
         ("yr", app.focus == "years"),
@@ -428,6 +499,29 @@ def _tab_focus_segments(app: App) -> list:
 # Help and footer use different orderings over the same entries.
 
 KEYS: tuple[Key, ...] = (
+    Key(
+        id="org-toggle",
+        ctx="org",
+        actions=("toggle",),
+        section="here",
+        summary=lambda app: "leave Org mode (not saved)"
+        if app.org_active
+        else "enter Org mode: tags and work items (experimental)",
+        when=lambda app: app.org_available and org_browsing(app),
+        chip=lambda app: "leave ORG" if app.org_active else "Org mode",
+        active=lambda app: app.org_active,
+    ),
+    Key(
+        id="work-state",
+        ctx="org",
+        actions=("work_state",),
+        section="here",
+        summary="choose this session's work-item state",
+        chip="state",
+        when=lambda app: app.work_items_active
+        and app.work_workspace is None
+        and app.bookmark_target() is not None,
+    ),
     Key(
         id="search-edit",
         ctx=binding_context,
@@ -836,6 +930,113 @@ KEYS: tuple[Key, ...] = (
         when=lambda app: in_main(app) and app.allow_notes and app.bookmark_target() is not None,
         chip="note",
         active=lambda app: (t := app.bookmark_target()) is not None and bool(app.note_for(t.id)),
+    ),
+    Key(
+        id="tags",
+        ctx="main",
+        actions=("edit_tags",),
+        summary="tag this session (experimental)",
+        section="here",
+        when=lambda app: app.tags_active
+        and app.work_workspace is None
+        and app.bookmark_target() is not None,
+        chip="tags",
+        active=lambda app: (t := app.bookmark_target()) is not None
+        and bool(app.session_tag_ids(t)),
+    ),
+    Key(
+        id="tag-filter",
+        ctx="main",
+        actions=("filter_tags",),
+        summary="filter session lists by tag",
+        section="here",
+        when=lambda app: app.tags_active and app.work_workspace is None,
+        chip="by tag",
+        active=lambda app: app.tag_filter is not None,
+    ),
+    Key(
+        id="work",
+        ctx="main",
+        actions=("work",),
+        summary="open work items across all dates (experimental)",
+        section="here",
+        when=lambda app: app.work_items_active and app.work_workspace is None,
+        chip="work",
+    ),
+    Key(
+        id="work-from-session",
+        ctx="main",
+        actions=("work_from_session",),
+        summary="create a work item from this session",
+        section="here",
+        when=lambda app: app.work_workspace is None
+        and app.work_items_active
+        and app.bookmark_target() is not None,
+        chip="create work",
+    ),
+    Key(
+        id="work-assign",
+        ctx="main",
+        actions=("assign_work",),
+        summary="attach / move this session to a work item",
+        section="here",
+        when=lambda app: app.work_workspace is None
+        and app.work_items_active
+        and app.bookmark_target() is not None,
+        chip="attach",
+    ),
+    Key(
+        id="tag-browse",
+        ctx="main",
+        actions=("browse_tags",),
+        summary="browse overlapping tag totals in this scope",
+        section="here",
+        when=lambda app: in_main(app) and app.tags_active and app.view != "session",
+        chip="Tags",
+    ),
+    Key(
+        id="tag-select",
+        ctx="main",
+        actions=("select_root",),
+        summary="select / deselect this qualified root for bulk tags",
+        section="here",
+        when=lambda app: in_zoom(app) and app.tags_active and app.on_sessions_tab,
+        chip="select",
+        active=lambda app: bool(app.tag_selected),
+    ),
+    Key(
+        id="tag-clear-selection",
+        ctx="main",
+        actions=("clear_selection",),
+        summary="clear explicit root selection (retained across sorting/filtering)",
+        section="here",
+        when=lambda app: in_main(app) and app.tags_active and bool(app.tag_selected),
+    ),
+    Key(
+        id="tag-bulk-add",
+        ctx="main",
+        actions=("bulk_add_tags",),
+        summary="add chosen tags to selected roots; retain unrelated tags",
+        section="here",
+        when=lambda app: in_main(app) and app.tags_active and bool(app.tag_selected),
+        chip="add tags",
+    ),
+    Key(
+        id="tag-bulk-remove",
+        ctx="main",
+        actions=("bulk_remove_tags",),
+        summary="remove chosen tags from selected roots",
+        section="here",
+        when=lambda app: in_main(app) and app.tags_active and bool(app.tag_selected),
+        chip="remove tags",
+    ),
+    Key(
+        id="export-annotated",
+        ctx=binding_context,
+        actions=("export_annotated",),
+        summary="export exactly displayed sessions with authored tags (explicit choice)",
+        section="here",
+        when=lambda app: app.annotated_csv_available(),
     ),
     Key(
         id="sort",
@@ -1442,6 +1643,12 @@ BY_ID = {k.id: k for k in KEYS}
 
 # Footer ordering is hand-tuned; help ordering follows sections.
 FOOTER_ORDER = (
+    "org-toggle",
+    "work",
+    "work-from-session",
+    "work-assign",
+    "work-state",
+    "tags",
     "tab-focus",
     "trends-close",
     "prices-close",
@@ -1478,6 +1685,7 @@ FOOTER_ORDER = (
     "refresh-machines",
     "bookmark",
     "note",
+    "tag-filter",
     "bookmarks",
     "ignored",
     "conversation-search",
@@ -1501,6 +1709,15 @@ SECTIONS = ("here", "nav", "pickers", "global")
 
 
 def sections(app: App) -> list[tuple[str, list[Key]]]:
+    if app.work_workspace is not None:
+        rows = [
+            Key(id="work-" + action.name, ctx="work", actions=(action.name,), summary=action.doc)
+            for action in BY_NAME["work"].actions
+        ]
+        toggle = BY_ID["org-toggle"]
+        if toggle.shown(app) and toggle.label(app):
+            rows.insert(0, toggle)
+        return [("Here — " + context_label(app), [row for row in rows if row.label(app)])]
     titles = {
         "here": f"Here — {context_label(app)}",
         "nav": "Navigation",

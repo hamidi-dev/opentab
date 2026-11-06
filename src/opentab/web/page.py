@@ -49,6 +49,8 @@ _SHELL = """<!DOCTYPE html>
 <div id="prices" hidden></div>
 <div id="rangepick" hidden></div>
 <div id="whatifpick" hidden></div>
+<div id="tagpick" hidden role="dialog" aria-modal="true" aria-labelledby="tp-title"></div>
+<div id="workpick" hidden role="dialog" aria-modal="true" aria-labelledby="wp-title"></div>
 <div id="themepick" hidden></div>
 <div id="whats-new" hidden role="dialog" aria-modal="true" aria-labelledby="wn-title"></div>
 <div id="startup-warning" hidden role="dialog" aria-modal="true" aria-labelledby="startup-warning-title"></div>
@@ -414,6 +416,29 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .chip.click:hover{border-color:var(--accent);color:var(--ink)}
 #whatifpick{position:fixed;inset:0;z-index:200;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #whatifpick[hidden]{display:none}
+#tagpick,#workpick{position:fixed;inset:0;z-index:210;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
+#tagpick[hidden],#workpick[hidden]{display:none}
+#view .wstate{font-weight:700;letter-spacing:.02em}
+#view .wstate.unknown{color:var(--bad)}
+#workpick textarea{width:100%;min-height:90px;white-space:pre-wrap;overflow-wrap:anywhere}
+#view .tagbar select,#workpick select{max-width:100%;min-width:0;text-overflow:ellipsis}
+#view label.tagbar{display:inline-flex;max-width:100%;align-items:center;gap:4px}
+.tp-panel{max-width:520px}
+.tp-search{font:inherit;font-size:12.5px;width:100%;box-sizing:border-box;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 10px;outline:none}
+.tp-search:focus{border-color:var(--accent)}
+.tp-list{display:grid;gap:2px;margin:10px 0;max-height:46vh;overflow-y:auto}
+.tp-row{display:flex;align-items:center;gap:9px;font-size:12.5px;padding:4px 8px;border-radius:5px;cursor:pointer;color:var(--ink)}
+.tp-row:hover{background:var(--panel2)}
+.tp-row .n{margin-left:auto;color:var(--mut);font-variant-numeric:tabular-nums}
+.tp-create{font:inherit;font-size:12.5px;text-align:left;padding:4px 8px;border:1px dashed var(--line);border-radius:5px;background:none;color:var(--accent);cursor:pointer}
+.tp-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line2);padding-top:10px}
+.tp-foot .primary{border-color:var(--accent);background:var(--accent);color:#141009;font-weight:700}
+.tp-msg{font-size:12px;margin:6px 0;color:var(--bad)}
+.tp-note{font-size:12px;color:var(--ink2);margin:4px 0}
+.tag{display:inline-block;font:inherit;font-size:10.5px;line-height:1.5;padding:0 7px;margin-left:6px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink2);white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:pointer}
+.tag:hover,.tag:focus-visible{border-color:var(--accent);color:var(--ink);outline:none}
+.tag.add{color:var(--mut);border-style:dashed}
+.tagbar{display:inline-flex;gap:6px;align-items:center;margin-left:8px}
 .wi-list{display:grid;gap:4px;margin-top:6px;max-height:54vh;overflow-y:auto}
 .wi-row{display:flex;align-items:center;gap:10px;font:inherit;font-size:12.5px;padding:6px 11px;border:1px solid var(--line);
   border-radius:6px;background:var(--panel2);color:var(--ink);cursor:pointer;text-align:left}
@@ -680,7 +705,7 @@ let RETURN = null;
 function openSession(id) {
   const to = '#/s/' + encodeURIComponent(id);
   const kind = curScope().kind;
-  RETURN = (MSUB || kind === 'h' || kind === 'H')
+  RETURN = (MSUB || kind === 'h' || kind === 'H' || (typeof BROWSE !== 'undefined' && BROWSE === 'tags'))
     ? { from: location.hash, to, msub: MSUB, tab: TAB } : null;
   location.hash = to;
 }
@@ -688,6 +713,8 @@ function openSession(id) {
 // one exception being the hop straight back into the scope a drill was armed in, which
 // both Esc and the browser's Back button make by restoring that exact hash.
 function resetScopeState() {
+  if (typeof TAGPICK !== 'undefined' && TAGPICK) closeTagPick();
+  if (typeof WORK_PICK !== 'undefined' && WORK_PICK) closeWorkPick();
   if (typeof EXTRAS !== 'undefined' && EXTRAS.loading) {
     const sc = curScope();
     // popstate can start loading before hashchange resets the same destination.
@@ -1173,7 +1200,7 @@ function table(id, cols, rows, opts = {}) {
       if (opts.rowKey) row.setAttribute('data-tool-focus', opts.rowKey(r));
       row.addEventListener('keydown', e => {
         if (e.metaKey || e.ctrlKey || e.altKey || STARTUP_WARNINGS.length || WHATS_NEW_OPEN || THEMEPICK
-            || WHATIF.open || PRICES.open || TRENDS.open || RANGE.pick) return;
+            || WHATIF.open || PRICES.open || TRENDS.open || RANGE.pick || TAGPICK) return;
         if (e.key === 'Tab') { e.stopPropagation(); return; }
         if (e.key === 'Enter' || e.key === ' ') opts.onRow(r);
         else if (e.key === 'j' || e.key === 'ArrowDown') row.nextElementSibling?.focus();
@@ -1345,6 +1372,10 @@ const distinctYears = ws => [...new Set(ws.map(w => w.date.slice(0, 4)))]
 const scopeYear = sc => sc.year || null;
 // Render directly when mode changes do not change the hash.
 function setBrowse(mode) {
+  if (typeof WORK_PICK !== 'undefined' && WORK_PICK) closeWorkPick();
+  if (mode === 'work') { if (workOn()) { BROWSE = mode; if (curScope().kind === 's') go('', ''); else render(false); } return; }
+  if (typeof WORK_DETAIL !== 'undefined') WORK_DETAIL = null;
+  if (mode === 'tags') { if (tagsOn()) { BROWSE = mode; render(false); } return; }
   BROWSE = mode;
   FOCUS = mode === 'projects' ? 'projects' : mode === 'harnesses' ? 'harnesses'
     : mode === 'machines' ? 'machines' : 'months';
@@ -1368,6 +1399,8 @@ function scopeWorkflows(sc) {
 }
 // Keep per-scope tab order aligned with the TUI.
 function tabsFor(sc) {
+  if (typeof workOn !== 'undefined' && workOn() && BROWSE === 'work' && sc.kind !== 's') return ['Work'];
+  if (tagsOn() && BROWSE === 'tags' && sc.kind !== 's') return ['Tags'];
   if (sc.kind === 's') {
     const t = ['Overview', 'Subagents'];
     const mine = EXTRAS.id === sc.id;
@@ -1419,7 +1452,16 @@ function renderSidebar(sc) {
     h('button', { class: BROWSE === 'time' ? 'on' : null, onclick: () => setBrowse('time') }, 'Time'),
     h('button', { class: BROWSE === 'projects' ? 'on' : null, onclick: () => setBrowse('projects') }, 'Projects'),
     h('button', { class: BROWSE === 'harnesses' ? 'on' : null, onclick: () => setBrowse('harnesses') }, 'Harnesses'),
-    h('button', { class: BROWSE === 'machines' ? 'on' : null, onclick: () => setBrowse('machines') }, 'Machines')));
+    h('button', { class: BROWSE === 'machines' ? 'on' : null, onclick: () => setBrowse('machines') }, 'Machines'),
+    tagsOn() ? h('button', { class: BROWSE === 'tags' ? 'on' : null, onclick: () => setBrowse('tags') }, 'Tags') : null,
+    workOn() ? h('button', { class: BROWSE === 'work' ? 'on' : null, onclick: () => setBrowse('work') }, 'Work') : null));
+  if (BROWSE === 'work' && workOn()) {
+    side.appendChild(sidePane(WORK.incomplete ? 'Work snapshot' : 'Work · all dates', 'months',
+      ['open','done','unknown','archived'].map(section => h('button', { class: 'hbtn' + (WORK_SECTION === section ? ' on' : ''),
+        onclick: () => { WORK_SECTION = section; WORK_DETAIL = null; render(false); } }, section + ' · ' + WORK.items.filter(i => workSection(i) === section).length))));
+    side.appendChild(h('div', { class: 'hint' }, WORK.incomplete ? 'Incomplete, read-only catalog snapshot; not a live agenda.' : 'Open work ignores the accounting date range. Totals include all available nonignored linked roots.'));
+    return;
+  }
   if (BROWSE === 'harnesses') {
     const rows = sourceRows(W).sort((a, b) => b.cost - a.cost || a.source.localeCompare(b.source));
     const peak = Math.max(...rows.map(r => r.cost), 0);
@@ -1752,9 +1794,22 @@ function sessionCols(model) {
     { key: 'date', label: 'Date', align: 'r', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
     { key: 'dur', label: 'Worked', align: 'r', sortVal: r => r.dur || 0,
       fmt: r => r.dur == null ? h('span', { class: 'mut' }, '·') : h('span', { class: 'dim' }, hDur(r.dur)) },
-    { key: 'title', label: 'Title', asc: true, sortVal: r => r.title.toLowerCase(), cls: 'grow' },
+    { key: 'title', label: 'Title', asc: true, sortVal: r => r.title.toLowerCase(), cls: 'grow',
+      fmt: tagsOn() || workOn() ? (r => [r.title, tagChips(r, true), workSessionControls(r)]) : undefined },
     { key: 'project', label: 'Project', asc: true, sortVal: r => projName(r.project).toLowerCase(), fmt: r => h('span', { class: 'dim' }, projName(r.project)) },
   ];
+  if (tagsEditable()) cols.unshift({ key: 'selected', label: 'Select',
+    fmt: r => {
+      const box = stopRowKeys(h('input', { type: 'checkbox', 'aria-label': 'Select ' + r.title }));
+      box.checked = TAG_SELECTED.has(r.key);
+      box.addEventListener('click', e => e.stopPropagation());
+      box.addEventListener('change', () => {
+        if (box.checked && TAG_SELECTED.size >= 500) { box.checked = false; return; }
+        box.checked ? TAG_SELECTED.set(r.key, tagRev(r.key)) : TAG_SELECTED.delete(r.key);
+        render(false);
+      });
+      return box;
+    } });
   if (model) cols.push(
     { key: 'modelCost', label: 'Model list', align: 'r',
       fmt: r => [r.modelEst ? '~' : null, moneyCell(r.modelCost)] },
@@ -1774,13 +1829,539 @@ function sessionsTable(id, ws, model) {
     const q = FILTER.toLowerCase();
     rows = ws.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q));
   }
+  if (tagsOn()) {
+    TAG_BASE = rows;
+    rows = rows.filter(tagMatches);
+  }
   if (model) rows = rows.map(w => {
     const usage = modelSessionUsage(w, model);
     return { ...w, modelCost: usage.listCost, modelTokens: usage.tokens, modelEst: usage.est };
   });
-  return h('div', null, filterInput(),
+  const empty = tagsOn() && TAGFILTER && !rows.length
+    ? h('div', { class: 'hint' }, 'No sessions match ' + tagFilterLabel() + ' — change or clear the tag filter.') : null;
+  return h('div', null, filterInput(), tagFilterButton(), bulkTagControls(), empty,
     table(id, sessionCols(model), rows, { defaultSort: { key: model ? 'modelCost' : 'cost', desc: true }, collapse: 25,
+      rowLabel: tagsOn() ? (r => 'Open session ' + r.title) : undefined,
       onRow: r => { openSession(r.id); } }));
+}
+// -- experimental session tags (explicit static snapshots are read-only) ----------
+let TAGS = DATA.tags || null;
+let TAGFILTER = null;  // { mode: 'all' | 'any' | 'untagged', ids: Set }; transient
+let TAGPICK = null;    // the open editor or filter dialog
+let TAG_REQ = 0;
+let TAG_BASE = [];     // the last session list before the tag filter, for counts
+let TAG_SELECTED = new Map(); // exact key => revision captured at selection, never all matches
+const tagsOn = () => !!(TAGS && !META.demo);
+const tagsEditable = () => !!(tagsOn() && META.serve && TAGS.editable);
+const tagFold = v => v.toLocaleLowerCase();
+function tagDefs() {
+  return (TAGS ? TAGS.defs : []).slice().sort((a, b) => tagFold(a.label) < tagFold(b.label) ? -1 : tagFold(a.label) > tagFold(b.label) ? 1 : 0);
+}
+function tagLabel(id) { const d = TAGS && TAGS.defs.find(x => x.id === id); return d ? d.label : '?' + id; }
+function tagIds(w) { const a = tagsOn() && w.key ? TAGS.assign[w.key] : null; return a ? a.ids : []; }
+function tagRev(key) { const a = TAGS && TAGS.assign[key]; return a ? a.rev : 0; }
+function tagLabels(w) {
+  const ids = tagIds(w);
+  const known = ids.filter(id => TAGS.defs.some(d => d.id === id)).map(tagLabel).sort((a, b) => tagFold(a) < tagFold(b) ? -1 : 1);
+  return known.concat(ids.filter(id => !TAGS.defs.some(d => d.id === id)).map(id => '?' + id));
+}
+function tagMatches(w) {
+  if (!TAGFILTER || !tagsOn()) return true;
+  const ids = new Set(tagIds(w));
+  if (TAGFILTER.mode === 'untagged') return ids.size === 0;
+  const want = [...TAGFILTER.ids];
+  return TAGFILTER.mode === 'any' ? want.some(id => ids.has(id)) : want.every(id => ids.has(id));
+}
+function tagFilterLabel() {
+  if (!TAGFILTER) return 'all sessions';
+  if (TAGFILTER.mode === 'untagged') return 'untagged';
+  return [...TAGFILTER.ids].map(id => '#' + tagLabel(id)).sort().join(TAGFILTER.mode === 'all' ? ' & ' : ' | ');
+}
+function stopRowKeys(el) {
+  // Chips live inside clickable rows: activating one must not also open the session.
+  el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
+  return el;
+}
+function tagChips(w, preview) {
+  if (!tagsOn() || !w.key) return null;
+  const labels = tagLabels(w);
+  const shown = preview ? labels.slice(0, 1) : labels;
+  if (!tagsEditable()) return h('span', { class: 'tagbar', title: labels.join(', ') },
+    shown.map(l => h('span', { class: 'tag' }, '#' + l)),
+    preview && labels.length > shown.length ? h('span', { class: 'tag' }, '+' + (labels.length - shown.length)) : null);
+  const open = e => { e.stopPropagation(); openTagEditor(w); };
+  const kids = shown.map(l => stopRowKeys(h('button', { class: 'tag', title: 'edit tags', onclick: open }, '#' + l)));
+  if (preview && labels.length > 1) kids.push(stopRowKeys(h('button', { class: 'tag', title: labels.map(l => '#' + l).join(' '), onclick: open }, '+' + (labels.length - 1))));
+  if (!preview || !labels.length) kids.push(stopRowKeys(h('button', { class: 'tag add', title: 'edit tags', 'aria-label': 'edit tags', onclick: open }, labels.length ? 'edit' : '+ tag')));
+  return h('span', { class: 'tagbar' }, kids);
+}
+function tagFilterButton() {
+  if (!tagsOn()) return null;
+  return stopRowKeys(h('button', { class: 'hbtn' + (TAGFILTER ? ' on' : ''), title: 'filter this list by tag (lists only; totals elsewhere keep their scope)',
+    onclick: openTagFilter }, 'tags: ' + tagFilterLabel()));
+}
+function openTagEditor(w) {
+  if (!tagsEditable()) return;
+  TAGPICK = { kind: 'edit', key: w.key, title: w.title, rev: tagRev(w.key), checked: new Set(tagIds(w)),
+    drafts: [], q: '', error: '', conflict: null, pending: false, opener: document.activeElement };
+  renderTagPick(true);
+}
+function openTagFilter() {
+  if (!tagsOn()) return;
+  TAGPICK = { kind: 'filter', checked: new Set(TAGFILTER && TAGFILTER.ids ? TAGFILTER.ids : []),
+    mode: TAGFILTER && TAGFILTER.mode === 'any' ? 'any' : 'all', q: '', opener: document.activeElement };
+  renderTagPick(true);
+}
+function closeTagPick() {
+  const opener = TAGPICK && TAGPICK.opener;
+  TAGPICK = null;
+  TAG_REQ += 1;  // a late save response may still update data, never this dialog
+  renderTagPick();
+  if (opener && opener.isConnected) opener.focus();
+}
+function setTagFilter(f) { TAGFILTER = f; closeTagPick(); render(false); }
+function tagDraftKey(v) { return v.normalize('NFC').toLocaleLowerCase(); }
+function tagTyped(q) { return q.trim().replace(/^#+/, '').trim(); }
+function tagPickCommit(q) {
+  // Enter in the search box: check the exact match, or stage a new tag.
+  const label = tagTyped(q);
+  if (!label) return false;
+  const hit = TAGS.defs.find(d => tagDraftKey(d.label) === tagDraftKey(label));
+  if (hit) TAGPICK.checked.add(hit.id);
+  else if (TAGPICK.kind === 'edit' && !TAGPICK.drafts.some(d => tagDraftKey(d) === tagDraftKey(label))) {
+    if (label.length > 40) { TAGPICK.error = 'Tag names are limited to 40 characters.'; return true; }
+    TAGPICK.drafts.push(label);
+  }
+  TAGPICK.q = '';
+  return true;
+}
+function tagCheckRow(id, label, checked, count, onchange) {
+  const box = h('input', { type: 'checkbox' });
+  box.checked = checked;
+  box.addEventListener('change', () => onchange(box.checked));
+  return h('label', { class: 'tp-row' }, box, label, count == null ? null : h('span', { class: 'n' }, count));
+}
+function renderTagPick(focusSearch) {
+  const host = document.getElementById('tagpick');
+  if (!TAGPICK) { host.hidden = true; host.textContent = ''; return; }
+  host.hidden = false; host.textContent = '';
+  const tp = TAGPICK;
+  const fold = tagFold(tagTyped(tp.q));
+  const search = h('input', { class: 'tp-search', id: 'tp-search', placeholder: tp.kind === 'edit' ? 'search or create a tag…' : 'search tags…',
+    value: tp.q, 'aria-label': 'search tags' });
+  search.addEventListener('input', () => { tp.q = search.value; renderTagPick(true); });
+  search.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeTagPick(); }
+    else if (e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      if (!tagPickCommit(tp.q)) { if (tp.kind === 'edit') saveTags(); else applyTagFilter(); }
+      else renderTagPick(true);
+    }
+  });
+  const list = h('div', { class: 'tp-list', role: 'group', 'aria-label': 'tags' });
+  if (tp.kind === 'filter') {
+    const base = TAG_BASE;
+    const count = id => base.filter(w => tagIds(w).includes(id)).length;
+    list.append(h('button', { class: 'tp-create', onclick: () => setTagFilter(null) }, 'All sessions · ' + base.length),
+      h('button', { class: 'tp-create', onclick: () => setTagFilter({ mode: 'untagged', ids: new Set() }) },
+        'Untagged · ' + base.filter(w => !tagIds(w).length).length));
+    const ids = tagDefs().map(d => d.id);
+    tp.checked.forEach(id => { if (!ids.includes(id)) ids.push(id); });
+    ids.filter(id => !fold || tagFold(tagLabel(id)).includes(fold)).forEach(id =>
+      list.append(tagCheckRow(id, '#' + tagLabel(id), tp.checked.has(id), count(id), on => { on ? tp.checked.add(id) : tp.checked.delete(id); })));
+  } else {
+    const current = (TAGS.assign[tp.key] || { ids: [] }).ids;
+    const ids = tagDefs().map(d => d.id).concat(current.filter(id => !TAGS.defs.some(d => d.id === id)));
+    const typed = tagTyped(tp.q);
+    const exact = typed && (TAGS.defs.some(d => tagDraftKey(d.label) === tagDraftKey(typed)) || tp.drafts.some(d => tagDraftKey(d) === tagDraftKey(typed)));
+    if (typed && !exact) list.append(h('button', { class: 'tp-create', onclick: () => { tagPickCommit(typed); renderTagPick(true); } }, '+ Create #' + typed));
+    ids.filter(id => !fold || tagFold(tagLabel(id)).includes(fold)).forEach(id =>
+      list.append(tagCheckRow(id, '#' + tagLabel(id), tp.checked.has(id), null, on => { on ? tp.checked.add(id) : tp.checked.delete(id); })));
+    tp.drafts.filter(d => !fold || tagFold(d).includes(fold)).forEach(d =>
+      list.append(tagCheckRow(d, '#' + d + ' (new)', true, null, on => { if (!on) { tp.drafts = tp.drafts.filter(x => x !== d); renderTagPick(); } })));
+    if (!ids.length && !tp.drafts.length && !typed) list.append(h('div', { class: 'hint' }, 'No tags yet — type a name and press Enter.'));
+  }
+  const buttons = tp.kind === 'edit'
+    ? [h('button', { class: 'hbtn primary', onclick: saveTags, disabled: tp.pending ? '' : null }, tp.pending ? 'saving…' : (tp.conflict ? 'replace with mine' : 'apply')),
+       tp.conflict ? h('button', { class: 'hbtn', onclick: reloadTagsForConflict }, 'reload and review') : null,
+       h('button', { class: 'hbtn', onclick: closeTagPick }, 'cancel')]
+    : [h('div', { class: 'seg' },
+         h('button', { class: tp.mode === 'all' ? 'on' : null, onclick: () => { tp.mode = 'all'; renderTagPick(); } }, 'match all'),
+         h('button', { class: tp.mode === 'any' ? 'on' : null, onclick: () => { tp.mode = 'any'; renderTagPick(); } }, 'match any')),
+       h('button', { class: 'hbtn primary', onclick: applyTagFilter }, 'apply'),
+       h('button', { class: 'hbtn', onclick: closeTagPick }, 'cancel')];
+  const panel = h('div', { class: 'tr-panel tp-panel' },
+    h('div', { class: 'tr-head' }, h('h3', { id: 'tp-title' }, tp.kind === 'edit' ? 'Session tags' : 'Filter sessions by tag'),
+      h('button', { class: 'tr-close', style: 'margin-left:auto', onclick: closeTagPick }, 'esc ✕')),
+    tp.kind === 'edit' ? h('div', { class: 'tp-note' }, tp.title) : h('div', { class: 'tp-note' }, 'Narrows session lists only; totals and rankings keep their scope.'),
+    search, list,
+    tp.error ? h('div', { class: 'tp-msg', role: 'alert' }, tp.error) : null,
+    h('div', { class: 'tp-foot' }, buttons));
+  panel.addEventListener('click', e => e.stopPropagation());
+  host.onclick = () => closeTagPick();
+  host.appendChild(panel);
+  if (focusSearch) { search.focus(); search.setSelectionRange(search.value.length, search.value.length); }
+}
+function applyTagFilter() {
+  const tp = TAGPICK;
+  if (!tp.checked.size) { setTagFilter(null); return; }
+  setTagFilter({ mode: tp.mode, ids: new Set(tp.checked) });
+}
+function tagsGone() {
+  TAGS = null; TAGFILTER = null; TAG_SELECTED.clear();
+  if (BROWSE === 'tags') BROWSE = 'time';
+  closeTagPick(); render(false);
+}
+function saveTags() {
+  const tp = TAGPICK;
+  if (!tp || tp.kind !== 'edit' || tp.pending || !tagsEditable()) return;
+  tagPickCommit(tp.q);
+  tp.pending = true; tp.error = '';
+  const req = ++TAG_REQ, key = tp.key;
+  renderTagPick();
+  fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, expected: tp.rev, tagIds: [...tp.checked], create: tp.drafts }) })
+    .then(r => r.json().catch(() => ({ ok: false, code: 'bad_response', message: 'unexpected server response' })))
+    .then(x => {
+      if (req !== TAG_REQ || TAGPICK !== tp) return;
+      if (x.defs && TAGS) TAGS.defs = x.defs;
+      if (x.ok && TAGS) TAGS.assign[key] = x.assignment;  // authoritative for that key only
+      if (x.revision != null && TAGS) TAGS.revision = x.revision;
+      if (x.code === 'disabled') { tagsGone(); return; }
+      if (req !== TAG_REQ || !TAGPICK) { render(false); return; }
+      if (x.ok) { closeTagPick(); render(false); return; }
+      tp.pending = false;
+      if (x.code === 'stale' && x.current) {
+        tp.conflict = x.current; tp.rev = x.current.rev;
+        tp.error = 'Changed elsewhere (now ' + (x.current.ids.map(id => '#' + tagLabel(id)).join(' ') || 'no tags') + '). Apply again to replace it, or reload and review.';
+      } else tp.error = 'Not saved: ' + (x.message || 'error');
+      renderTagPick();
+    })
+    .catch(() => {
+      if (req !== TAG_REQ || !TAGPICK) return;
+      tp.pending = false; tp.error = 'Not saved: the OpenTab server is unreachable.';
+      renderTagPick();
+    });
+}
+function reloadTagsForConflict() {
+  const tp = TAGPICK, req = ++TAG_REQ;
+  fetch('/api/tags').then(r => r.json()).then(x => {
+    if (req !== TAG_REQ || TAGPICK !== tp) return;
+    if (!x.tags) { tagsGone(); return; }
+    TAGS = x.tags;
+    if (req !== TAG_REQ || TAGPICK !== tp) { render(false); return; }
+    tp.checked = new Set(tagRev(tp.key) ? TAGS.assign[tp.key].ids : []);
+    tp.rev = tagRev(tp.key); tp.conflict = null; tp.error = '';
+    render(false); renderTagPick();
+  }).catch(() => { if (TAGPICK === tp) { tp.error = 'Could not reload tags.'; renderTagPick(); } });
+}
+function uniqueTagRoots(ws) {
+  const roots = new Map();
+  ws.forEach(w => { if (w.key && !roots.has(w.key)) roots.set(w.key, w); });
+  return [...roots.values()];
+}
+function tagAccounting(ws) {
+  const roots = uniqueTagRoots(ws), measured = roots.filter(w => w.dur != null),
+    priced = roots.filter(w => cost(w) != null && (cost(w) !== 0 || !w.unpriced));
+  return { sessions: roots.length, seconds: sum(measured, w => w.dur), timeMeasured: measured.length,
+    cost: sum(priced, cost), costMeasured: priced.length, unpriced: sum(roots, w => w.unpriced || 0),
+    approximate: roots.filter(w => (DATA.models[w.id] || []).some(r => r.tokens > 0 &&
+      (WI_UNPRICED.has(r.model) || (r.estimateReasons || []).length || unknownTierContext(r)))).length };
+}
+function tagTime(a) { return (a.timeMeasured ? hDur(a.seconds) : '—') + ' · ' + a.timeMeasured + '/' + a.sessions + ' sessions measured'; }
+function tagCost(a) { return (a.costMeasured ? money(a.cost) : '—') + ' · ' + a.costMeasured + '/' + a.sessions + ' available'
+  + (MODE === 'api' ? (a.approximate ? ' · ~ ' + a.approximate + ' sessions use fallback rates / partial context' : '')
+    : a.unpriced ? ' · some usage has no recorded cost' : ''); }
+function tagAggregateRows(ws) {
+  const roots = uniqueTagRoots(ws), ids = new Set(tagDefs().map(d => d.id));
+  roots.forEach(w => tagIds(w).forEach(id => ids.add(id)));
+  return [...ids, null].map(id => {
+    const matches = roots.filter(w => id === null ? !tagIds(w).length : tagIds(w).includes(id));
+    return { id, label: id === null ? 'Untagged' : tagLabel(id), roots: matches, ...tagAccounting(matches) };
+  });
+}
+function renderTagsBrowse(sc, ws) {
+  const root = document.getElementById('view');
+  root.textContent = '';
+  TAG_BASE = uniqueTagRoots(msubFilter(ws));
+  if (FILTER) { const q = FILTER.toLowerCase(); TAG_BASE = TAG_BASE.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q)); }
+  root.appendChild(pane('Tags · ' + scopeLabel(sc) + ' · ' + rangeLabel(),
+    h('div', { class: 'hint' }, 'Tag rows overlap; do not add their costs. Each qualified root includes its subagents once. Range selects roots by start date and includes whole-session usage. Agent time sums available active time; parallel sessions can exceed elapsed time.'),
+    table('tag-totals', [
+      { key: 'label', label: 'Tag', asc: true },
+      { key: 'sessions', label: 'Sessions', align: 'r' },
+      { key: 'seconds', label: 'Agent time', fmt: tagTime },
+      { key: 'cost', label: MODE === 'api' ? 'API estimate' : 'Recorded cost', fmt: tagCost },
+      { key: 'maintenance', label: '', fmt: r => tagsEditable() && r.id !== null && TAGS.defs.some(d => d.id === r.id)
+        ? [stopRowKeys(h('button', { class: 'hbtn', onclick: e => { e.stopPropagation(); openTagMaintenance(r.id, 'rename'); } }, 'rename')),
+           stopRowKeys(h('button', { class: 'hbtn', onclick: e => { e.stopPropagation(); openTagMaintenance(r.id, 'delete'); } }, 'delete globally'))] : null },
+    ], tagAggregateRows(TAG_BASE), { defaultSort: { key: 'cost', desc: true }, collapse: 1000,
+      rowLabel: r => 'Open matching sessions for ' + r.label,
+      onRow: r => { TAGFILTER = r.id === null ? { mode: 'untagged', ids: new Set() } : { mode: 'all', ids: new Set([r.id]) }; render(false); } })));
+  const matching = TAG_BASE.filter(tagMatches), subtotal = tagAccounting(matching);
+  root.appendChild(pane('Matching roots · ' + tagFilterLabel(),
+    h('div', { class: 'hint' }, subtotal.sessions + ' sessions · Agent time ' + tagTime(subtotal) + ' · ' + (MODE === 'api' ? 'API estimate ' : 'Recorded cost ') + tagCost(subtotal)),
+    sessionsTable('tag-sessions', TAG_BASE)));
+}
+function bulkTagControls() {
+  if (!tagsEditable()) return null;
+  return h('span', { class: 'tagbar' }, h('span', null, TAG_SELECTED.size + ' selected roots (not all matches)'),
+    h('button', { class: 'hbtn', disabled: TAG_SELECTED.size ? null : '', onclick: () => openBulkTags('add') }, 'bulk add'),
+    h('button', { class: 'hbtn', disabled: TAG_SELECTED.size ? null : '', onclick: () => openBulkTags('remove') }, 'bulk remove'),
+    h('button', { class: 'hbtn', onclick: () => { TAG_SELECTED.clear(); render(false); } }, 'clear selection'));
+}
+function openBulkTags(op) {
+  if (!tagsEditable() || !TAG_SELECTED.size) return;
+  TAGPICK = { kind: 'bulk', op, targets: Object.fromEntries(TAG_SELECTED), checked: new Set(), q: '',
+    pending: false, error: '', opener: document.activeElement };
+  renderTagOperation(true);
+}
+function openTagMaintenance(id, op) {
+  if (!tagsEditable()) return;
+  const def = TAGS.defs.find(d => d.id === id);
+  TAGPICK = { kind: 'maintenance', op, id, expected: def.rev, expectedDocument: TAGS.revision,
+    affected: def.affected, label: def.label, pending: false, error: '', opener: document.activeElement };
+  renderTagOperation(true);
+}
+function renderTagOperation(focus) {
+  const tp = TAGPICK, host = document.getElementById('tagpick');
+  if (!tp) return;
+  host.hidden = false; host.textContent = '';
+  const input = h('input', { class: 'tp-search', value: tp.label || '', 'aria-label': 'new tag label' });
+  input.addEventListener('input', () => { tp.label = input.value; });
+  const body = tp.kind === 'bulk' ? tagDefs().map(d => tagCheckRow(d.id, '#' + d.label, tp.checked.has(d.id), null,
+    on => { on ? tp.checked.add(d.id) : tp.checked.delete(d.id); }))
+    : tp.op === 'rename' ? input : h('div', { class: 'tp-note' }, 'Delete #' + tp.label + ' globally from ' + tp.affected + ' assignments, including retained missing roots? This removes the definition and its memberships.');
+  const panel = h('div', { class: 'tr-panel tp-panel' },
+    h('h3', { id: 'tp-title' }, tp.kind === 'bulk' ? 'Bulk ' + tp.op + ' · ' + Object.keys(tp.targets).length + ' selected roots' : 'Confirm ' + tp.op),
+    h('div', { class: 'tp-list' }, body), tp.error ? h('div', { role: 'alert', class: 'tp-msg' }, tp.error) : null,
+    h('div', { class: 'tp-foot' },
+      h('button', { class: 'hbtn primary', disabled: tp.pending ? '' : null, onclick: saveTagOperation }, tp.pending ? 'saving…' : 'confirm ' + tp.op),
+      h('button', { class: 'hbtn', onclick: closeTagPick }, 'cancel')));
+  panel.addEventListener('click', e => e.stopPropagation()); host.onclick = closeTagPick; host.appendChild(panel);
+  if (focus) {
+    const first = panel.querySelector('input:not([disabled]), button:not([disabled])');
+    if (first) first.focus();
+  }
+}
+function saveTagOperation() {
+  const tp = TAGPICK;
+  if (!tp || tp.pending || !tagsEditable()) return;
+  const body = tp.kind === 'bulk' ? { op: 'bulk', targets: tp.targets, [tp.op]: [...tp.checked] }
+    : tp.op === 'rename' ? { op: 'rename', id: tp.id, expected: tp.expected, label: tp.label }
+    : { op: 'delete', id: tp.id, expected: tp.expected, expectedDocument: tp.expectedDocument, confirm: true };
+  tp.pending = true; tp.error = ''; const req = ++TAG_REQ;
+  renderTagOperation();
+  fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(r => r.json()).then(x => {
+      if (req !== TAG_REQ || TAGPICK !== tp) return;
+      if (x.code === 'disabled') { tagsGone(); return; }
+      if (x.ok) { TAGS = x.tags; TAG_SELECTED.clear(); closeTagPick(); render(false); return; }
+      tp.pending = false; tp.error = 'Not saved: ' + (x.message || 'error') + (x.code === 'stale' ? '. Cancel, refresh and review the captured targets before retrying.' : '');
+      renderTagOperation();
+    }).catch(() => {
+      if (req !== TAG_REQ || TAGPICK !== tp) return;
+      tp.pending = false; tp.error = 'Not saved: server unreachable.'; renderTagOperation();
+    });
+}
+// -- independent experimental Work view ---------------------------------------------
+let WORK = DATA.work || null, WORK_SECTION = 'open', WORK_DETAIL = null, WORK_PICK = null, WORK_REQ = 0;
+let WORK_SEARCH = '', WORK_SCOPE = { project:'', source:'', machine:'' };
+const workOn = () => !!(WORK && !META.demo);
+const workEditable = () => !!(workOn() && META.serve && WORK.editable);
+function workState(id) { return WORK.states.find(s => s.id === id); }
+// Org-style keyword: bold, in the state's shade for the current theme brightness.
+function stateChip(id) {
+  const s = workState(id), c = s && s.colors ? s.colors[TH.dark ? 0 : 1] : null;
+  return h('span', { class: 'wstate' + (s ? '' : ' unknown'), style: c ? 'color:' + c : null }, s ? s.label : 'Unknown · ' + id);
+}
+function workSection(item) { const state = workState(item.stateId); return item.archived ? 'archived' : !state ? 'unknown' : state.done ? 'done' : 'open'; }
+function workMembership(key) { return WORK.memberships[key] || {itemId:null,rev:0}; }
+function workItem(id) { return WORK.items.find(i => i.id === id); }
+function workKeys(id) { return Object.keys(WORK.memberships).filter(key => WORK.memberships[key].itemId === id); }
+function workTotals(item) {
+  const keys = workKeys(item.id), roots = new Map(WORK.roots.map(r => [r.key,r]));
+  const available = keys.map(k => roots.get(k)).filter(Boolean);
+  const costs = available.map(cost).filter(v => v != null && Number.isFinite(v) && v >= 0);
+  const times = available.map(r => r.dur).filter(v => v != null && Number.isFinite(v) && v >= 0);
+  const linked = WORK.incomplete ? item.linked : keys.length;
+  return {linked,available:available.length,unavailable:linked-available.length,
+    cost:costs.length ? costs.reduce((a,b)=>a+b,0) : null,costMeasured:costs.length,
+    seconds:times.length ? times.reduce((a,b)=>a+b,0) : null,timeMeasured:times.length};
+}
+function workCoverage(item) {
+  const a = workTotals(item);
+  return (a.linked ? a.available + '/' + a.linked + ' linked roots available' : 'No linked sessions') +
+    ' · Agent time ' + (a.seconds == null ? '—' : hDur(a.seconds)) + ' · ' + a.timeMeasured + '/' + a.linked + ' measured' +
+    ' · ' + (MODE === 'api' ? 'API estimate ' : 'Recorded cost ') + (a.cost == null ? '—' : money(a.cost)) + ' · ' + a.costMeasured + '/' + a.linked + ' measured';
+}
+function workRootMatches(root, sc) {
+  if (sc.kind === 'p' && root.project !== sc.project || sc.kind === 'h' && root.source !== sc.source || sc.kind === 'M' && root.machine !== sc.machine) return false;
+  if (Object.entries(WORK_SCOPE).some(([key,value]) => value && root[key] !== value)) return false;
+  if (tagsOn() && TAGFILTER) {
+    const ids = new Set(root.tagIds || (TAGS.assign[root.key] || {}).ids || []), want = [...TAGFILTER.ids];
+    if (TAGFILTER.mode === 'untagged' ? ids.size : TAGFILTER.mode === 'any' ? !want.some(id=>ids.has(id)) : !want.every(id=>ids.has(id))) return false;
+  }
+  return true;
+}
+function workRows(sc) {
+  const filter = ['p','h','M'].includes(sc.kind) || Object.values(WORK_SCOPE).some(Boolean) || tagsOn() && TAGFILTER;
+  const roots = WORK.roots.filter(r => workRootMatches(r,sc));
+  const eligible = new Set(roots.map(r=>workMembership(r.key).itemId));
+  return WORK.items.filter(i => workSection(i) === WORK_SECTION && (!filter || eligible.has(i.id)) &&
+    (!WORK_SEARCH || (i.title + ' ' + (i.nextStep || '')).toLowerCase().includes(WORK_SEARCH.toLowerCase())))
+    .map(i => ({...i,...workTotals(i)}));
+}
+function workSelect(label, values, value, change) {
+  const select = h('select', {'aria-label':label}, values.map(([id,text]) => h('option', {value:id},text)));
+  select.value = value;
+  select.addEventListener('change', () => change(select.value));
+  return h('label', {class:'tagbar'}, label + ' ', select);
+}
+function workSessionControls(w) {
+  if (!workOn() || !w.key) return null;
+  const item = workItem(workMembership(w.key).itemId);
+  const root = WORK.roots.find(r => r.key === w.key);
+  const buttons = item ? [stopRowKeys(h('button', {class:'tag', onclick:e=>{e.stopPropagation();openWorkDetail(item.id);}},
+    [stateChip(item.stateId), ' ' + item.title]))] : [];
+  if (workEditable() && root) {
+    buttons.push(stopRowKeys(h('button', {class:'tag add', onclick:e=>{e.stopPropagation();openWorkMembership(root);}},item ? 'move / detach' : 'attach work')));
+    if (!item) buttons.push(stopRowKeys(h('button', {class:'tag add', onclick:e=>{e.stopPropagation();openWorkEditor(null,root);}},'create work')));
+  }
+  return h('span', {class:'tagbar'},buttons);
+}
+function openWorkDetail(id) { if (!workOn() || !workItem(id)) return; closeWorkPick(); WORK_DETAIL=id; BROWSE='work'; if (curScope().kind==='s') go('',''); else render(false); }
+function renderWorkBrowse(sc) {
+  const view = document.getElementById('view'); view.textContent='';
+  if (WORK_DETAIL && workItem(WORK_DETAIL)) { renderWorkDetail(view,workItem(WORK_DETAIL)); return; }
+  const search = h('input',{class:'filter','aria-label':'Search work',placeholder:'search work…',value:WORK_SEARCH});
+  search.addEventListener('input',()=>{WORK_SEARCH=search.value;render(false); const input=document.getElementById('work-search');if(input)input.focus();});
+  search.id='work-search';
+  TAG_BASE = WORK.roots;
+  const controls = Object.keys(WORK_SCOPE).map(key => workSelect(key,
+    [['','all '+key],...([...new Set(WORK.roots.map(r=>r[key]).filter(Boolean))].sort().map(v=>[v,v]))],WORK_SCOPE[key],
+    value=>{WORK_SCOPE[key]=value;render(false);}));
+  view.appendChild(pane(WORK_SECTION + ' work · ' + (WORK.incomplete ? 'incomplete snapshot' : 'all dates'),
+    h('div',{class:'hint'},'Session project/harness/machine/tag filters select items having an eligible linked root; item totals retain every available nonignored linked root, across all dates. Whole-session assignment is approximate. Agent time is summed active time, including parallel work.'),
+    search,controls,tagFilterButton(),workEditable()?h('button',{class:'hbtn',onclick:()=>openWorkEditor()},'create empty work item'):null,
+    WORK.error ? h('div',{role:'alert'},WORK.error) : null,
+    table('work-items',[
+      {key:'title',label:'Work',asc:true},{key:'stateId',label:'State',fmt:i=>stateChip(i.stateId)},
+      {key:'linked',label:'Sessions',fmt:i=>i.available+'/'+i.linked+' available'},
+      {key:'seconds',label:'Agent time',fmt:i=>(i.seconds==null?'—':hDur(i.seconds))+' · '+i.timeMeasured+'/'+i.linked+' measured'},
+      {key:'cost',label:MODE==='api'?'API estimate':'Recorded cost',fmt:i=>(i.cost==null?'—':money(i.cost))+' · '+i.costMeasured+'/'+i.linked+' measured'},
+    ],workRows(sc),{defaultSort:{key:'title',desc:false},collapse:100,rowLabel:i=>'Open work '+i.title,onRow:i=>openWorkDetail(i.id)})));
+  if (!workRows(sc).length) view.appendChild(h('div',{class:'hint'},'No '+WORK_SECTION+' items match. Change the section or clear session filters.'));
+}
+function renderWorkDetail(view,item) {
+  const state = workState(item.stateId), keys=workKeys(item.id);
+  const rootMap = new Map(WORK.roots.map(r=>[r.key,r]));
+  view.appendChild(pane(item.title,
+    h('button',{class:'hbtn',onclick:()=>{WORK_DETAIL=null;render(false);}},'Back to '+WORK_SECTION+' work'),
+    h('div',null,stateChip(item.stateId),item.archived?' · archived':''),
+    h('div',{class:'hint'},workCoverage(item)),
+    WORK.incomplete ? h('div',{class:'hint'},'Incomplete catalog snapshot. Missing/omitted memberships have no links or reconstructed usage; this is not a live agenda.') :
+      h('div',null,h('h3',null,'Next step'),h('div',{style:'white-space:pre-wrap;overflow-wrap:anywhere'},item.nextStep || 'No next step authored.')),
+    workEditable()?h('div',{class:'tagbar'},
+      h('button',{class:'hbtn',onclick:()=>openWorkEditor(item)},'edit title / next step / state'),
+      h('button',{class:'hbtn',onclick:()=>openWorkMembership(null,item.id)},'attach session'),
+      h('button',{class:'hbtn',onclick:()=>openWorkAction(item,{archived:!item.archived})},item.archived?'unarchive':'archive'),
+      workSection(item)!=='open'?h('button',{class:'hbtn',onclick:()=>{
+        const open=WORK.states.find(s=>!s.done); if(open)openWorkAction(item,{stateId:open.id,archived:false});else openWorkEditor(item);
+      }},'reopen'):null):null));
+  if (!keys.length) view.appendChild(h('div',{class:'hint'},WORK.incomplete?'No in-catalog linked sessions.':'Empty item: attach a session when work starts.'));
+  view.appendChild(table('work-roots',[
+    {key:'title',label:'Linked session',fmt:r=>r.title || 'Unavailable retained root'},
+    {key:'source',label:'Harness'},{key:'machine',label:'Machine'},
+    {key:'date',label:'Started',fmt:r=>r.date || '—'},
+    {key:'availability',label:'Availability / handoff',fmt:r=>r.missing?'Missing, ignored, unloaded or ambiguous root; usage unavailable':
+      [h('span',null,'Available'),r.resume?h('button',{class:'hbtn',onclick:()=>openWorkHandoff(r)},'copy resume command'):META.serve?h('span',{class:'hint'},r.resumeReason):null,
+       ALL_W.filter(w=>w.id===r.id).length===1 && ALL_W.some(w=>w.key===r.key)?h('button',{class:'hbtn',onclick:()=>openSession(r.id)},'session detail'):h('span',{class:'hint'},'Outside ordinary accounting catalog or ambiguous detail identity')]},
+    {key:'actions',label:'',fmt:r=>workEditable()?h('div',{class:'tagbar'},
+      h('button',{class:'hbtn',onclick:()=>openWorkDetach(r.key)},'detach'),
+      !r.missing?h('button',{class:'hbtn',onclick:()=>openWorkMembership(r)},'move explicitly'):null):null},
+  ],keys.map(key=>rootMap.get(key)||{key,missing:true}),{collapse:100}));
+}
+function closeWorkPick() {
+  const opener=WORK_PICK&&WORK_PICK.opener;WORK_PICK=null;WORK_REQ++;
+  const host=document.getElementById('workpick');host.hidden=true;host.textContent='';
+  if(opener&&opener.isConnected)opener.focus();
+}
+function startWorkPick(fields) { closeWorkPick();WORK_PICK={...fields,pending:false,error:'',conflict:false,opener:document.activeElement};renderWorkPick(true); }
+function openWorkEditor(item=null,root=null) {
+  if(!workEditable())return;
+  startWorkPick({kind:item?'edit':'create',id:item&&item.id,key:root&&root.key,
+    expected:item?item.rev:root?workMembership(root.key).rev:0,
+    title:item?item.title:root?root.title:'',nextStep:item?item.nextStep:'',stateId:item?item.stateId:(WORK.states[0]||{}).id});
+}
+function openWorkAction(item,fields) { if(workEditable())startWorkPick({kind:'action',id:item.id,expected:item.rev,fields,title:item.title}); }
+function openWorkDetach(key) { if(workEditable())startWorkPick({kind:'detach',key,expected:workMembership(key).rev,title:'Detach this exact linked root?'}); }
+function openWorkMembership(root=null,id=null) {
+  if(!workEditable())return;
+  const selected=root||WORK.roots[0],key=selected&&selected.key;
+  if(!key)return;
+  const membership=workMembership(key);
+  startWorkPick({kind:'membership',key,expected:membership.rev,from:membership.itemId,id:id||(WORK.items.find(i=>i.id!==membership.itemId)||{}).id,fixedRoot:!!root});
+}
+function openWorkHandoff(root) { if(workOn()&&META.serve&&root.resume)startWorkPick({kind:'handoff',command:root.resume,title:root.title}); }
+function renderWorkPick(focus=false) {
+  const tp=WORK_PICK,host=document.getElementById('workpick');if(!tp)return;
+  host.hidden=false;host.textContent='';const fields=[];
+  function text(field,label,multiline=false) {
+    const input=h(multiline?'textarea':'input',{class:'tp-search',value:tp[field]||'','aria-label':label,maxlength:field==='title'?200:2000,disabled:tp.pending?'':null});
+    if(multiline)input.value=tp[field]||'';
+    input.addEventListener('input',()=>{tp[field]=input.value;});return h('label',null,label,input);
+  }
+  if(tp.kind==='create'||tp.kind==='edit') {
+    fields.push(text('title','Title'),text('nextStep','Next step',true),workSelect('State',
+      WORK.states.map(s=>[s.id,s.label]).concat(workState(tp.stateId)?[]:[[tp.stateId,'Unknown · '+tp.stateId]]),tp.stateId,value=>{tp.stateId=value;}));
+  } else if(tp.kind==='membership') {
+    fields.push(tp.fixedRoot?h('div',null,(WORK.roots.find(r=>r.key===tp.key)||{}).title):workSelect('Root',WORK.roots.map(r=>[r.key,r.title+' · '+r.source+' · '+r.machine]),tp.key,key=>{
+      tp.key=key;tp.expected=workMembership(key).rev;tp.from=workMembership(key).itemId;renderWorkPick();
+    }),workSelect('Target item',WORK.items.filter(i=>i.id!==tp.from).map(i=>[i.id,i.title]),tp.id,id=>{tp.id=id;}));
+    fields.push(h('div',{class:'hint'},tp.from?'Explicit move from '+(workItem(tp.from)||{title:'unknown item'}).title+'. The root will have one primary owner.':'Attach this exact root to the selected item.'));
+    fields.push(h('button',{class:'hbtn',onclick:()=>openWorkDetach(tp.key)},'detach from current item'));
+  } else if(tp.kind==='handoff') {
+    const command=h('textarea',{'aria-label':'Resume command',readonly:''});command.value=tp.command;
+    fields.push(h('div',{class:'hint'},'Paste this exact-session command in your terminal. OpenTab does not execute it.'),command,
+      h('button',{class:'hbtn',onclick:()=>{if(typeof navigator!=='undefined'&&navigator.clipboard)navigator.clipboard.writeText(tp.command).catch(()=>{command.focus();command.select();});else{command.focus();command.select();}}},'copy command'));
+  } else fields.push(h('div',null,tp.title),tp.fields?h('div',{class:'hint'},
+    'stateId' in tp.fields?'Reopen as '+((workState(tp.fields.stateId)||{}).label||tp.fields.stateId)+'.':
+    tp.fields.archived?'Archive: hidden from open work; state, next step and links are kept.':'Unarchive: back to its state\'s section.'):null);
+  const panel=h('div',{class:'tr-panel tp-panel'},h('h3',{id:'wp-title'},tp.kind==='handoff'?'Resume handoff':tp.kind==='membership'?(tp.from?'Confirm explicit move':'Attach session'):'Work item · '+tp.kind),fields,
+    tp.error?h('div',{role:'alert',class:'tp-msg'},tp.error):null,
+    h('div',{class:'tp-foot'},tp.kind!=='handoff'?h('button',{class:'hbtn primary',disabled:tp.pending||tp.conflict?'':null,onclick:saveWorkPick},tp.pending?'saving…':tp.kind==='membership'&&tp.from?'confirm move':'confirm save'):null,
+      tp.conflict?h('button',{class:'hbtn',onclick:reloadWorkConflict},'reload and review'):null,h('button',{class:'hbtn',onclick:closeWorkPick},'cancel')));
+  panel.addEventListener('click',e=>e.stopPropagation());host.onclick=closeWorkPick;host.appendChild(panel);
+  if(focus){const first=panel.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])');if(first)first.focus();}
+}
+function workGone() { WORK=null;WORK_DETAIL=null;WORK_SCOPE={project:'',source:'',machine:''};closeWorkPick();if(BROWSE==='work')BROWSE='time';render(false); }
+function saveWorkPick() {
+  const tp=WORK_PICK;if(!tp||tp.pending||tp.conflict||!workEditable()||tp.kind==='handoff')return;
+  let body;
+  if(tp.kind==='create')body={op:'create',title:tp.title,nextStep:tp.nextStep,stateId:tp.stateId,...(tp.key?{key:tp.key,expected:tp.expected}:{})};
+  else if(tp.kind==='edit')body={op:'edit',id:tp.id,expected:tp.expected,title:tp.title,nextStep:tp.nextStep,stateId:tp.stateId};
+  else if(tp.kind==='action')body={op:'edit',id:tp.id,expected:tp.expected,...tp.fields};
+  else if(tp.kind==='detach')body={op:'detach',key:tp.key,expected:tp.expected};
+  else body={op:tp.from?'move':'attach',key:tp.key,id:tp.id,expected:tp.expected,...(tp.from?{confirm:true}:{})};
+  const req=++WORK_REQ;tp.pending=true;tp.error='';renderWorkPick();
+  fetch('/api/work',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(x=>{
+    if(req!==WORK_REQ||WORK_PICK!==tp)return;
+    if(x.code==='disabled'){workGone();return;}
+    if(x.ok){WORK=x.work;if(tp.kind==='create'){WORK_DETAIL=x.id;BROWSE='work';}closeWorkPick();if(curScope().kind==='s'&&tp.kind==='create')go('','');else render(false);return;}
+    tp.pending=false;tp.conflict=x.code==='stale'||x.code==='move_required';tp.error='Not saved: '+(x.message||'error')+(tp.conflict?'. Draft retained; reload and review before retrying.':'');renderWorkPick();
+  }).catch(()=>{if(req===WORK_REQ&&WORK_PICK===tp){tp.pending=false;tp.error='Not saved: server unreachable.';renderWorkPick();}});
+}
+function reloadWorkConflict() {
+  const tp=WORK_PICK,req=++WORK_REQ;
+  fetch('/api/work').then(r=>r.json()).then(x=>{
+    if(req!==WORK_REQ||WORK_PICK!==tp)return;
+    if(!x.work){workGone();return;}WORK=x.work;
+    if(tp.key){const membership=workMembership(tp.key);tp.expected=membership.rev;tp.from=membership.itemId;}
+    else {const item=workItem(tp.id);if(!item){tp.error='Item unavailable; cancel this draft.';renderWorkPick();return;}tp.expected=item.rev;}
+    tp.conflict=false;tp.error='Authoritative revisions reloaded. Review your retained draft and the current item before confirming.';
+    render(false);renderWorkPick();
+  }).catch(()=>{if(req===WORK_REQ&&WORK_PICK===tp){tp.error='Could not reload work items.';renderWorkPick();}});
 }
 function topSessionsTable(id, ws, n) {
   return table(id, sessionCols(), ws, { defaultSort: { key: 'cost', desc: true }, collapse: n,
@@ -3073,6 +3654,7 @@ function renderSessionOverview(root, sc) {
     META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
     EXTRAS.id === sc.id && EXTRAS.client ? [h('dt', null, 'client'), h('dd', null, EXTRAS.client)] : null,
     META.machines && w.machine ? [h('dt', null, 'machine'), h('dd', null, w.machine)] : null,
+    tagsOn() && w.key ? [h('dt', null, 'tags'), h('dd', null, tagChips(w, false))] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));
   root.appendChild(moneyCard(w, whatifTotals(sc.id)));
   if (w.usageSeconds != null) root.appendChild(h('div', { class: 'hint' }, 'Duration charges are estimates at the logged rate ($ view); recorded dollars remain separate.'));
@@ -3804,9 +4386,26 @@ function sidebarList(sc) {
   return { rows, index };
 }
 document.addEventListener('keydown', e => {
+  if (typeof WORK_PICK !== 'undefined' && WORK_PICK) {
+    if (e.key === 'Tab') {
+      const controls=[...document.querySelectorAll('#workpick input:not([disabled]), #workpick textarea:not([disabled]), #workpick select:not([disabled]), #workpick button:not([disabled])')];
+      if(controls.length)controls[(controls.indexOf(document.activeElement)+(e.shiftKey?-1:1)+controls.length)%controls.length].focus();
+      e.preventDefault();
+    } else if(e.key==='Escape'){closeWorkPick();e.preventDefault();}
+    return;
+  }
+  if (typeof TAGPICK !== 'undefined' && TAGPICK && e.key === 'Tab') {
+    const controls = [...document.querySelectorAll('#tagpick input:not([disabled]), #tagpick button:not([disabled]), #tagpick select:not([disabled])')];
+    if (controls.length) {
+      const current = controls.indexOf(document.activeElement);
+      controls[(current + (e.shiftKey ? -1 : 1) + controls.length) % controls.length].focus();
+    }
+    e.preventDefault(); return;
+  }
   if (e.target && e.target.matches &&
       e.target.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) {
-    if (e.key === 'Escape') e.target.blur();
+    if (e.key === 'Escape' && TAGPICK) closeTagPick();
+    else if (e.key === 'Escape') e.target.blur();
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -3834,6 +4433,11 @@ document.addEventListener('keydown', e => {
     else if (body && (e.key === 'g' || e.key === 'Home')) body.scrollTo(0, 0);
     else if (body && (e.key === 'G' || e.key === 'End')) body.scrollTo(0, body.scrollHeight);
     e.preventDefault(); return;
+  }
+  if (TAGPICK) {
+    // Native controls keep Tab/Enter/Space; nothing reaches the page underneath.
+    if (e.key === 'Escape') { closeTagPick(); e.preventDefault(); }
+    return;
   }
   if (THEMEPICK) { if (e.key === 'Escape' || e.key === 'C') closeTheme(); e.preventDefault(); return; }
   if (WHATIF.open) {
@@ -3957,7 +4561,9 @@ document.addEventListener('keydown', e => {
 
 function render(scrollTop = true) {
   const sc = curScope();
-  if (sc.kind === 'p') BROWSE = 'projects';
+  if (BROWSE === 'work' && workOn()) { }
+  else if (BROWSE === 'tags' && tagsOn()) { }
+  else if (sc.kind === 'p') BROWSE = 'projects';
   else if (sc.kind === 'h' || sc.kind === 'H') BROWSE = 'harnesses';
   else if (sc.kind === 'M') BROWSE = 'machines';
   else if (sc.kind === 'y' || sc.kind === 'm' || sc.kind === 'd') BROWSE = 'time';
@@ -3973,7 +4579,9 @@ function render(scrollTop = true) {
   renderSidebar(sc);
   renderTabs(sc, tabs);
   renderCrumbs(sc);
-  renderDetail(sc, ws);
+  if (BROWSE === 'work' && workOn() && sc.kind !== 's') renderWorkBrowse(sc);
+  else if (BROWSE === 'tags' && tagsOn() && sc.kind !== 's') renderTagsBrowse(sc, ws);
+  else renderDetail(sc, ws);
   renderTrends();
   renderPrices();
   renderRange();

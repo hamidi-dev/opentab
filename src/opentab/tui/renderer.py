@@ -20,13 +20,16 @@ from opentab.accounting.models import (
     YearSummary,
 )
 from opentab.accounting.tiers import detail_api_cost
+from opentab.annotations import MATCH_ALL
 from opentab.presentation.themes import (
+    STATE_COLOR_HEX,
     button_surfaces,
     hex_rgb1000,
     ink_on,
     nearest_8,
     nearest_256,
     ramp,
+    state_color_hex,
 )
 from opentab.sources import SOURCE_LABELS
 from opentab.tui import bindings, keymap
@@ -140,6 +143,7 @@ from opentab.tui.views import subagents as subagents_view
 from opentab.tui.views import tools as tools_view
 from opentab.tui.views import trends as trend_views
 from opentab.tui.views import turns as turns_view
+from opentab.tui.views import work as views_work
 from opentab.tui.views.changes import (
     DIFF_BACKGROUNDS,
     DIFF_FOREGROUNDS,
@@ -148,6 +152,7 @@ from opentab.tui.views.changes import (
     files_layout,
     safe_text,
 )
+from opentab.tui.views.tags import tag_accounting_text, tag_drill_summary
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -435,6 +440,9 @@ class Renderer:
                 stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
             )
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
+            owner = self._work_lines.get(line)
+            if owner is not None:
+                self.paint_work_keyword(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), owner)
             self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
         if models:
             self._add_rows_region("zoommodel", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
@@ -955,11 +963,11 @@ class Renderer:
 
         # Reader actions depend on the output sections just laid out in the body.
         self.draw_footer(stdscr, height, width)
-        if self.help:
+        if self.help and self.app.work_workspace is None:
             self.draw_help(stdscr, top, bottom, width)
         if self.toast_history:
             self.draw_toast_history(stdscr, top, bottom, width)
-        if self.whats_new:
+        if self.whats_new and self.app.work_workspace is None:
             self.draw_whats_new(stdscr, top, bottom, width)
 
         if self.startup_warning is not None:
@@ -980,6 +988,16 @@ class Renderer:
             self.draw_machine_menu(stdscr, height, width)
         elif self.harness_menu:
             self.draw_harness_menu(stdscr, height, width)
+        elif self.app.work_workspace is not None:
+            self.draw_work(stdscr, height, width)
+            if self.help:
+                self.draw_help(stdscr, top, bottom, width)
+            if self.whats_new:
+                self.draw_whats_new(stdscr, top, bottom, width)
+            if self.launch_menu is not None:  # Resume floats above its Work item
+                self.draw_launch_menu(stdscr, height, width)
+        elif self.tag_menu:
+            self.draw_tag_menu(stdscr, height, width)
         elif self.whatif_menu:
             self.draw_whatif_menu(stdscr, height, width)
         elif self.sort_menu:
@@ -1487,10 +1505,14 @@ class Renderer:
         # Accent only persistent narrowing modifiers; scope and sort remain neutral.
         # The live filter appears in the command line and is shown here only when committed.
         x = 0
+        if self.org_active:
+            chip = " ORG "
+            self.write(stdscr, 1, x, chip, curses.color_pair(6) | curses.A_REVERSE | curses.A_BOLD)
+            x += len(chip) + 1
         if drilled:
             chip = " ZOOM "
-            self.write(stdscr, 1, 0, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
-            x = len(chip) + 1
+            self.write(stdscr, 1, x, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            x += len(chip) + 1
         base = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
         active = curses.color_pair(6) | curses.A_BOLD
         range_lbl = self.range_label()
@@ -1512,6 +1534,9 @@ class Renderer:
             segs.append((f"  ·  harness: {self.harness_filter_label}", active))
         if self.show_bookmarks_only:
             segs.append(("  ·  ★ bookmarks only", active))
+        if self.tag_filter is not None and self.tags_active:
+            # Only session lists narrow; parent totals and rankings keep their scope.
+            segs.append((f"  ·  tags: {self.tag_filter_label()} (lists)", active))
         for text, attr in segs:
             x = self.write_seg(stdscr, 1, x, text, attr, width)
         self.draw_mode_tabs(stdscr, 2, width)
@@ -1850,8 +1875,65 @@ class Renderer:
     def note_tag(self, workflow: Workflow) -> str:
         return "✎ " if self.note_for(workflow.id) else ""
 
+    TAG_PREVIEW_CELLS = 14
+
+    def tag_preview(self, workflow: Workflow) -> str:
+        # One bounded label, then +N. It trails the title, so a narrow column clips the
+        # tags first and the title keeps its budget.
+        labels = self.session_tag_labels(workflow)
+        if not labels:
+            return ""
+        first = shorten(f"#{labels[0]}", self.TAG_PREVIEW_CELLS)
+        more = f" +{len(labels) - 1}" if len(labels) > 1 else ""
+        return f"  {first}{more}"
+
     def session_marks(self, workflow: Workflow) -> str:
         return self.bookmark_tag(workflow) + self.note_tag(workflow)
+
+    def work_state(self, workflow: Workflow):
+        """(item, state or None) for a session in a work item, else None."""
+        item = self.app.session_work_item(workflow)
+        return None if item is None else (item, self.app.work_items.state(item.state_id))
+
+    def work_keyword(self, workflow: Workflow) -> str:
+        # Org-style: the item's state keyword leads the title; the item name is in Overview.
+        owned = self.work_state(workflow)
+        if owned is None:
+            return ""
+        item, state = owned
+        return state.label if state else f"?{item.state_id}"
+
+    def titled(self, workflow: Workflow) -> str:
+        keyword = self.work_keyword(workflow)
+        return (f"{keyword} " if keyword else "") + workflow.title + self.tag_preview(workflow)
+
+    def state_attr(self, state) -> int:
+        """Bold keyword in its configured colour; unknown/default/white use theme ink."""
+        color = state.color if state else "red"
+        names = tuple(STATE_COLOR_HEX)
+        if color in names and self._state_colors_ok:
+            return curses.color_pair(self._STATE_PAIR + names.index(color)) | curses.A_BOLD
+        return curses.A_BOLD
+
+    def paint_work_keyword(self, stdscr, y: int, x: int, content: str, workflow: Workflow) -> None:
+        # Recolour the keyword where titled() placed it in an already-painted row.
+        owned = self.work_state(workflow)
+        if owned is None:
+            return
+        keyword = self.work_keyword(workflow)
+        at = content.find(f"{keyword} {workflow.title[:12]}")
+        if at < 0:
+            at = content.find(f"{keyword} ")
+        if at >= 0:
+            self.write(
+                stdscr, y, x + display_width(content[:at]), keyword, self.state_attr(owned[1])
+            )
+
+    def no_sessions_text(self) -> str:
+        if self.tag_filter is not None and self.tags_active:
+            clear = self._key("main", "filter_tags")
+            return f"No sessions match {self.tag_filter_label()} — {clear} to change."
+        return "No sessions."
 
     def ignored_session_tag(self, workflow: Workflow) -> str:
         return "ignored: " if workflow.id in self.ignored_sessions else ""
@@ -1976,7 +2058,12 @@ class Renderer:
                 project=self.session_project(workflow) if proj_w else "",
                 marks=self.session_marks(workflow),
                 ignored=self.ignored_session_tag(workflow),
-                title=workflow.title,
+                title=(
+                    "[x] "
+                    if self.tags_active and self.session_tag_key(workflow) in self.tag_selected
+                    else ""
+                )
+                + self.titled(workflow),
             ),
             marker,
             models,
@@ -2045,9 +2132,14 @@ class Renderer:
         # Aggregate the filtered rows that Enter can actually open.
         return self.filtered_sessions(rows)
 
-    @staticmethod
-    def sessions_box_title(sessions: list) -> str:
-        return f"Sessions · {len(sessions)}" if sessions else "Sessions"
+    def sessions_box_title(self, sessions: list) -> str:
+        title = f"Sessions · {len(sessions)}" if sessions else "Sessions"
+        if self.tags_active and self.tag_selected:
+            title += f" · {len(self.tag_selected)} selected roots"
+        # The list total then reads as the matching subtotal, not the scope's spend.
+        if self.tag_filter is not None and self.tags_active:
+            title += f" · {shorten(self.tag_filter_label(), 30)}"
+        return title
 
     @staticmethod
     def projects_box_title(projects: list) -> str:
@@ -2061,7 +2153,7 @@ class Renderer:
         header = self.session_header_text(models, proj_w, dur)
         title = self.sessions_box_title(sessions)
         if not sessions:
-            lines = self._ruled_box(title, header, ["No sessions."], None, [], width)
+            lines = self._ruled_box(title, header, [self.no_sessions_text()], None, [], width)
         else:
             body = [self.session_row_text(wf, " ", models, proj_w, dur) for wf in sessions]
             total = (
@@ -2070,12 +2162,26 @@ class Renderer:
                 else None
             )
             lines = self._ruled_box(title, header, body, total, [], width)
+            self._note_work_lines(lines, body, sessions)
         # Register against rendered framed text so gutter offsets match paint.
         self._line_sort_headers[self.BOX_HEADER_LINE] = (
             self.session_sort_columns(proj_w, dur),
             "session",
         )
         return lines
+
+    def _note_work_lines(self, lines: list[str], body: list[str], sessions: list) -> None:
+        # Text-only tables lose row identity; remember which framed line holds which
+        # owned session so the line painter can colour its state keyword.
+        self._work_lines = {}
+        if not self.app.work_items_active:
+            return
+        j = 0
+        for line in lines:
+            if j < len(body) and body[j][:24] in line:
+                if self.work_state(sessions[j]) is not None:
+                    self._work_lines[line] = sessions[j]
+                j += 1
 
     def unpriced_hint(self) -> str:
         # Do not describe estimated dollars as unbilled.
@@ -2265,6 +2371,19 @@ class Renderer:
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         sessions = self.current_sessions()
         cy = y + 3
+        if self.tag_browse_drill and self.tags_active:
+            cost_label = (
+                "API estimate (whole roots)"
+                if self.show_api_prices
+                else "Recorded cost (whole roots)"
+            )
+            summary = tag_drill_summary(sessions, cost_label, max(1, w - 4))
+            for offset, line in enumerate(summary):
+                self.write(
+                    stdscr, cy + offset, x + 2, clip(line, max(1, w - 4)), curses.color_pair(1)
+                )
+            cy += len(summary)
+            h -= len(summary)
         models, proj_w, dur = self.session_columns(sessions, self.picker_box_width(w))
         header = self.session_header_text(models, proj_w, dur)
         columns = self.session_sort_columns(proj_w, dur)
@@ -2272,7 +2391,7 @@ class Renderer:
             body_y, cx, inner = self.draw_picker_frame(
                 stdscr, cy, x, w, self.sessions_box_title(sessions), header, 1, columns, "session"
             )
-            self.paint_picker_row(stdscr, body_y, x, cx, inner, "No sessions.", False)
+            self.paint_picker_row(stdscr, body_y, x, cx, inner, self.no_sessions_text(), False)
             return
         idx, start, count = picker_window(len(sessions), self.workflow_index, h)
         shown = sessions[start : start + count]
@@ -2297,17 +2416,21 @@ class Renderer:
             else:
                 cost_text = money(wf.total_cost)
                 token_text = human_tokens(wf.total_tokens)
+            text = self.session_row_text(wf, marker, models, proj_w, dur)
             self.paint_picker_row(
                 stdscr,
                 body_y + off,
                 x,
                 cx,
                 inner,
-                self.session_row_text(wf, marker, models, proj_w, dur),
+                text,
                 start + off == idx,
                 cost_text,
                 token_text,
             )
+            if start + off != idx:  # the cursor row keeps its uniform highlight
+                row = picker_row(body_y + off, x, cx, inner, text, False, self.box_glyphs())
+                self.paint_work_keyword(stdscr, row.y, row.content_x, row.content, wf)
         self._paint_scrollbar(stdscr, body_y, x + w - 3, len(sessions), len(shown), start)
 
     def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
@@ -3290,7 +3413,7 @@ class Renderer:
         title = (
             "Detail"
             if workflow is None
-            else shorten(self.session_marks(workflow) + workflow.title, max(10, w - 12))
+            else shorten(self.session_marks(workflow) + self.titled(workflow), max(10, w - 12))
         )
         reading = self.app._on_turns_tab() and self.app.active_trace_drill is not None
         if reading:
@@ -3976,7 +4099,7 @@ class Renderer:
         body = [
             f"  {money(w.total_cost):>{cost_w}}  {pct(w.total_cost, scope_cost):>5}  "
             f"{human_tokens(w.total_tokens):>8}  {w.subagents:>{subs_w}}  "
-            f"{shorten(self.source_tag(w) + self.session_marks(w) + w.title, title_w)}"
+            f"{shorten(self.source_tag(w) + self.session_marks(w) + self.titled(w), title_w)}"
             for w in rows
         ]
         return self._ruled_box("# Top Sessions", header, body, None, [], width)
@@ -4323,6 +4446,13 @@ class Renderer:
             width,
         )
 
+    def tag_lines(self, workflow: Workflow, width: int) -> list[str]:
+        labels = self.session_tag_labels(workflow)
+        if not labels:
+            return []
+        wrapped = wrap_cells("  ".join(f"#{label}" for label in labels), max(20, width - 12))
+        return [f"Tags:     {wrapped[0]}"] + [f"          {line}" for line in wrapped[1:]]
+
     def note_lines(self, workflow: Workflow, width: int) -> list[str]:
         note = self.note_for(workflow.id)
         if not note:
@@ -4424,6 +4554,10 @@ class Renderer:
             rows.append(f"Client:   {client}")
         if workflow.machine:
             rows.append(f"Machine:  {workflow.machine}")
+        owned = self.work_state(workflow)
+        if owned is not None:
+            rows.append(f"Work:     {self.work_keyword(workflow)} · {owned[0].title}")
+        rows += self.tag_lines(workflow, card - self.BOX_CHROME)
         rows += self.note_lines(workflow, card - self.BOX_CHROME)
         lines = self._stat_card("# Session", rows, width)
         lines.append("")
@@ -5689,7 +5823,7 @@ class Renderer:
                 workflow.created_at,
                 cost,
                 tokens,
-                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}",
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{self.titled(workflow)}",
             )
             for workflow, cost, tokens in self.price_model_sessions(model)
         ]
@@ -5738,7 +5872,7 @@ class Renderer:
                 workflow.created_at,
                 cost,
                 tokens,
-                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}",
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{self.titled(workflow)}",
             )
             for workflow, cost, tokens in self.price_model_sessions(model)
         ]
@@ -6039,6 +6173,318 @@ class Renderer:
             self._menu_lines(layout),
             buttons=self._menu_buttons("menu.demo", "Apply", extra=extra),
         )
+
+    def draw_tag_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        ctx = "menu.tags.browse" if self.tag_menu == "browse" else "menu.tags"
+        entries = self.tag_menu_entries()
+        query = self.tag_menu_query
+        intro = [StyledLine(f"Search: {query}▏", menus.NORMAL)]
+        if self.tag_menu == "browse":
+            mode = "Match all" if self.tag_menu_mode == MATCH_ALL else "Match any"
+            cost_label = "API estimate" if self.show_api_prices else "Recorded cost"
+            intro.extend(
+                [
+                    StyledLine(f"Scope: {self.breadcrumb()}", menus.MUTED),
+                    StyledLine(
+                        "Current pane scope · roots selected by start date; whole-session usage",
+                        menus.MUTED,
+                    ),
+                    StyledLine(
+                        "Tags overlap: row costs/time are not additive. Root totals include subagents.",
+                        menus.MUTED,
+                    ),
+                    StyledLine(
+                        f"{mode} · {self._key(ctx, 'mode')} switch · Agent time is summed activity, not human effort",
+                        menus.MUTED,
+                    ),
+                    StyledLine(
+                        f"Tag · Sessions · Agent time (measured coverage) · {cost_label}",
+                        menus.NORMAL,
+                    ),
+                    StyledLine(
+                        (
+                            "~ API estimates; rates may be approximate"
+                            if self.show_api_prices
+                            else "! includes unpriced recorded usage"
+                        )
+                        + " · — unavailable; missing time is not zero",
+                        menus.MUTED,
+                    ),
+                ]
+            )
+            aggregates = {row.tag_id or "": row for row in self.tag_browse_rows()}
+            unpriced = {
+                self.session_tag_key(w) for w in self._tag_filter_base() if w.unpriced_tokens
+            }
+            entries = [
+                (
+                    kind,
+                    value,
+                    tag_accounting_text(aggregates[value], max(48, scr_w - 18))
+                    + (
+                        (" ~" if self.show_api_prices else " !")
+                        if unpriced.intersection(aggregates[value].session_keys)
+                        else ""
+                    ),
+                    checked,
+                )
+                for kind, value, _label, checked in entries
+            ]
+            title = "Tags · overlapping root sets"
+        elif self.tag_menu in ("rename", "delete"):
+            target = self._tag_maintenance
+            tag_id, _revision, _document, count = target if target else ("", 0, 0, 0)
+            title = "Delete tag globally?" if self.tag_menu == "delete" else "Rename tag"
+            intro = [
+                StyledLine(
+                    f"#{self.tag_label(tag_id)} · {count} affected assignments", menus.NORMAL
+                ),
+                StyledLine(
+                    "Includes retained missing/unloaded roots, across all dates and machines.",
+                    menus.MUTED,
+                ),
+            ]
+            if self.tag_menu == "rename":
+                intro.append(StyledLine(f"New label: {query}▏", menus.NORMAL))
+                intro.append(
+                    StyledLine("Stable tag ID and memberships are preserved.", menus.MUTED)
+                )
+            else:
+                intro.append(StyledLine("Removes it from every assignment.", menus.NOTICE))
+        elif self.tag_menu in ("bulk_add", "bulk_remove"):
+            verb = "Remove" if self.tag_menu == "bulk_remove" else "Add"
+            title = f"{verb} tags · {len(self._tag_bulk_targets)} selected roots"
+            intro.append(
+                StyledLine(
+                    "Exact captured roots, including hidden selections; unrelated tags stay.",
+                    menus.MUTED,
+                )
+            )
+            intro.append(
+                StyledLine(
+                    "Checks choose tags to modify; this is not membership replacement.", menus.MUTED
+                )
+            )
+        elif self.tag_menu == "filter":
+            mode = "Match all" if self.tag_menu_mode == MATCH_ALL else "Match any"
+            intro.append(
+                StyledLine(
+                    f"{mode} of checked tags · {self._key(ctx, 'mode')} switch · lists only",
+                    menus.MUTED,
+                )
+            )
+            title = "Filter sessions by tag"
+        else:
+            target = self._tag_menu_target
+            name = shorten(target[0].title, 40) if target else ""
+            intro.append(StyledLine(f"Tags for {name}", menus.MUTED))
+            title = "Session tags"
+        if self.tag_menu_error:
+            intro.append(StyledLine(self.tag_menu_error, menus.NOTICE))
+        intro.append(StyledLine("", menus.NORMAL))
+        check = self._button(ctx, "toggle", "Check")
+        if self.tag_menu == "browse":
+            buttons = self._menu_buttons(
+                ctx,
+                "Open",
+                "Close",
+                extra=[
+                    check,
+                    self._button(ctx, "rename", "Rename"),
+                    self._button(ctx, "delete_tag", "Delete"),
+                    self._button(ctx, "api_prices", "Cost mode"),
+                ],
+            )
+        elif self.tag_menu in ("rename", "delete"):
+            confirm = "Delete" if self.tag_menu == "delete" else "Rename"
+            buttons = self._menu_buttons(ctx, confirm)
+        else:
+            buttons = self._menu_buttons(ctx, "Apply", extra=[check])
+        empty = StyledLine(
+            "No tags yet — type a name to create one."
+            if self.tag_menu == "edit"
+            else "No tags match.",
+            menus.DIM,
+        )
+
+        def marker(entry) -> str:
+            kind, _value, label, _checked = entry
+            if kind in ("create", "invalid"):
+                return f"+ {label}" if kind == "create" else f"! {label}"
+            return label
+
+        layout = menus.windowed_radio_menu(
+            intro,
+            [(entry, entry[3]) for entry in entries],
+            self.tag_menu_index,
+            menus.option_budget(scr_h, 12 + len(intro)),
+            empty=empty,
+            label_formatter=marker,
+            checkboxes=self.tag_menu not in ("rename", "delete"),
+        )
+        my, mx, mh, mw = self.draw_modal(
+            stdscr, scr_h, scr_w, title, self._menu_lines(layout), buttons=buttons
+        )
+        for line_index, option_index in layout.option_rows:
+            if line_index < mh - 4:
+                self.regions.append(
+                    ("tag-option", my + 2 + line_index, mx + 2, mx + mw - 3, option_index)
+                )
+
+    def draw_work(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        app, ws = self.app, self.app.work_workspace
+        work, ctx = app.work_items, "work"
+        width, height = max(20, min(scr_w - 8, 100)), max(8, scr_h - 6)
+        cost_label = "API estimate" if app.show_api_prices else "Recorded cost"
+        totals = app.work_totals()
+
+        def state_label(item) -> str:
+            state = work.state(item.state_id)
+            label = state.label if state else f"Unknown · {item.state_id}"
+            return label + (" · archived" if item.archived else "")
+
+        def root_lines(key: str) -> tuple[str, ...]:
+            row, reason = ws.root(key), ws.root_reason(key)
+            if row is None:
+                return (key, reason)
+            where = f"{row.source or 'unknown'} · {app.machine_of(row) or 'local'} · {row.created_at[:10]}"
+            return (row.title or "(untitled)", f"{where} · {reason or 'resumable'}")
+
+        item = ws.item()
+        intro: list[str] = []
+        options: list[tuple[str, ...]] = []
+        selection: int | None = None
+        empty = "No work items in this view."
+
+        def bar(*actions: tuple[str, str], back: str = "Cancel", status=()) -> dict:
+            # Primary actions are buttons; the rest stay muted hint lines (too many
+            # for one row). Work dismisses with `back`, not the menus' `cancel`.
+            pressed = [self._button(ctx, action, label) for action, label in actions]
+            return {"buttons": [*pressed, self._button(ctx, "back", back)], "status": status}
+
+        buttons = bar(("select", "Choose"))
+        hint: tuple[str, ...] = ()
+        if ws.dialog in ("create", "title", "next_step"):
+            label = {"create": "Title", "title": "Title", "next_step": "Next step"}[ws.dialog]
+            title = (
+                "New work item" if ws.dialog == "create" else f"Edit · {item.title if item else ''}"
+            )
+            intro = wrap_cells(f"{label}: {ws.draft}▏", max(1, width - 4))
+            if ws.dialog == "create" and ws.target_root:
+                intro.append("The selected session is attached when you save.")
+            buttons = {
+                "buttons": [
+                    self._button("input", "confirm", "Save"),
+                    self._button("input", "cancel", "Cancel"),
+                ]
+            }
+            empty = ""
+        elif ws.dialog == "step_view" and item is not None:
+            title = f"Next step · {item.title}"
+            rows = wrap_cells(item.next_step or "—", max(1, width - 4))
+            ws.text_scroll = min(ws.text_scroll, max(0, len(rows) - (height - 6)))
+            intro = rows[ws.text_scroll : ws.text_scroll + height - 6]
+            scroll = self._keys(ctx, "down", "up")
+            buttons = bar(back="Close", status=[f"{scroll} scroll" if scroll else ""])
+            empty = ""
+        elif ws.dialog:
+            title = {
+                "state": "Choose state",
+                "reopen": "Reopen with state",
+                "assign": "Attach / move session to",
+                "roots": "Attach session (all dates)",
+                "resume": "Resume which session?",
+                "confirm": "Confirm",
+            }.get(ws.dialog, "Work")
+            if ws.dialog == "confirm" and ws.pending:
+                verb, dest = ws.pending
+                target = work.snapshot.items.get(dest) if dest else None
+                intro.append(f"{verb.capitalize()}" + (f" → {target.title}" if target else ""))
+            if ws.dialog == "resume":
+                intro.append("Pick the exact session; nothing is chosen for you.")
+                options = [root_lines(key) for key, _ in ws.options()]
+            else:
+                options = [(label,) for _value, label in ws.options()]
+            selection = ws.dialog_index
+            empty = "Nothing to choose."
+        elif ws.item_id:
+            if item is None:
+                title, empty = "Work item unavailable", "This item is not in the current snapshot."
+            else:
+                title = item.title
+                t = totals.get(item.id)
+                intro.append(state_label(item))
+                if t is not None:
+                    intro.extend(views_work.totals_lines(t, cost_label))
+                intro.extend(views_work.next_step_preview(item.next_step, width - 4))
+                intro.append("Linked sessions")
+                keys = ws.roots()
+                options = [root_lines(key) for key in keys]
+                selection = keys.index(ws.root_key) if ws.root_key in keys else None
+                empty = f"No linked sessions — {self._key(ctx, 'attach')} attach one."
+            buttons = bar(
+                ("resume", "Resume"), ("state", "State"), ("next_step", "Next step"), back="Back"
+            )
+            hint = (
+                f"{self._key(ctx, 'attach')} attach · {self._key(ctx, 'detach')} detach · "
+                f"{self._key(ctx, 'move')} move · {self._key(ctx, 'archive')} archive · "
+                f"{self._key(ctx, 'note')} note",
+                f"{self._key(ctx, 'title')} rename · {self._key(ctx, 'view_step')} read step · "
+                f"{self._key(ctx, 'cycle_state')} cycle state · {self._key(ctx, 'reopen')} reopen",
+            )
+        else:
+            title = f"Work · {ws.section} · all dates"
+            intro.append("All dates: the accounting range never hides work.")
+            if ws.query or ws.query_edit:
+                intro.append(f"Search: {ws.query}" + ("▏" if ws.query_edit else ""))
+            if ws.follow_scope and app.work_matching_keys() is not None:
+                intro.append(
+                    f"Only items with a session matching the current filters · {self._key(ctx, 'scope')} show all"
+                )
+            rows = ws.items()
+            for row in rows:
+                t = totals.get(row.id)
+                time = (
+                    "—"
+                    if t is None or t.worked_seconds is None
+                    else human_duration(t.worked_seconds)
+                )
+                cost = "—" if t is None or t.cost is None else money(t.cost)
+                linked = t.linked if t is not None else 0
+                options.append(
+                    (
+                        f"{row.title}  [{state_label(row)}]",
+                        f"{linked} sessions · Agent time {time} · {cost_label} {cost}",
+                    )
+                )
+            ids = [row.id for row in rows]
+            selection = ids.index(ws.selected_id) if ws.selected_id in ids else None
+            empty = f"No {ws.section} items. {self._key(ctx, 'create')} creates one."
+            buttons = bar(("create", "New"), ("filter", "Search"), ("select", "Open"), back="Close")
+            hint = (
+                f"{self._keys(ctx, 'section_prev', 'section_next')} section · "
+                f"{self._key(ctx, 'scope')} follow filters · {self._key(ctx, 'show_ignored')} ignored · "
+                f"{self._key(ctx, 'reload')} reload · {self._key(ctx, 'api_prices')} cost mode",
+            )
+        if app.org_active:
+            title = "ORG · " + title
+        if not ws.dialog and not ws.query_edit:
+            toggle = self._key("org", "toggle") if app.org_available else ""
+            mode_hint = (
+                f"{toggle} {'leave ORG' if app.org_active else 'Org mode'} · " if toggle else ""
+            )
+            hint = (mode_hint + f"{self._key('main', 'help')} help",) + hint
+        layout = views_work.work_layout(
+            intro, options, selection, list(hint), ws.error, width - 4, height, empty=empty
+        )
+        my, mx, mh, mw = self.draw_modal(
+            stdscr, scr_h, scr_w, title, self._menu_lines(layout), buttons=buttons
+        )
+        for line_index, option_index in layout.option_rows:
+            if line_index < mh - 4:
+                self.regions.append(
+                    ("work-option", my + 2 + line_index, mx + 2, mx + mw - 3, option_index)
+                )
 
     def draw_machine_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         self._draw_scope_picker(stdscr, scr_h, scr_w, "machine")
@@ -6871,6 +7317,10 @@ class Renderer:
     _BUTTON_COLOR_BASE = 64  # button face + shadow colour slots, after the diff colours
     pressed_button: tuple[str, str] | None = None  # (context, action) held down this frame
     _buttons_ok = False  # every button pair took; otherwise buttons paint in reverse video
+    _STATE_COLOR_BASE = 64  # work-state keyword colours, after the diff slots
+    _STATE_PAIR = 80  # one pair per STATE_COLOR_HEX name, after the 40 diff pairs
+    _state_colors_ok = False
+    _work_lines: dict = {}  # framed session-table line -> owning session (per build)
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
     # Did the five token-type pairs take? False on a pair-starved terminal, where the
     # bar falls back to per-type glyphs. Class-level so a Renderer built without curses
@@ -7008,6 +7458,7 @@ class Renderer:
         self._init_tool_heat()
         self._init_token_series()
         self._init_diff_colors()
+        self._init_state_colors()
         self._sync_heat_palette()
 
     def _init_button_colors(self) -> bool:
@@ -7031,6 +7482,14 @@ class Renderer:
                 self._set_pair(self._BUTTON_OFF_PAIR, r(roles["mut"]), r(roles["panel2"])),
             )
         )
+
+    def _init_state_colors(self) -> None:
+        dark = self.app.theme.get("dark", True)
+        ok = True
+        for i, name in enumerate(STATE_COLOR_HEX):
+            fg = self._heat_index(self._STATE_COLOR_BASE + i, state_color_hex(name, dark))
+            ok = self._set_pair(self._STATE_PAIR + i, fg, self._bg_index) and ok
+        self._state_colors_ok = ok
 
     def _init_diff_colors(self) -> None:
         roles = self.app.theme["roles"]
@@ -7526,7 +7985,7 @@ class Renderer:
                 cost,
                 tok,
                 self.src_col(workflow),
-                self.session_marks(workflow) + workflow.title,
+                self.session_marks(workflow) + self.titled(workflow),
             )
             for workflow, cost, tok in rows[start : start + shown]
         ]

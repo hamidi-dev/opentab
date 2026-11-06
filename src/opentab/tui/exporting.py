@@ -97,6 +97,33 @@ def sessions_dataset(
     return "sessions", header, rows
 
 
+def annotate_sessions_dataset(
+    dataset: tuple[str, list[str], list[list]],
+    annotations: list[tuple[str, list[tuple[str, str | None]], float | None, bool]],
+) -> tuple[str, list[str], list[list]]:
+    """Explicit tags-only annotation choice, aligned with the exact displayed rows.
+
+    IDs keep unresolved memberships unambiguous; labels may contain commas/spaces.
+    Unknown time is an empty cell, not a measured zero. Ordinary datasets are untouched.
+    """
+    scope, header, rows = dataset
+    if len(rows) != len(annotations):
+        raise ValueError("annotation rows must match the displayed session rows")
+    out = []
+    for row, (key, tags, seconds, measured) in zip(rows, annotations):
+        cell = json.dumps(
+            [{"id": tag_id, "label": label} for tag_id, label in sorted(tags)],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        out.append([*row, key, cell, seconds if seconds is not None else "", measured])
+    return (
+        scope + "-annotated",
+        [*header, "session_key", "tags", "agent_seconds", "cost_measured"],
+        out,
+    )
+
+
 def model_sessions_dataset(
     sessions: list[tuple[Workflow, dict]], model: str
 ) -> tuple[str, list[str], list[list]]:

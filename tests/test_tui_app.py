@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import opentab as ot
 from opentab.tui import app as app_module
-from opentab.tui import bindings
+from opentab.tui import bindings, keymap
 from opentab.tui.range_picker import FOCUSES
 from opentab.tui.search_workspace import SearchWorkspace
 
@@ -15,7 +15,11 @@ from tests._support import (
     FakeScreen,
     FakeStore,
     _app_on_session,
+    _ids,
     _model_row,
+    _select_session,
+    _tag_app,
+    _tags_on,
     app_with,
     box_title,
     fleet_app,
@@ -6327,3 +6331,161 @@ def test_reverse_sort_key_and_picker_flip_the_active_list_direction():
     app.project_sort_reverse = True
     app.apply_sort_choice("tokens")
     assert app.project_sort_by == "tokens" and app.project_sort_reverse is False
+
+
+# -- experimental session tags ------------------------------------------------------
+
+
+CTRL_T, CTRL_G, TAB, ENTER, ESC = 20, 7, 9, 10, 27
+
+
+def test_tags_stay_invisible_until_workflow_json_enables_them():
+    for enabled in (None, False):
+        with _tags_on(enabled) as session_tags:
+            app = _tag_app()
+            assert not app.tags_active
+            app.handle_key(None, CTRL_T)
+            app.handle_key(None, CTRL_G)
+            assert app.tag_menu is None and app.tag_filter is None
+            assert not os.path.exists(session_tags.tags_path())
+            assert not keymap.BY_ID["tags"].shown(app)
+            assert not keymap.BY_ID["tag-filter"].shown(app)
+            assert app.renderer.titled(app.current_session()) == "Alpha"
+
+
+def test_tag_editor_creates_assigns_and_filters_sessions():
+    with _tags_on():
+        app = _tag_app("a")
+        app.handle_key(None, CTRL_T)
+        assert app.tag_menu == "edit"
+        _type(app, "perf")
+        assert app.tag_menu_entries()[0][:3] == ("create", "perf", "Create #perf")
+        app.handle_key(None, ENTER)  # type, Enter: create, check and apply in one write
+        assert app.tag_menu is None and app.notice == "tags: #perf"
+        assert app.session_tag_labels(app.current_session()) == ["perf"]
+
+        _select_session(app, "b")
+        app.handle_key(None, CTRL_T)
+        _type(app, "bug")
+        app.handle_key(None, TAB)  # check the Create row; the query clears for the next
+        _type(app, "PERF")
+        assert [e[0] for e in app.tag_menu_entries()] == ["tag"]  # existing, no duplicate
+        app.handle_key(None, ENTER)
+        assert app.session_tag_labels(app.current_session()) == ["bug", "perf"]
+        assert app.renderer.titled(app.current_session()) == "Beta  #bug +1"
+
+        # An invalid name explains itself instead of silently applying without it.
+        app.handle_key(None, CTRL_T)
+        _type(app, "x" * 41)
+        app.handle_key(None, ENTER)
+        assert app.tag_menu == "edit" and "40 characters" in app.tag_menu_error
+        app.handle_key(None, ESC)
+
+        # Cancelling discards drafts: no unused definition is left behind.
+        app.handle_key(None, CTRL_T)
+        _type(app, "never")
+        app.handle_key(None, TAB)
+        app.handle_key(None, ESC)
+        assert [label for _id, label in app.tags.definitions()] == ["bug", "perf"]
+
+        # Match all by default; left/right switches to Match any.
+        app.handle_key(None, CTRL_G)
+        labels = [e[2] for e in app.tag_menu_entries()]
+        assert labels == ["All sessions  3", "Untagged  1", "#bug  1", "#perf  2"]
+        app.tag_menu_index = 2
+        app.handle_key(None, TAB)
+        app.tag_menu_index = 3
+        app.handle_key(None, TAB)
+        app.handle_key(None, ENTER)
+        assert _ids(app) == ["b"] and app.tag_filter_label() == "#bug & #perf"
+        assert app.renderer.sessions_box_title(app.current_sessions()).endswith("#bug & #perf")
+        app.handle_key(None, CTRL_G)
+        app.handle_key(None, 261)  # right arrow
+        app.handle_key(None, ENTER)
+        assert sorted(_ids(app)) == ["a", "b"]
+        app.handle_key(None, CTRL_G)
+        app.tag_menu_index = 1
+        app.handle_key(None, ENTER)
+        assert _ids(app) == ["c"]
+        app.handle_key(None, CTRL_G)
+        app.tag_menu_index = 0
+        app.handle_key(None, ENTER)
+        assert app.tag_filter is None and sorted(_ids(app)) == ["a", "b", "c"]
+
+
+def test_tag_filter_survives_reload_and_edits_that_empty_it():
+    with _tags_on():
+        app = _tag_app("a")
+        key_a = app.session_tag_key(app.current_session())
+        app.tags.set_tags(key_a, [], 0, create=["perf"])
+        perf = app.tags.tag_ids(key_a)[0]
+        from opentab.annotations import TagFilter
+
+        app.set_tag_filter(TagFilter(ids=frozenset({perf})))
+        assert _ids(app) == ["a"]
+        # Opening the detail and removing the tag keeps that exact session on screen.
+        app.view = "session"
+        app.handle_key(None, CTRL_T)
+        app.handle_key(None, TAB)  # uncheck #perf
+        app.handle_key(None, ENTER)
+        assert app.notice == "tags cleared"
+        assert app.current_session().id == "a"
+        app.drill_out()
+        # The zero-result filter stays armed and says how to change it.
+        assert _ids(app) == [] and app.tag_filter is not None
+        assert "No sessions match #perf" in app.renderer.no_sessions_text()
+        app.reload()
+        assert app.tag_filter is not None and _ids(app) == []
+
+
+def test_stale_tag_edits_are_shown_before_a_deliberate_replace():
+    with _tags_on():
+        first, second = _tag_app("a"), _tag_app("a")
+        second.handle_key(None, CTRL_T)
+        first.handle_key(None, CTRL_T)
+        _type(first, "from-first")
+        first.handle_key(None, ENTER)
+        _type(second, "from-second")
+        second.handle_key(None, ENTER)
+        assert second.tag_menu == "edit"
+        assert "Changed elsewhere (now #from-first)" in second.tag_menu_error
+        second.handle_key(None, ENTER)  # the second Enter is an informed replace
+        assert second.tag_menu is None
+        assert second.session_tag_labels(second.current_session()) == ["from-second"]
+
+
+def test_demo_and_no_state_never_show_real_tags():
+    with _tags_on():
+        app = _tag_app("a")
+        app.tags.set_tags(app.session_tag_key(app.current_session()), [], 0, create=["secret"])
+        assert app.session_tag_labels(app.current_session()) == ["secret"]
+        app.store.demo = True
+        try:
+            app.refresh_tags()
+            assert not app.tags_active and app.tags.snapshot.labels == {}
+            assert app.session_tag_labels(app.current_session()) == []
+            app.handle_key(None, CTRL_T)
+            assert app.tag_menu is None
+        finally:
+            app.store.demo = False
+        app.notes_enabled = False  # --no-state
+        app.refresh_tags()
+        assert not app.tags.enabled and app.renderer.tag_lines(app.current_session(), 80) == []
+
+
+def test_tag_filter_narrows_session_drills_but_not_rankings():
+    with _tags_on():
+        app = _tag_app("a")
+        rows = app.current_sessions()
+        key = app.session_tag_key(rows[0])
+        app.tags.set_tags(key, [], 0, create=["x"])
+        from opentab.annotations import TagFilter
+
+        before = app.months[0].cost
+        app.set_tag_filter(TagFilter(ids=frozenset(app.tags.tag_ids(key))))
+        usage = [(w, w.total_cost, w.total_tokens) for w in rows]
+        assert [row[0].id for row in app._tag_filtered_usage(usage)] == [rows[0].id]
+        assert app.months[0].cost == before  # parent scope totals are unchanged
+        assert not keymap.BY_ID["tags"].shown(app) and not keymap.BY_ID["tag-filter"].shown(app)
+        app.handle_key(None, ord("O"))
+        assert keymap.BY_ID["tags"].shown(app) and keymap.BY_ID["tag-filter"].shown(app)
