@@ -70,6 +70,14 @@ from opentab.accounting.pricing import (
     refresh_model_prices,
 )
 from opentab.accounting.tools import tool_calls_from_turns
+from opentab.annotations import (
+    MATCH_ALL,
+    MATCH_ANY,
+    UNTAGGED,
+    SessionTags,
+    TagFilter,
+    aggregate_tags,
+)
 from opentab.conversations.reader import ConversationError
 from opentab.demo import (
     DEMO_ALL,
@@ -81,7 +89,9 @@ from opentab.demo import (
     demo_turn_content,
 )
 from opentab.persistence.notes import notes_path, read_notes, update_note
+from opentab.persistence.session_tags import MAX_BULK_SESSIONS, TagError, label_key, normalize_label
 from opentab.persistence.state import update_star_request
+from opentab.persistence.workflow_config import load_workflow_config
 from opentab.presentation import themes
 from opentab.presentation.formatting import clip, clip_tail, display_width, short_path, shorten
 from opentab.presentation.heatmap import (
@@ -98,6 +108,7 @@ from opentab.tui.price_worker import PriceRefreshJob
 from opentab.tui.range_picker import FOCUSES, PRESETS, RangePicker
 from opentab.tui.renderer import Renderer
 from opentab.tui.search_workspace import SearchWorkspace
+from opentab.tui.work_workspace import WorkWorkspace
 from opentab.util import (
     DULL_AGENT_NAMES,
     fuzzy_score,
@@ -111,6 +122,7 @@ from opentab.util import (
     tool_namespace,
     workflow_fuzzy_score,
 )
+from opentab.work_items import WorkItems, WorkRoot, aggregate_work_items
 
 
 class Toast:
@@ -645,8 +657,30 @@ class App:
         self.show_bookmarks_only = False
         # Notes are authored data: separate from preferences and written on every edit.
         self.notes: dict[str, str] = {}
-        self.notes_enabled = True
+        self.notes_enabled = not getattr(args, "no_state", False)
         self._notes_ok = True
+        # Experimental opt-in tags; off until refresh_tags reads workflow.json.
+        self.tags = SessionTags(allowed=False)
+        self.tag_filter: TagFilter | None = None
+        # An open detail whose own tag edit removed it from the filtered list stays.
+        self._tag_keep: str | None = None
+        self._tag_keys: dict[tuple[str, str, str], str] = {}
+        self.tag_menu: str | None = None  # "edit" | "filter"
+        self.tag_menu_index = 0
+        self.tag_menu_query = ""
+        self.tag_menu_checked: list[str] = []
+        self.tag_menu_drafts: list[str] = []
+        self.tag_menu_mode = MATCH_ALL
+        self.tag_menu_error = ""
+        self._tag_menu_target: tuple[Workflow, str, int] | None = None
+        # Explicit roots, never cursor ordinals; scope changes cannot retarget a batch.
+        self.tag_selected: dict[str, int] = {}
+        self._tag_bulk_targets: dict[str, int] = {}
+        self._tag_maintenance: tuple[str, int, int, int] | None = None
+        self.tag_browse_drill = False
+        self.work_items = WorkItems(allowed=False)
+        self.work_workspace: WorkWorkspace | None = None
+        self.org_mode = False  # Keymap layer only: deliberately absent from saved preferences.
         self.zoom_project: str | None = None
         self.zoom_source: str | None = None
         self.source_index = 0
@@ -661,6 +695,7 @@ class App:
         self.search_intro_seen = False
         self.renderer = Renderer(self)
         self._anchor_default_selection()
+        self.refresh_work_items()
 
     def _anchor_default_selection(self) -> None:
         # Set year before reading its scoped months; prefer all history and the current month.
@@ -1460,6 +1495,18 @@ class App:
 
     def bookmark_target(self) -> Workflow | None:
         # Do not memoize: stale sort/filter inputs could make actions target the wrong session.
+        if self.work_workspace is not None and self.work_items_active:
+            return self.work_workspace.root() if self.work_workspace.item_id else None
+        if self.org_active and self.overlay_top:
+            if (
+                self.overlay_top == "trends"
+                and self.trend_drill is not None
+                and not self.trend_economics
+            ):
+                rows = self.trend_drill_sessions()
+                return rows[max(0, min(self.trend_drill_index, len(rows) - 1))][0] if rows else None
+            # Prices is a pager, not a session selection; never edit a covered cursor.
+            return None
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
             return self.current_session()
         return None
@@ -1470,6 +1517,16 @@ class App:
     def allow_notes(self) -> bool:
         # Compute live: real notes would deanonymize demo screens and remain editable.
         return self.notes_enabled and not bool(getattr(self.store, "demo", False))
+
+    def refresh_authored(self) -> bool:
+        """Re-read work items, tags and notes; False when any warning was shown.
+
+        Toasts raised before a paint collapse onto the last one, so read in rising
+        severity: an unreadable notes file must be the warning that survives.
+        """
+        work_ok = self.refresh_work_items()
+        tags_ok = self.refresh_tags()
+        return self.refresh_notes() and tags_ok and work_ok
 
     def refresh_notes(self) -> bool:
         # Preserve the warning via _notes_ok because same-handler toasts collapse.
@@ -1535,6 +1592,674 @@ class App:
             self.notice = "note cleared" if previous else "no note to clear"
         else:
             self.notice = "note saved" if not previous else "note updated"
+
+    # -- experimental session tags --------------------------------------------------
+
+    @property
+    def tags_active(self) -> bool:
+        # Live, like allow_notes: demo can be toggled after tags were read.
+        return self.tags.enabled and self.allow_notes
+
+    def refresh_tags(self) -> bool:
+        """Re-read workflow.json and the tag snapshot; False when a warning was shown."""
+        self._tag_keys.clear()
+        self.tags.refresh(allowed=self.allow_notes)
+        if not self.tags.enabled:
+            self.tag_filter = None
+            self._tag_keep = None
+            self.tag_menu = None
+            self._tag_menu_target = None
+            self.tag_selected.clear()
+            self._tag_bulk_targets.clear()
+            self._tag_maintenance = None
+            self.tag_browse_drill = False
+        if self.tags.error:
+            self.notify(self.tags.error, "error")
+            return False
+        return True
+
+    @property
+    def work_items_active(self) -> bool:
+        return self.work_items.enabled and self.allow_notes
+
+    def refresh_work_items(self) -> bool:
+        """Authored snapshot only; no accounting/model/detail queries."""
+        self.work_items.refresh(allowed=self.allow_notes)
+        if not self.work_items_active:
+            self.work_workspace = None
+        elif self.work_workspace is not None:
+            self.work_workspace.refresh()
+        if self.work_items.error:
+            self.notify(f"work: {self.work_items.error}", "error")
+            return False
+        return True
+
+    def session_work_item(self, workflow: Workflow):
+        """The work item owning this session, or None while work items are off."""
+        if not self.work_items_active:
+            return None
+        snapshot = self.work_items.snapshot
+        return snapshot.items.get(snapshot.membership(self.session_tag_key(workflow)).item_id)
+
+    def work_catalog(self) -> list[Workflow]:
+        """All-date eligible loaded roots; session selectors never shrink item totals."""
+        return [
+            w
+            for w in self.loaded
+            if self.show_ignored_projects
+            or (
+                w.id not in self.ignored_sessions
+                and self.project_root(w.directory) not in self.ignored_projects
+            )
+        ]
+
+    def work_totals(self):
+        return aggregate_work_items(
+            (
+                WorkRoot(
+                    self.session_tag_key(w),
+                    w.total_cost if w.total_cost or not w.unpriced_tokens else None,
+                    w.worked_seconds,
+                )
+                for w in self.work_catalog()
+            ),
+            self.work_items.snapshot,
+        )
+
+    def work_matching_keys(self) -> set[str] | None:
+        """Session-derived selectors select items, never recompute their totals."""
+        tags = self.tag_filter if self.tags_active else None
+        if not any(
+            (
+                self.machine_filter,
+                self.harness_filter,
+                self.zoom_project,
+                self.zoom_machine,
+                self.zoom_source,
+                tags,
+            )
+        ):
+            return None
+        return {
+            self.session_tag_key(w)
+            for w in self.work_catalog()
+            if (self.machine_filter is None or self.machine_of(w) in self.machine_filter)
+            and (self.harness_filter is None or (w.source or "unknown") in self.harness_filter)
+            and (not self.zoom_project or self.project_root(w.directory) == self.zoom_project)
+            and (not self.zoom_machine or self.machine_of(w) == self.zoom_machine)
+            and (not self.zoom_source or (w.source or "unknown") == self.zoom_source)
+            and (tags is None or tags.matches(self.session_tag_ids(w)))
+        }
+
+    def open_work(self, *, from_session=False, assign=False) -> None:
+        if not self.work_items_active:
+            return
+        # Keep the previous surface as the return context. Work reads no session extras.
+        workspace = WorkWorkspace(self)
+        if from_session:
+            workspace.create(from_session=True)
+        elif assign:
+            workspace.assign_session()
+        self.work_workspace = workspace
+
+    @property
+    def org_available(self) -> bool:
+        return self.tags_active or self.work_items_active
+
+    @property
+    def org_active(self) -> bool:
+        return self.org_mode and self.org_available
+
+    def org_action(self, key: int | str) -> str | None:
+        """The browsing layer's claims, also used to suppress shadowed help labels."""
+        if not self.org_available:
+            return None
+        # All trace commands retain local precedence, including c and O.
+        if (
+            self.work_workspace is None
+            and not self.overlay_top
+            and self._on_turns_tab()
+            and self.active_trace_drill is not None
+        ):
+            return None
+        action = self.keymap.action("org", key)
+        if action == "toggle":
+            return action
+        if not self.org_active or self.work_workspace is not None:
+            return None
+        if (
+            action in ("work_from_session", "assign_work", "work_state", "edit_tags")
+            and self.bookmark_target() is None
+        ):
+            return None
+        if action in ("work", "work_from_session", "assign_work", "work_state"):
+            return action if self.work_items_active else None
+        if (
+            action
+            in (
+                "browse_tags",
+                "select_root",
+                "clear_selection",
+                "bulk_add_tags",
+                "bulk_remove_tags",
+            )
+            and self.overlay_top
+        ):
+            return None
+        return action if self.tags_active else None
+
+    def handle_org_key(self, key: int | str) -> bool:
+        action = self.org_action(key)
+        if action is None:
+            return False
+        if action == "toggle":
+            self.org_mode = not self.org_active
+        elif action in ("work", "work_from_session", "assign_work"):
+            self.open_work(
+                from_session=action == "work_from_session", assign=action == "assign_work"
+            )
+        elif action == "work_state":
+            row = self.bookmark_target()
+            item_id = (
+                self.work_items.snapshot.membership(self.session_tag_key(row)).item_id
+                if row
+                else None
+            )
+            item = self.work_items.snapshot.items.get(item_id)
+            if item is None:
+                self.notify("Choose a session attached to a work item", "info")
+            else:
+                self.open_work()
+                self.work_workspace.item_id = item.id
+                self.work_workspace.choose_state()
+        elif action == "edit_tags":
+            self.open_tag_editor()
+        elif action == "filter_tags":
+            self.open_tag_filter()
+        elif action == "browse_tags":
+            self.open_tag_browser()
+        elif action == "select_root":
+            self.toggle_tag_selection()
+        elif action == "clear_selection":
+            self.clear_tag_selection()
+        elif action in ("bulk_add_tags", "bulk_remove_tags"):
+            self.open_bulk_tags(remove=action == "bulk_remove_tags")
+        elif action == "export_annotated":
+            self.export_annotated()
+        return True
+
+    def session_tag_key(self, workflow: Workflow) -> str:
+        identity = (workflow.machine, workflow.source, workflow.id)
+        key = self._tag_keys.get(identity)
+        if key is None:
+            key = self._tag_keys[identity] = SessionRef(
+                workflow.machine or util.local_machine_name(),
+                self._conversation_harness(workflow, self.store),
+                workflow.id,
+            ).encode()
+        return key
+
+    def session_tag_ids(self, workflow: Workflow) -> tuple[str, ...]:
+        if not self.tags_active:
+            return ()
+        return self.tags.tag_ids(self.session_tag_key(workflow))
+
+    def session_tag_labels(self, workflow: Workflow) -> list[str]:
+        if not self.tags_active:
+            return []
+        return self.tags.labels(self.session_tag_key(workflow))
+
+    def tag_label(self, tag_id: str) -> str:
+        return self.tags.label(tag_id) or f"?{tag_id}"
+
+    def tag_filter_label(self) -> str:
+        selected = self.tag_filter
+        if selected is None:
+            return ""
+        if selected.mode == UNTAGGED:
+            return "untagged"
+        names = sorted((f"#{self.tag_label(t)}" for t in selected.ids), key=str.casefold)
+        return (" & " if selected.mode == MATCH_ALL else " | ").join(names)
+
+    def _tag_filtered(self, rows: list[Workflow]) -> list[Workflow]:
+        selected = self.tag_filter
+        if selected is None or not self.tags_active:
+            return rows
+        matching = [
+            w
+            for w in rows
+            if selected.matches(self.session_tag_ids(w))
+            or (self._tag_keep is not None and self.session_tag_key(w) == self._tag_keep)
+        ]
+        if self.tag_browse_drill:
+            unique: dict[str, Workflow] = {}
+            for workflow in matching:
+                unique.setdefault(self.session_tag_key(workflow), workflow)
+            return list(unique.values())
+        return matching
+
+    def _tag_filtered_usage(self, rows: list[tuple]) -> list[tuple]:
+        # Prices and Trends session drills are lists too; their rankings are not.
+        if self.tag_filter is None or not self.tags_active:
+            return rows
+        keep = {id(w) for w in self._tag_filtered([row[0] for row in rows])}
+        return [row for row in rows if id(row[0]) in keep]
+
+    def set_tag_filter(self, selected: TagFilter | None) -> None:
+        anchor = self.selection_anchor()
+        self.tag_filter = selected
+        self.tag_browse_drill = False
+        self._tag_keep = None
+        self.restore_selection(anchor)
+        if selected is None:
+            self.notify("tag filter cleared", "success")
+        else:
+            self.notify(f"tags: {self.tag_filter_label()} (session lists)", "success")
+
+    def _tag_unique_target(self, workflow: Workflow) -> str | None:
+        key = self.session_tag_key(workflow)
+        if sum(self.session_tag_key(w) == key for w in self.loaded) != 1:
+            return None
+        return key
+
+    def tag_browse_rows(self):
+        """Whole-root accounting in the current pane before its tag predicate."""
+        return aggregate_tags(
+            (
+                (
+                    self.session_tag_key(w),
+                    w.total_cost if w.total_cost or not w.unpriced_tokens else None,
+                    w.worked_seconds,
+                )
+                for w in self._tag_filter_base()
+            ),
+            self.tags.snapshot,
+        )
+
+    def open_tag_browser(self) -> None:
+        if not self.tags_active:
+            return
+        self.tag_menu_checked = []
+        self.tag_menu_mode = MATCH_ALL
+        self._open_tag_menu("browse")
+
+    def toggle_tag_selection(self) -> None:
+        if not self.tags_active or self.view != "zoom" or not self.on_sessions_tab:
+            return
+        session = self.bookmark_target()
+        if session is None:
+            return
+        key = self._tag_unique_target(session)
+        if key is None:
+            self.notify("selection: this session's identity is ambiguous", "error")
+            return
+        if key in self.tag_selected:
+            del self.tag_selected[key]
+        elif len(self.tag_selected) >= MAX_BULK_SESSIONS:
+            self.notify(f"select at most {MAX_BULK_SESSIONS} roots", "error")
+            return
+        else:
+            self.tag_selected[key] = self.tags.revision(key)
+        self.notice = f"{len(self.tag_selected)} roots selected (not all matches)"
+
+    def clear_tag_selection(self) -> None:
+        self.tag_selected.clear()
+        self.notice = "root selection cleared"
+
+    def open_bulk_tags(self, *, remove: bool = False) -> None:
+        if not self.tags_active or not self.tag_selected:
+            return
+        refusal = self.tags.edit_refusal()
+        if refusal:
+            self.notify(f"tags: {refusal}", "error")
+            return
+        self._tag_bulk_targets = dict(self.tag_selected)
+        self.tag_menu_checked = []
+        self.tag_menu_drafts = []
+        self._open_tag_menu("bulk_remove" if remove else "bulk_add")
+
+    def _tag_targets_available(self, targets: dict[str, int]) -> bool:
+        counts: dict[str, int] = defaultdict(int)
+        for row in self.loaded:
+            counts[self.session_tag_key(row)] += 1
+        return all(counts[key] == 1 for key in targets)
+
+    def _apply_bulk_tags(self) -> None:
+        if not self.tags_active:
+            self.tag_menu_error = "Not saved: tags are off"
+            return
+        if not self._tag_targets_available(self._tag_bulk_targets):
+            self.tag_menu_error = (
+                "Not saved: a selected root is missing or ambiguous; reselect roots."
+            )
+            return
+        session = self.current_session() if self.view == "session" else None
+        keep = self.session_tag_key(session) if session else None
+        try:
+            self.tags.bulk_update(
+                self._tag_bulk_targets,
+                add=self.tag_menu_checked if self.tag_menu == "bulk_add" else (),
+                remove=self.tag_menu_checked if self.tag_menu == "bulk_remove" else (),
+            )
+        except TagError as exc:
+            if exc.code == "stale":
+                self.tags.refresh(allowed=self.allow_notes)
+            self.tag_menu_error = f"Not saved: {exc.message}. Cancel, clear selection and reselect to capture new revisions."
+            return
+        count = len(self._tag_bulk_targets)
+        self.tag_menu = None
+        self.tag_selected.clear()
+        self._tag_bulk_targets.clear()
+        if keep is not None and self.tag_filter is not None:
+            self._tag_keep = keep
+        self.notice = f"tags updated on {count} selected roots"
+
+    def _open_tag_maintenance(self, tag_id: str, *, delete: bool) -> None:
+        if not self.tags_active or self.tags.edit_refusal():
+            self.tag_menu_error = "Tag editing is unavailable"
+            return
+        try:
+            count = self.tags.affected_count(tag_id)
+        except TagError as exc:
+            self.tag_menu_error = exc.message
+            return
+        snapshot = self.tags.snapshot
+        self._tag_maintenance = (
+            tag_id,
+            snapshot.tag_revisions.get(tag_id, 0),
+            snapshot.revision,
+            count,
+        )
+        self._open_tag_menu("delete" if delete else "rename")
+        self.tag_menu_query = "" if delete else (self.tags.label(tag_id) or "")
+
+    def _apply_tag_maintenance(self) -> None:
+        target = self._tag_maintenance
+        if target is None or not self.tags_active:
+            self.tag_menu_error = "Not saved: tags are off"
+            return
+        tag_id, revision, document, count = target
+        session = self.current_session() if self.view == "session" else None
+        try:
+            if self.tag_menu == "delete":
+                self.tags.delete(tag_id, expected=revision, expected_document=document)
+            else:
+                self.tags.rename(tag_id, self.tag_menu_query, expected=revision)
+        except TagError as exc:
+            if exc.code == "stale":
+                self.tags.refresh(allowed=self.allow_notes)
+            self.tag_menu_error = (
+                f"Not saved: {exc.message}. Cancel and reopen to review current assignments."
+            )
+            return
+        if session is not None and self.tag_filter is not None:
+            self._tag_keep = self.session_tag_key(session)
+        self._tag_maintenance = None
+        self.open_tag_browser()
+        self.notice = f"tag updated · {count} affected assignments (including retained roots)"
+
+    def open_tag_editor(self) -> None:
+        if not self.tags_active:
+            self.notify(
+                "tags are off in demo / --no-state" if self.tags.enabled else "tags are off",
+                "error",
+            )
+            return
+        session = self.bookmark_target()
+        if session is None:
+            self.notify("tags: select a session first", "error")
+            return
+        refusal = self.tags.edit_refusal()
+        if refusal:
+            self.notify(f"tags: {refusal}", "error")
+            return
+        key = self._tag_unique_target(session)
+        if key is None:
+            self.notify("tags: this session's identity is ambiguous", "error")
+            return
+        self._tag_menu_target = (session, key, self.tags.revision(key))
+        self.tag_menu_checked = list(self.tags.tag_ids(key))
+        self.tag_menu_drafts = []
+        self._open_tag_menu("edit")
+
+    def open_tag_filter(self) -> None:
+        if not self.tags_active:
+            self.notify(
+                "tags are off in demo / --no-state" if self.tags.enabled else "tags are off",
+                "error",
+            )
+            return
+        selected = self.tag_filter
+        self.tag_menu_checked = sorted(selected.ids) if selected and selected.ids else []
+        self.tag_menu_mode = selected.mode if selected and selected.mode != UNTAGGED else MATCH_ALL
+        self._open_tag_menu("filter")
+        entries = self.tag_menu_entries()
+        current = "untagged" if selected and selected.mode == UNTAGGED else "all"
+        if selected is None or selected.mode == UNTAGGED:
+            self.tag_menu_index = next((i for i, row in enumerate(entries) if row[0] == current), 0)
+
+    def _open_tag_menu(self, kind: str) -> None:
+        self.tag_menu = kind
+        self.tag_menu_index = 0
+        self.tag_menu_query = ""
+        self.tag_menu_error = ""
+
+    def _tag_filter_base(self) -> list[Workflow]:
+        # Counts describe the scope before the tag filter itself.
+        prior, self.tag_filter = self.tag_filter, None
+        try:
+            if self.org_active and self.overlay_top == "prices" and self.prices_model is not None:
+                return [row[0] for row in self.price_model_sessions(self.prices_model)]
+            if self.org_active and self.overlay_top == "trends" and self.trend_drill is not None:
+                return [row[0] for row in self.trend_drill_sessions()]
+            return self.current_sessions()
+        finally:
+            self.tag_filter = prior
+
+    def tag_menu_entries(self) -> list[tuple[str, str, str, bool]]:
+        """Rows as (kind, value, label, checked); kinds: all, untagged, create, tag."""
+        query = self.tag_menu_query.strip().lstrip("#").strip()
+        folded = query.casefold()
+        rows: list[tuple[str, str, str, bool]] = []
+        checked = set(self.tag_menu_checked)
+        if self.tag_menu in ("rename", "delete"):
+            return []
+        if self.tag_menu == "browse":
+            return [
+                (
+                    "untagged" if row.tag_id is None else "tag",
+                    row.tag_id or "",
+                    row.label,
+                    row.tag_id in checked,
+                )
+                for row in self.tag_browse_rows()
+                if not folded or folded in row.label.casefold()
+            ]
+        if self.tag_menu == "filter":
+            base = self._tag_filter_base()
+            ids = [self.session_tag_ids(w) for w in base]
+            if not folded:
+                untagged = sum(not present for present in ids)
+                rows.append(("all", "", f"All sessions  {len(base)}", self.tag_filter is None))
+                rows.append(
+                    (
+                        "untagged",
+                        "",
+                        f"Untagged  {untagged}",
+                        self.tag_filter is not None and self.tag_filter.mode == UNTAGGED,
+                    )
+                )
+            counts: dict[str, int] = defaultdict(int)
+            for present in ids:
+                for tag_id in present:
+                    counts[tag_id] += 1
+            known = [tag_id for tag_id, _label in self.tags.definitions()]
+            # A selected or in-scope ID without a definition stays discoverable.
+            extra = [t for t in self.tag_menu_checked if t not in known]
+            extra += [t for t in self.tags.unresolved(self.session_tag_key(w) for w in base)]
+            for tag_id in list(dict.fromkeys(known + extra)):
+                label = self.tag_label(tag_id)
+                if folded and folded not in label.casefold():
+                    continue
+                rows.append(
+                    ("tag", tag_id, f"#{label}  {counts.get(tag_id, 0)}", tag_id in checked)
+                )
+            return rows
+        target = self._tag_menu_target
+        current = self.tags.tag_ids(target[1]) if target else ()
+        bulk = self.tag_menu in ("bulk_add", "bulk_remove")
+        if bulk:
+            current = tuple(
+                dict.fromkeys(t for key in self._tag_bulk_targets for t in self.tags.tag_ids(key))
+            )
+        exact = False
+        for tag_id, label in self.tags.definitions():
+            if folded and folded not in label.casefold():
+                continue
+            exact = exact or label_key(label) == label_key(query)
+            rows.append(("tag", tag_id, f"#{label}", tag_id in checked))
+        for tag_id in current:
+            if self.tags.label(tag_id) is None and (not folded or folded in tag_id.casefold()):
+                rows.append(("tag", tag_id, f"#?{tag_id}  (missing definition)", tag_id in checked))
+        for draft in self.tag_menu_drafts:
+            if folded and folded not in draft.casefold():
+                continue
+            exact = exact or label_key(draft) == label_key(query)
+            rows.append(("draft", draft, f"#{draft}  (new)", True))
+        if query and not exact and not bulk:
+            try:
+                rows.insert(
+                    0,
+                    ("create", normalize_label(query), f"Create #{normalize_label(query)}", False),
+                )
+            except TagError as exc:
+                rows.insert(0, ("invalid", "", exc.message, False))
+        return rows
+
+    def _toggle_tag_entry(self, entry: tuple[str, str, str, bool]) -> None:
+        kind, value, _label, _checked = entry
+        if kind == "tag":
+            if value in self.tag_menu_checked:
+                self.tag_menu_checked.remove(value)
+            else:
+                self.tag_menu_checked.append(value)
+        elif kind == "draft":
+            self.tag_menu_drafts.remove(value)
+        elif kind == "create":
+            self.tag_menu_drafts.append(value)
+            self.tag_menu_query = ""
+            self.tag_menu_index = 0
+
+    def handle_tag_menu_key(self, key: int | str) -> bool:
+        if key == 3:
+            return False
+        ctx = "menu.tags.browse" if self.tag_menu == "browse" else "menu.tags"
+        act = self.keymap.action(ctx, key)
+        entries = self.tag_menu_entries()
+        index = self.tag_menu_index % len(entries) if entries else 0
+        if act == "cancel":
+            self.tag_menu = None
+            self._tag_menu_target = None
+            self._tag_maintenance = None
+            self._tag_bulk_targets.clear()
+        elif act in ("rename", "delete_tag") and self.tag_menu == "browse" and entries:
+            if entries[index][0] == "tag":
+                self._open_tag_maintenance(entries[index][1], delete=act == "delete_tag")
+        elif act == "api_prices" and self.tag_menu == "browse":
+            self.toggle_api_prices()
+        elif act == "down" and entries:
+            self.tag_menu_index = (index + 1) % len(entries)
+        elif act == "up" and entries:
+            self.tag_menu_index = (index - 1) % len(entries)
+        elif act == "toggle" and entries:
+            if self.tag_menu == "filter" and entries[index][0] in ("all", "untagged"):
+                return True
+            self._toggle_tag_entry(entries[index])
+        elif act == "mode" and self.tag_menu in ("filter", "browse"):
+            self.tag_menu_mode = MATCH_ANY if self.tag_menu_mode == MATCH_ALL else MATCH_ALL
+        elif act == "select":
+            if self.tag_menu in ("rename", "delete"):
+                self._apply_tag_maintenance()
+            elif self.tag_menu == "browse":
+                if not entries:
+                    return True
+                self._open_tag_drill(entries[index])
+            elif self.tag_menu == "filter":
+                self._apply_tag_filter_menu(entries[index] if entries else None)
+            elif self.tag_menu in ("bulk_add", "bulk_remove"):
+                if entries and self.tag_menu_query.strip() and not entries[index][3]:
+                    self._toggle_tag_entry(entries[index])
+                self._apply_bulk_tags()
+            else:
+                # Enter on a typed, unchecked match checks it first: "type, Enter" works.
+                if entries and entries[index][0] == "invalid":
+                    self.tag_menu_error = entries[index][2]
+                    return True
+                if entries and self.tag_menu_query.strip() and not entries[index][3]:
+                    self._toggle_tag_entry(entries[index])
+                self._apply_tag_editor()
+        elif act == "erase":
+            self.tag_menu_query = self.tag_menu_query[:-1]
+            self.tag_menu_index = 0
+        elif act == "clear":
+            self.tag_menu_query = ""
+            self.tag_menu_index = 0
+        elif self.tag_menu != "delete" and (ch := bindings.typed_char(key)) is not None:
+            if len(self.tag_menu_query) < 64:
+                self.tag_menu_query += ch
+            self.tag_menu_index = 0
+        return True
+
+    def _open_tag_drill(self, entry: tuple[str, str, str, bool]) -> None:
+        self._apply_tag_filter_menu(entry)
+        self.tag_browse_drill = True
+        self.view = "zoom"
+        self.tab = self.current_tabs().index("Sessions")
+        self.workflow_index = self.scroll = 0
+
+    def _apply_tag_filter_menu(self, entry: tuple[str, str, str, bool] | None) -> None:
+        self.tag_menu = None
+        kind = entry[0] if entry else "all"
+        if kind == "untagged":
+            self.set_tag_filter(TagFilter(UNTAGGED))
+        elif self.tag_menu_checked:
+            self.set_tag_filter(TagFilter(self.tag_menu_mode, frozenset(self.tag_menu_checked)))
+        elif kind == "tag":
+            self.set_tag_filter(TagFilter(self.tag_menu_mode, frozenset({entry[1]})))
+        elif self.tag_filter is not None:
+            self.set_tag_filter(None)
+
+    def _apply_tag_editor(self) -> None:
+        target = self._tag_menu_target
+        if target is None:
+            self.tag_menu = None
+            return
+        session, key, revision = target
+        before = self.session_tag_labels(session)
+        try:
+            self.tags.set_tags(key, self.tag_menu_checked, revision, create=self.tag_menu_drafts)
+        except TagError as exc:
+            if exc.code == "stale" and exc.current is not None:
+                # Show the other window's edit; a second Enter deliberately replaces it.
+                self._tag_menu_target = (session, key, exc.current["revision"])
+                self.tags.refresh(allowed=self.allow_notes)
+                now = " ".join(f"#{self.tag_label(t)}" for t in exc.current["tag_ids"]) or "no tags"
+                self.tag_menu_error = f"Changed elsewhere (now {now}). Enter replaces, Esc keeps."
+                return
+            self.tag_menu_error = f"Not saved: {exc.message}"
+            return
+        self.tag_menu = None
+        self._tag_menu_target = None
+        self._tag_keys.clear()
+        if self.view == "session" and self.tag_filter is not None:
+            self._tag_keep = key
+        after = self.session_tag_labels(session)
+        if after == before:
+            self.notice = "tags unchanged"
+        else:
+            self.notice = (
+                "tags: " + " ".join(f"#{label}" for label in after) if after else "tags cleared"
+            )
 
     def toggle_bookmark(self) -> None:
         session = self.bookmark_target()
@@ -4106,7 +4831,7 @@ class App:
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
         self._resolve_project_roots()
-        notes_ok = self.refresh_notes()
+        notes_ok = self.refresh_authored()
         self._tool_by_session.clear()
         self._tool_projection_cache = None
         self.renderer._tool_layout_cache = None
@@ -4558,7 +5283,8 @@ class App:
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
         self._resolve_project_roots()
-        self.refresh_notes()
+        # Demo and source swaps re-gate tags; demo must never keep real ones in memory.
+        self.refresh_authored()
         self._models_loaded = False
         self._tool_by_session.clear()
         self._tool_projection_cache = None
@@ -5009,7 +5735,7 @@ class App:
                 acc[2] += int(m.get("tokens_total", 0) or 0)
         out = [(w, cost, tok) for w, cost, tok in per_root.values()]
         out.sort(key=lambda r: (r[1], r[2]), reverse=True)
-        return out
+        return self._tag_filtered_usage(out)
 
     def _zoom_tab_dataset(self) -> tuple[str, list[str], list[list]]:
         tab = self._active_tab()
@@ -5098,7 +5824,69 @@ class App:
         if self.store.demo:
             self.notify("export disabled in demo mode", "error")
             return
-        scope, header, rows = self._export_dataset()
+        self._write_export(self._export_dataset())
+
+    def annotated_csv_available(self) -> bool:
+        if not self.tags_active or not self.tags.readable:
+            return False
+        if self.overlay_top == "prices":
+            return self.prices_model is not None
+        if self.overlay_top == "trends":
+            return self.trend_drill is not None and not self.trend_economics
+        return not self.overlay_top and self.view == "zoom" and self.on_sessions_tab
+
+    def _annotated_export_dataset(self) -> tuple[str, list[str], list[list]]:
+        if not self.annotated_csv_available() or not load_workflow_config().tags:
+            raise ValueError("annotated CSV requires enabled tags and a focused Sessions list")
+        if self.overlay_top in ("prices", "trends"):
+            usage = (
+                self.price_model_sessions(self.prices_model)
+                if self.overlay_top == "prices"
+                else self.trend_drill_sessions()
+            )
+            sessions = [row[0] for row in usage]
+            scope, header, rows = exporting.sessions_dataset(
+                sessions, {w.id: self.note_for(w.id) for w in sessions}
+            )
+            dataset = (
+                self.overlay_top + "-" + scope,
+                [*header, "displayed_cost", "displayed_tokens"],
+                [[*row, cost, tokens] for row, (_w, cost, tokens) in zip(rows, usage)],
+            )
+        elif self.zoom_model:
+            sessions = self.current_sessions()
+            dataset = exporting.model_sessions_dataset(
+                [(w, self.model_session_usage(w.id, self.zoom_model)) for w in sessions],
+                self.zoom_model,
+            )
+        else:
+            sessions = self.current_sessions()
+            dataset = exporting.sessions_dataset(
+                sessions, {w.id: self.note_for(w.id) for w in sessions}
+            )
+        return exporting.annotate_sessions_dataset(
+            dataset,
+            [
+                (
+                    self.session_tag_key(w),
+                    [(t, self.tags.label(t)) for t in self.session_tag_ids(w)],
+                    w.worked_seconds,
+                    bool(w.total_cost or not w.unpriced_tokens),
+                )
+                for w in sessions
+            ],
+        )
+
+    def export_annotated(self) -> None:
+        try:
+            dataset = self._annotated_export_dataset()
+        except ValueError as exc:
+            self.notify(str(exc), "error")
+            return
+        self._write_export(dataset)
+
+    def _write_export(self, dataset: tuple[str, list[str], list[list]]) -> None:
+        scope, header, rows = dataset
         if not rows:
             self.notify("nothing to export here", "error")
             return
@@ -5366,12 +6154,26 @@ class App:
         if not session:
             self.notify("launch works on sessions only", "error")
             return
+        self.launch_workflow(session)
+
+    def launch_workflow(self, session: Workflow) -> None:
+        """Reuse the launcher for an explicitly selected Work root."""
+        if self.store.demo:
+            self.notify("launch disabled in demo mode", "error")
+            return
         if self.resume_parts(session) is None:
             self.notify("no launch command for this session", "error")
             return
         self.launch_menu = session
         self.launch_menu_index = 0
         self.launch_menu_backend = util.launch_backend()
+
+    def unreachable_machine_for(self, session: Workflow) -> bool:
+        return bool(
+            session.machine
+            and not self.machine_meta().get(session.machine, {}).get("live", True)
+            and not self.machine_ssh_target(session)
+        )
 
     def launch_session(self) -> Workflow | None:
         if keymap.in_conversation_search(self):
@@ -5715,7 +6517,7 @@ class App:
                 rows = self._drilled(rows, self._match_project, self._clear_project_drill)
             if self.zoom_model:  # a Models-tab drill narrows to sessions that used it
                 rows = self._drilled(rows, self._match_model, self._clear_model_drill)
-            return self.filtered_sessions(rows)
+            return self.filtered_sessions(self._tag_filtered(rows))
         if self.zoom_project and self.browse_mode != "projects":
             rows = self._drilled(rows, self._match_project, self._clear_project_drill)
         if self.zoom_source:
@@ -5724,7 +6526,8 @@ class App:
             rows = self._drilled(rows, self._match_machine, self._clear_machine_drill)
         if self.zoom_model:  # a Models-tab drill: sessions that USED the model
             rows = self._drilled(rows, self._match_model, self._clear_model_drill)
-        return self.filtered_sessions(rows)
+        # Tags narrow the session list only; drills above keep their full scope.
+        return self.filtered_sessions(self._tag_filtered(rows))
 
     def settle_drills(self) -> None:
         # Run the drill net once, up front, so a frame is internally consistent. The net
@@ -5829,6 +6632,11 @@ class App:
         if snapshot is not None:
             return snapshot[0]
         rows = self.current_sessions()
+        if self.view == "session" and self._tag_keep is not None:
+            for index, row in enumerate(rows):
+                if self.session_tag_key(row) == self._tag_keep:
+                    self.workflow_index = index
+                    return row
         if not rows:
             return None
         self.workflow_index = max(0, min(self.workflow_index, len(rows) - 1))
@@ -6605,6 +7413,7 @@ class App:
 
     def drill_out(self) -> None:
         if self.view == "session":
+            self._tag_keep = None
             self._clear_changes()
             self._tools_return = None
             self._clear_trace_expansion()
@@ -7982,7 +8791,7 @@ class App:
                 (w, w.total_cost, w.total_tokens) for w in self.all_workflows if field(w) == key
             ]
             rows.sort(key=lambda r: (r[1], r[2]), reverse=True)
-            return rows
+            return self._tag_filtered_usage(rows)
         out = []
         for w in self.all_workflows:
             cost, tokens = 0.0, 0
@@ -7996,7 +8805,7 @@ class App:
             if cost or tokens:
                 out.append((w, cost, tokens))
         out.sort(key=lambda r: (r[1], r[2]), reverse=True)
-        return out
+        return self._tag_filtered_usage(out)
 
     def drill_into_date(self, date: str) -> bool:
         # Jump from the Calendar heat map straight into a day's detail: point the
@@ -8263,6 +9072,8 @@ class App:
             self.trend_drill = None  # back to the ranked rows
         elif act == "api_prices":
             self.toggle_api_prices()  # re-prices the list in place, stays open
+        elif act == "export_annotated" and self.tags_active:
+            self.export_annotated()
         else:
             handled = self._trend_common_key(key, "trends.drill")
             if handled is not None:
@@ -8384,6 +9195,22 @@ class App:
             return self.handle_machine_menu_key(key)
         if self.harness_menu:
             return self.handle_harness_menu_key(key)
+        if self.work_workspace is not None and not self.help:
+            if not self.work_items_active:
+                self.work_workspace = None
+                return True
+            if self.launch_menu is not None:
+                return self.handle_launch_key(key)
+            ws = self.work_workspace
+            if not ws.dialog and not ws.query_edit:
+                if self.handle_org_key(key):
+                    return True
+                if self.keymap.action("main", key) == "help":
+                    self.help, self.help_scroll = True, 0
+                    return True
+            return self.work_workspace.handle_key(key, stdscr)
+        if self.tag_menu:
+            return self.handle_tag_menu_key(key)
         if self.whatif_menu:  # the `w` target picker floats above everything too
             return self.handle_whatif_menu_key(key)
         if self.whats_new:
@@ -8489,12 +9316,16 @@ class App:
                 return self.handle_sort_menu_key(key)
             if self.filter_active:
                 return self.handle_filter_key(key)
+            if self.handle_org_key(key):
+                return True
             if self.prices_model is not None:
                 return self._handle_price_sessions_key(key, stdscr)
             return self._handle_price_models_key(key, stdscr)
         if self.overlay_top == "trends":
             if self.sort_menu:  # the `s` picker floats over the ranked tables
                 return self.handle_sort_menu_key(key)
+            if self.handle_org_key(key):
+                return True
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
             if self.trend_drill is not None:
                 return self._trend_drill_key(key, stdscr)
@@ -8589,6 +9420,8 @@ class App:
             return self.handle_launch_key(key)
         if self._trace_call_menu is not None:
             return self.handle_trace_call_menu_key(key)
+        if self.handle_org_key(key):
+            return True
         act = self.keymap.action("main", key)
         if key == 3 or act == "quit":
             return False
@@ -8704,6 +9537,30 @@ class App:
             return True
         if act == "bookmark":
             self.toggle_bookmark()
+            return True
+        if act == "edit_tags" and self.tags_active:
+            self.open_tag_editor()
+            return True
+        if act == "filter_tags" and self.tags_active:
+            self.open_tag_filter()
+            return True
+        if act == "browse_tags" and self.tags_active:
+            self.open_tag_browser()
+            return True
+        if act in ("work", "work_from_session", "assign_work") and self.work_items_active:
+            self.open_work(from_session=act == "work_from_session", assign=act == "assign_work")
+            return True
+        if act == "select_root" and self.tags_active:
+            self.toggle_tag_selection()
+            return True
+        if act == "clear_selection" and self.tags_active:
+            self.clear_tag_selection()
+            return True
+        if act in ("bulk_add_tags", "bulk_remove_tags") and self.tags_active:
+            self.open_bulk_tags(remove=act == "bulk_remove_tags")
+            return True
+        if act == "export_annotated" and self.tags_active:
+            self.export_annotated()
             return True
         if act == "show_bookmarks":
             self.toggle_bookmarks_view()
@@ -9035,6 +9892,8 @@ class App:
         elif act == "back":
             self.prices_model = None  # back to the model list
             self.prices_scroll = 0
+        elif act == "export_annotated" and self.tags_active:
+            self.export_annotated()
         else:
             handled = self._prices_common_key(key, "prices.sessions")
             if handled is not None:
@@ -9145,6 +10004,46 @@ class App:
                 self.launch_menu = None  # click cancels the launch picker
                 self.launch_menu_backend = None
             return True
+        if (
+            self.work_workspace is not None
+            and not self.help
+            and not keymap.in_conversation_search(self)
+        ):
+            if not self.work_items_active:
+                self.work_workspace = None
+                return True
+            workspace = self.work_workspace
+            if up or down:
+                workspace.move_cursor(-1 if up else 1)
+            elif click or double:
+                for region in self.renderer.regions:
+                    if len(region) != 5 or region[0] not in (
+                        "work-option",
+                        "work-section",
+                        "work-action",
+                    ):
+                        continue
+                    kind, ry, x0, x1, value = region
+                    if ry != my or not x0 <= mx <= x1:
+                        continue
+                    if kind == "work-section":
+                        workspace.section = value
+                        workspace.item_id = workspace.root_key = None
+                    elif kind == "work-action":
+                        workspace.handle_key(value)
+                    else:
+                        options = workspace.options()
+                        if value < len(options):
+                            if workspace.dialog:
+                                workspace.dialog_index = value
+                            elif workspace.item_id:
+                                workspace.root_key = options[value][0]
+                            else:
+                                workspace.selected_id = options[value][0]
+                            if double:
+                                workspace.apply()
+                    break
+            return True
         if self._trace_call_menu is not None:
             if up or down:
                 calls = self.renderer._trace_calls
@@ -9215,6 +10114,25 @@ class App:
                 self.demo_menu_index = (self.demo_menu_index + 1) % n
             elif click or double:
                 self.demo_menu = False  # click cancels, demo state unchanged
+            return True
+        if self.tag_menu:
+            entries = self.tag_menu_entries()
+            if entries and (up or down):
+                self.tag_menu_index = (self.tag_menu_index + (-1 if up else 1)) % len(entries)
+            elif click or double:
+                for region in self.renderer.regions:
+                    if len(region) != 5 or region[0] != "tag-option":
+                        continue
+                    _kind, ry, x0, x1, index = region
+                    if ry != my or not x0 <= mx <= x1 or index >= len(entries):
+                        continue
+                    self.tag_menu_index = index
+                    if double and self.tag_menu == "browse":
+                        self._open_tag_drill(entries[index])
+                    elif entries[index][0] == "tag" or self.tag_menu == "edit":
+                        self._toggle_tag_entry(entries[index])
+                    return True
+                # Consume clicks outside the modal without activating the underlying view.
             return True
         if self.source_menu or self.harness_menu or self.machine_menu:
             picker = "source" if self.source_menu else "harness" if self.harness_menu else "machine"

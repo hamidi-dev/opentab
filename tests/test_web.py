@@ -1638,6 +1638,7 @@ def test_web_harness_browse_executes_shipped_javascript():
     harness = (
         r"""
 const META={source:'fallback',machines:true,combined:true};
+const tagsOn=()=>false;
 const DATA={models:{}};
 const ALL_W=[
   {id:'a',source:'Claude & /',machine:'desk',project:'/p/one',date:'2026-08-02',real:2,api:20,tokens:20},
@@ -1721,7 +1722,7 @@ const document = {
   getElementById(){return null},
 };
 let STARTUP_WARNINGS=[], WHATS_NEW_OPEN=false, THEMEPICK=false;
-let WHATIF={open:false,i:0}, PRICES={open:false}, TRENDS={open:false}, RANGE={pick:false};
+let WHATIF={open:false,i:0}, PRICES={open:false}, TRENDS={open:false}, RANGE={pick:false}, TAGPICK=null;
 let META={demo:false}, BROWSE='time', FOCUS='', TAB='', MODE='real', MSUB=null, TURN_DRILL=null, RETURN=null, W=[];
 let TRACE=null;
 let opened=0, closed=0;
@@ -2617,7 +2618,7 @@ def test_web_a_session_opened_from_a_drill_steps_back_into_it():
     # keeps it: test_month_models_tab_drills_into_sessions_using_a_model).
     js = _js_source()
     assert "onRow: r => { openSession(r.id); }" in js
-    assert "RETURN = (MSUB || kind === 'h' || kind === 'H')" in js
+    assert "RETURN = (MSUB || kind === 'h' || kind === 'H'" in js
     # Restored inside resetScopeState, so the browser's Back button returns through the
     # same check as Esc; the offer is dropped as soon as we are anywhere else.
     assert "const back = !!RETURN && location.hash === RETURN.from;" in js
@@ -3448,7 +3449,7 @@ const document = {
 };
 let location = {hash: '#/m/2026-09'};
 let STARTUP_WARNINGS = [], WHATS_NEW_OPEN = false, THEMEPICK = false;
-let WHATIF = {open:false}, PRICES = {open:false}, RANGE = {pick:false};
+let WHATIF = {open:false}, PRICES = {open:false}, RANGE = {pick:false}, TAGPICK = null;
 let TRENDS = {open:true, tab:'Models', drill:{kind:'model', key:'target'}, drillTab:'Economics'};
 let META = {demo:false}, BROWSE = 'time', FOCUS = '', TAB = 'Models', MODE = 'real';
 let MSUB = null, TURN_DRILL = null, NODE_DRILL = null, RETURN = null, W = [], FILTER = '';
@@ -4420,3 +4421,516 @@ def test_web_raw_trace_demo_cli_exports_only_fake_root_and_execution_events():
         assert all(
             e["sessionTraces"] for e in payload["sessionExtras"]["root"]["executions"].values()
         )
+
+
+# --- Experimental session tags (live server only) ------------------------------------
+
+
+def _tag_env(tmp, enabled=True):
+    from unittest.mock import patch
+
+    os.makedirs(os.path.join(tmp, "c", "opentab"), exist_ok=True)
+    with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
+        json.dump({"version": 1, "tags": {"enabled": enabled}}, fh)
+    return patch.dict(
+        os.environ,
+        {"XDG_CONFIG_HOME": os.path.join(tmp, "c"), "XDG_DATA_HOME": os.path.join(tmp, "d")},
+    )
+
+
+def _serve(app):
+    import threading
+
+    server = report.ReportServer(("127.0.0.1", 0), app)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def _post_tags(base, body, origin=None, path="/api/tags"):
+    import urllib.error
+    import urllib.request
+
+    data = body if isinstance(body, bytes) else json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    if origin:
+        headers["Origin"] = origin
+    req = urllib.request.Request(base + path, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode()
+        return exc.code, json.loads(text) if text.startswith("{") else text
+
+
+def _page_data(html):
+    return json.loads(html.split('id="opentab-data">', 1)[1].split("</script>", 1)[0])
+
+
+def test_web_tags_never_reach_static_reports_or_disabled_servers():
+    import urllib.request
+
+    with tempfile.TemporaryDirectory() as tmp, _tag_env(tmp):
+        app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+        app.refresh_tags()
+        key = app.session_tag_key(app.loaded[0])
+        app.tags.set_tags(key, [], 0, create=["private label"])
+        static = ot.build_payload(app)
+        assert "tags" not in static and "key" not in static["workflows"][0]
+        assert "private label" not in ot.render_html(static)
+        # A live page carries them only while the switch is on.
+        server, base = _serve(app)
+        try:
+            data = _page_data(urllib.request.urlopen(base + "/").read().decode())
+            assert data["workflows"][0]["key"] == key
+            assert [d["label"] for d in data["tags"]["defs"]] == ["private label"]
+            with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
+                json.dump({"version": 1, "tags": {"enabled": False}}, fh)
+            # A stale page that still shows controls cannot keep writing.
+            status, body = _post_tags(base, {"key": key, "expected": 1, "tagIds": []})
+            assert status == 403 and body["code"] == "disabled"
+            server.reload()
+            data = _page_data(urllib.request.urlopen(base + "/").read().decode())
+            assert "tags" not in data and "key" not in data["workflows"][0]
+            assert "private label" not in urllib.request.urlopen(base + "/").read().decode()
+        finally:
+            server.shutdown()
+            server.server_close()
+        with open(os.path.join(tmp, "d", "opentab", "session-tags.json")) as fh:
+            assert json.load(fh)["assignments"][key]["revision"] == 1  # nothing written
+
+
+def test_web_live_tag_edits_are_exact_revisioned_and_bounded():
+    import urllib.request
+
+    with tempfile.TemporaryDirectory() as tmp, _tag_env(tmp):
+        rows = [workflow("w1", "2026-05-01 10:00:00"), workflow("w2", "2026-05-01 11:00:00")]
+        app = app_with(rows)
+        app.refresh_tags()
+        server, base = _serve(app)
+        try:
+            first = _page_data(urllib.request.urlopen(base + "/").read().decode())
+            snapshot = first["meta"]["nodeSnapshot"]
+            key = first["workflows"][0]["key"]
+            status, body = _post_tags(base, {"key": key, "expected": 0, "create": ["perf"]})
+            assert status == 200 and body["ok"] and body["assignment"]["rev"] == 1
+            perf = body["assignment"]["ids"][0]
+            assert body["defs"] == [{"id": perf, "label": "perf", "rev": 1, "affected": 1}]
+            # The re-rendered page shows the edit without expiring node-prompt links.
+            again = _page_data(urllib.request.urlopen(base + "/").read().decode())
+            assert again["tags"]["assign"][key] == {"ids": [perf], "rev": 1}
+            assert again["meta"]["nodeSnapshot"] == snapshot
+            # A stale writer gets the current truth instead of overwriting it.
+            status, body = _post_tags(base, {"key": key, "expected": 0, "tagIds": []})
+            assert status == 409 and body["current"] == {"ids": [perf], "rev": 1}
+            for bad in (
+                {"key": key, "expected": "1", "tagIds": []},
+                {"key": key, "expected": 1, "tagIds": [7]},
+                {"key": key, "expected": 1, "tagIds": [], "extra": True},
+                {"key": key, "expected": 1, "create": ["x"] * 17},
+                [key],
+            ):
+                assert _post_tags(base, bad)[0] == 400, bad
+            assert _post_tags(base, b"x" * (report.TAG_REQUEST_BYTES + 1))[0] == 400
+            unknown = ot.SessionRef("elsewhere", "opencode", "w9").encode()
+            assert _post_tags(base, {"key": unknown, "expected": 0, "create": ["x"]})[0] == 404
+            status, _ = _post_tags(
+                base, {"key": key, "expected": 1, "tagIds": []}, origin="http://evil.example"
+            )
+            assert status == 403
+            fresh = json.loads(urllib.request.urlopen(base + "/api/tags").read().decode())
+            assert fresh["tags"]["assign"][key]["ids"] == [perf]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_web_shipped_tag_filters_and_late_saves_stay_scoped():
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for browser tag behavior"
+    js = _js_source()
+    block = js[js.index("let TAGS = DATA.tags") : js.index("function topSessionsTable(")]
+    script = (
+        r"""
+const assert = require('assert');
+const DATA = { tags: { editable: true, defs: [{id: 'tb', label: 'bug', rev: 1}, {id: 'ta', label: 'Alpha', rev: 1}],
+  assign: { k1: { ids: ['tb', 'ta'], rev: 2 }, k2: { ids: ['ta', 'gone'], rev: 1 } } } };
+const META = { serve: true, demo: false };
+const document = { activeElement: null, getElementById: () => ({ hidden: true, textContent: '' }) };
+let renders = 0; const render = () => { renders += 1; };
+const h = () => ({});
+let pending = [];
+const fetch = (url, opts) => new Promise(resolve => pending.push({ url, opts, resolve }));
+"""
+        + block
+        + r"""
+renderTagPick = () => {};
+const w1 = { key: 'k1', title: 'one' }, w2 = { key: 'k2', title: 'two' }, w3 = { key: 'k3', title: 'three' };
+assert.deepStrictEqual(tagLabels(w1), ['Alpha', 'bug']);
+assert.deepStrictEqual(tagLabels(w2), ['Alpha', '?gone']);
+TAGFILTER = { mode: 'all', ids: new Set(['ta', 'tb']) };
+assert.deepStrictEqual([w1, w2, w3].filter(tagMatches), [w1]);
+TAGFILTER = { mode: 'any', ids: new Set(['tb', 'gone']) };
+assert.deepStrictEqual([w1, w2, w3].filter(tagMatches), [w1, w2]);
+TAGFILTER = { mode: 'untagged', ids: new Set() };
+assert.deepStrictEqual([w1, w2, w3].filter(tagMatches), [w3]);
+// A save for w1 that resolves after the user moved on to w2's editor.
+openTagEditor(w1);
+TAGPICK.checked.delete('tb');
+saveTags();
+const body = JSON.parse(pending[0].opts.body);
+assert.deepStrictEqual(body, { key: 'k1', expected: 2, tagIds: ['ta'], create: [] });
+closeTagPick();
+openTagEditor(w2);
+pending[0].resolve({ json: () => Promise.resolve({ ok: true, assignment: { ids: ['ta'], rev: 3 }, defs: DATA.tags.defs }) });
+setTimeout(() => {
+  assert.deepStrictEqual(TAGS.assign.k1, { ids: ['tb', 'ta'], rev: 2 });  // expired response ignored
+  assert.strictEqual(TAGPICK.key, 'k2');                          // the other dialog untouched
+  assert.strictEqual(TAGPICK.error, '');
+  // A conflict keeps the dialog, shows what is there now and arms an informed replace.
+  saveTags();
+  pending[1].resolve({ json: () => Promise.resolve({ ok: false, code: 'stale', message: 'x', current: { ids: ['tb'], rev: 5 } }) });
+  setTimeout(() => {
+    assert.strictEqual(TAGPICK.rev, 5);
+    assert.ok(TAGPICK.error.includes('#bug'));
+    assert.deepStrictEqual(TAGS.assign.k2, { ids: ['ta', 'gone'], rev: 1 });  // not committed
+    console.log('ok');
+  }, 0);
+}, 0);
+"""
+    )
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0 and result.stdout.strip() == "ok", result.stderr
+
+
+def test_web_annotation_export_is_catalog_only_allowlisted_and_separate_from_details():
+    with tempfile.TemporaryDirectory() as tmp, _tag_env(tmp):
+        app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+        app.refresh_tags()
+        key = app.session_tag_key(app.loaded[0])
+        app.tags.set_tags(key, [], 0, create=["included, label"])
+        missing = ot.SessionRef("missing", "opencode", "gone").encode()
+        app.tags.set_tags(missing, [], 0, create=["outside catalog"])
+        app.tags.create("unused definition")
+        ordinary = report.build_payload(app)
+        annotated = report.build_payload(app, include_annotations=True)
+        assert "tags" not in ordinary and "key" not in ordinary["workflows"][0]
+        assert "sessionExtras" not in annotated
+        assert annotated["tags"]["editable"] is False
+        assert set(annotated["tags"]["assign"]) == {key}
+        assert [d["label"] for d in annotated["tags"]["defs"]] == ["included, label"]
+        assert all(set(d) == {"id", "label"} for d in annotated["tags"]["defs"])
+        assert set(annotated["tags"]["assign"][key]) == {"ids"}
+        app.args.html = os.path.join(tmp, "annotations.html")
+        app.args.include_annotations = True
+        app.args.include_details = False
+        assert report.html_command(app, app.args) == 0
+        with open(app.args.html) as fh:
+            actual = _page_data(fh.read())
+        assert actual["tags"] == annotated["tags"]
+        assert "outside catalog" not in json.dumps(actual)
+        assert "notes" not in actual and "sessionExtras" not in actual
+        # Explicit requests fail before serializing or creating an output file.
+        app.tags.disable()
+        app.args.html = os.path.join(tmp, "refused.html")
+        assert report.html_command(app, app.args) == 2
+        assert not os.path.exists(app.args.html)
+
+
+def test_web_annotation_export_rejects_no_state_demo_and_unreadable_records():
+    with tempfile.TemporaryDirectory() as tmp, _tag_env(tmp):
+        app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+        app.refresh_tags()
+        for attr, value in (("notes_enabled", False),):
+            old = getattr(app, attr)
+            setattr(app, attr, value)
+            try:
+                report.build_payload(app, include_annotations=True)
+                raise AssertionError("no-state must refuse annotations")
+            except ValueError:
+                pass
+            finally:
+                setattr(app, attr, old)
+        app.store.demo = True
+        try:
+            report.build_payload(app, include_annotations=True)
+            raise AssertionError("demo must refuse real annotations")
+        except ValueError:
+            pass
+        app.store.demo = False
+        app.tags.readable = False
+        try:
+            report.build_payload(app, include_annotations=True)
+            raise AssertionError("broken is not an empty export")
+        except ValueError:
+            pass
+
+
+def test_web_bulk_tags_are_atomic_exact_and_definition_deletion_counts_missing_roots():
+    with tempfile.TemporaryDirectory() as tmp, _tag_env(tmp):
+        app = app_with([workflow("a", "2026-05-01"), workflow("b", "2026-05-02")])
+        app.refresh_tags()
+        a, b = (app.session_tag_key(w) for w in app.loaded)
+        app.tags.set_tags(a, [], 0, create=["X", "Y"])
+        x, y = (next(t for t, label in app.tags.definitions() if label == v) for v in ("X", "Y"))
+        app.tags.set_tags(b, [y], 0)
+        missing = ot.SessionRef("retained", "opencode", "missing").encode()
+        app.tags.set_tags(missing, [x], 0)
+        server, base = _serve(app)
+        try:
+            status, out = _post_tags(base, {"op": "bulk", "targets": {a: 1, b: 0}, "add": [x]})
+            assert status == 409 and not out["ok"]
+            assert set(out["current"]["conflicts"]) == {b}
+            assert app.tags.snapshot.tags_of(b) == (y,)
+            status, out = _post_tags(base, {"op": "bulk", "targets": {a: 1, b: 1}, "add": [x]})
+            assert status == 200 and out["ok"]
+            assert set(out["tags"]["assign"][a]["ids"]) == {x, y}
+            assert set(out["tags"]["assign"][b]["ids"]) == {x, y}
+            targets = {k: out["tags"]["assign"][k]["rev"] for k in (a, b)}
+            status, out = _post_tags(base, {"op": "bulk", "targets": targets, "remove": [y]})
+            assert status == 200
+            assert out["tags"]["assign"][a]["ids"] == [x]
+            assert out["tags"]["assign"][b]["ids"] == [x]
+            status, out = _post_tags(
+                base, {"op": "rename", "id": x, "expected": 1, "label": "Renamed"}
+            )
+            assert status == 200
+            definition = next(d for d in out["tags"]["defs"] if d["id"] == x)
+            assert definition["label"] == "Renamed" and definition["affected"] == 3
+            delete = {
+                "op": "delete",
+                "id": x,
+                "expected": definition["rev"],
+                "expectedDocument": out["tags"]["revision"],
+                "confirm": True,
+            }
+            assert _post_tags(base, {**delete, "confirm": False})[0] == 400
+            assert _post_tags(base, {**delete, "expectedDocument": 0})[0] == 409
+            assert _post_tags(base, delete)[0] == 200
+            assert app.tags.snapshot.tags_of(missing) == ()
+            assert app.tags.snapshot.revision_of(missing) > 1
+            assert _post_tags(base, {"op": "bulk", "targets": {missing: 2}, "add": [y]})[0] == 404
+            assert _post_tags(base, {"op": "bulk", "targets": {a: True}, "add": [y]})[0] == 400
+            oversized = {f"key{i}": 0 for i in range(501)}
+            assert _post_tags(base, {"op": "bulk", "targets": oversized, "add": [y]})[0] == 400
+            assert (
+                _post_tags(
+                    base,
+                    {"op": "bulk", "targets": {a: 3}, "add": [y]},
+                    origin="http://evil.example",
+                )[0]
+                == 403
+            )
+            with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
+                json.dump({"version": 1, "tags": {"enabled": False}}, fh)
+            assert (
+                _post_tags(base, {"op": "rename", "id": y, "expected": 1, "label": "off"})[0] == 403
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_web_tags_shipped_totals_static_controls_and_bulk_response_races():
+    from opentab.annotations import aggregate_tags
+    from opentab.persistence.session_tags import TagSnapshot
+
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for M3 browser parity"
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    payload = {
+        "meta": {"serve": False, "demo": False, "range": "all time", "source": "test"},
+        "workflows": [
+            {
+                "id": "a",
+                "key": "ka",
+                "title": "A",
+                "date": "2026-05-01",
+                "project": "/p",
+                "real": 5,
+                "api": 50,
+                "dur": 60,
+                "tokens": 0,
+                "subagents": 3,
+            },
+            {
+                "id": "b",
+                "key": "kb",
+                "title": "B",
+                "date": "2026-05-02",
+                "project": "/p",
+                "real": 3,
+                "api": 30,
+                "dur": None,
+                "tokens": 0,
+                "subagents": 0,
+            },
+        ],
+        "models": {},
+        "nodes": {"a": [{"real": 999, "api": 999}]},
+        "tags": {
+            "editable": False,
+            "revision": 3,
+            "defs": [
+                {"id": "x", "label": "X", "rev": 1, "affected": 7},
+                {"id": "y", "label": "Y", "rev": 1, "affected": 2},
+            ],
+            "assign": {"ka": {"ids": ["x", "y"], "rev": 2}, "kb": {"ids": ["y"], "rev": 1}},
+        },
+    }
+    snapshot = TagSnapshot(
+        labels={d["id"]: d["label"] for d in payload["tags"]["defs"]},
+        assignments={k: (tuple(v["ids"]), v["rev"]) for k, v in payload["tags"]["assign"].items()},
+    )
+    python_rows = aggregate_tags(
+        [(w["key"], w["real"], w["dur"]) for w in payload["workflows"]] + [("ka", 999, 999)],
+        snapshot,
+    )
+    expected = {
+        r.tag_id or "untagged": [
+            r.sessions,
+            r.cost,
+            r.cost_measured,
+            r.agent_seconds,
+            r.time_measured,
+        ]
+        for r in python_rows
+    }
+    script = (
+        _WEB_DOM_JS
+        + "\ndocument.getElementById('opentab-data').textContent = "
+        + json.dumps(json.dumps(payload))
+        + ";\nconst PYTHON_TAGS = "
+        + json.dumps(expected)
+        + ";\n"
+        + shipped
+        + r"""
+function render() {}
+function all(n, tag) { return (n.tag === tag ? [n] : []).concat(n.children.flatMap(c => all(c, tag))); }
+const roots = [...ALL_W, ALL_W[0]];
+const row = id => tagAggregateRows(roots).find(r => r.id === id);
+assert.deepEqual(Object.fromEntries(tagAggregateRows(roots).map(r => [r.id || 'untagged', [r.sessions,r.cost,r.costMeasured,r.seconds,r.timeMeasured]])), PYTHON_TAGS);
+assert.equal(row('x').cost, 5); assert.equal(row('y').cost, 8);
+assert.equal(row('y').sessions, 2); assert.equal(row('y').seconds, 60);
+assert.equal(row('y').timeMeasured, 1); assert.ok(tagTime(row('y')).includes('1/2 sessions measured'));
+TAGFILTER = {mode:'any', ids:new Set(['x','y'])}; assert.equal(tagAccounting(roots.filter(tagMatches)).cost, 8);
+TAGFILTER.mode = 'all'; assert.equal(tagAccounting(roots.filter(tagMatches)).cost, 5);
+MODE = 'api'; assert.equal(row('y').cost, 80);
+WHATIF.model = 'unrelated/comparison'; assert.equal(row('y').cost, 80);
+MODE = 'real'; TAGFILTER = null; location.hash = '#/'; BROWSE = 'tags';
+openSession('a'); assert.equal(RETURN.from, '#/'); assert.equal(RETURN.to, '#/s/a');
+location.hash = '#/'; RETURN = null;
+renderTagsBrowse({kind:'all'}, roots);
+let view = document.getElementById('view');
+assert.ok(view.textContent.includes('Tag rows overlap'));
+assert.ok(view.textContent.includes('Recorded cost'));
+assert.ok(!view.textContent.includes('bulk add')); assert.ok(!view.textContent.includes('delete globally'));
+assert.equal(requests.length, 0);
+openTagEditor(ALL_W[0]); assert.equal(TAGPICK, null);
+openBulkTags('add'); assert.equal(TAGPICK, null);
+// Click a tag aggregate: the exact matching roots and matching subtotal agree.
+all(view, 'tbody')[0].children.find(r => r.textContent.startsWith('X')).events.click();
+assert.deepEqual(ALL_W.filter(tagMatches).map(w => w.id), ['a']);
+META.serve = true; TAGS.editable = true;
+TAG_SELECTED.set('ka', 2); TAG_SELECTED.set('kb', 1);
+openBulkTags('add'); TAGPICK.checked.add('x');
+TAG_SELECTED.clear(); FILTER = 'changed after capture'; SORT['tag-sessions'] = {key:'title', desc:true};
+saveTagOperation();
+assert.deepEqual(JSON.parse(requests[0].options.body), {op:'bulk', targets:{ka:2,kb:1}, add:['x']});
+closeTagPick(); openTagMaintenance('x', 'delete');
+assert.equal(TAGPICK.affected, 7); assert.equal(TAGPICK.expectedDocument, 3);
+requests[0].resolve({json:()=>Promise.resolve({ok:true, tags:{editable:true, defs:[], assign:{}, revision:99}})});
+setTimeout(() => {
+  assert.equal(TAGS.revision, 3); assert.equal(TAGPICK.op, 'delete');
+  saveTagOperation();
+  assert.deepEqual(JSON.parse(requests[1].options.body), {op:'delete', id:'x', expected:1, expectedDocument:3, confirm:true});
+  requests[1].resolve({json:()=>Promise.resolve({ok:false,code:'stale',message:'changed elsewhere'})});
+  setTimeout(() => {
+    assert.equal(TAGPICK.op, 'delete'); assert.ok(TAGPICK.error.includes('refresh and review'));
+    closeTagPick(); META.serve = false; TAGS.editable = false;
+    TAGFILTER = null;
+    TAGS.assign.kb.ids = []; assert.equal(tagAggregateRows(ALL_W).find(r=>r.id===null).sessions,1);
+    ALL_W[1].dur = 120; assert.equal(tagAccounting(roots).seconds,180);
+    ALL_W[0].real = null; assert.equal(tagAccounting(roots).costMeasured,1);
+    ALL_W[1].real = 0; ALL_W[1].unpriced = 100;
+    assert.equal(tagAccounting(roots).costMeasured,0);
+    console.log('ok');
+  }, 0);
+}, 0);
+"""
+    )
+    result = subprocess.run([node, "-"], input=script, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0 and result.stdout.strip() == "ok", result.stderr
+
+
+def _work_env(tmp):
+    from unittest.mock import patch
+
+    os.makedirs(os.path.join(tmp, "c", "opentab"), exist_ok=True)
+    with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
+        json.dump({"version": 1, "work_items": {"enabled": True}}, fh)
+    return patch.dict(
+        os.environ,
+        {"XDG_CONFIG_HOME": os.path.join(tmp, "c"), "XDG_DATA_HOME": os.path.join(tmp, "d")},
+    )
+
+
+def test_web_work_items_live_edits_and_static_snapshot_privacy():
+    import urllib.request
+
+    with tempfile.TemporaryDirectory() as tmp, _work_env(tmp):
+        rows = [
+            workflow("w1", "2026-05-01 10:00:00", cost=2),
+            workflow("w2", "2026-05-01 11:00:00"),
+        ]
+        rows[0].source = "Claude Code"
+        app = app_with(rows)
+        app.refresh_work_items()
+        assert "work" not in ot.build_payload(app)  # ordinary static HTML omits work items
+        server, base = _serve(app)
+        post = lambda body: _post_tags(base, body, path="/api/work")  # noqa: E731
+        try:
+            data = _page_data(urllib.request.urlopen(base + "/").read().decode())
+            key = data["workflows"][0]["key"]
+            assert data["work"]["editable"] and data["work"]["items"] == []
+            next_state = next(s for s in data["work"]["states"] if s["id"] == "next")
+            assert next_state["colors"] == ["#7dcfff", "#087a94"]  # cyan, dark/light shade
+            status, body = post(
+                {"op": "create", "title": "Fix cache", "nextStep": "check windows", "key": key}
+            )
+            assert status == 200 and body["ok"]
+            ident = body["id"]
+            item = body["work"]["items"][0]
+            assert (
+                item["nextStep"] == "check windows"
+                and body["work"]["memberships"][key]["itemId"] == ident
+            )
+            root = next(r for r in body["work"]["roots"] if r["key"] == key)
+            assert "w1" in root["resume"] and not root["resumeReason"]
+            # Stale revisions, unknown roots, unconfirmed moves and junk are refused.
+            assert post({"op": "edit", "id": ident, "expected": 0, "title": "x"})[0] == 409
+            # A root attached elsewhere is a conflict the page can reload, not junk input.
+            status, body = post({"op": "create", "title": "Dup", "key": key, "expected": 1})
+            assert status == 409 and body["code"] == "move_required"
+            other = data["workflows"][1]["key"]
+            assert post({"op": "attach", "key": "nope", "id": ident, "expected": 0})[0] == 404
+            assert post({"op": "move", "key": other, "id": ident, "expected": 0})[0] == 400
+            assert post({"op": "edit", "id": ident, "expected": 1, "bogus": 1})[0] == 400
+            status, body = post({"op": "edit", "id": ident, "expected": 1, "stateId": "done"})
+            assert status == 200 and body["work"]["items"][0]["stateId"] == "done"
+
+            # The explicit annotated export keeps titles/states but never next steps.
+            static = report.build_payload(app, include_annotations=True)
+            assert static["work"]["incomplete"] and not static["work"]["editable"]
+            assert static["work"]["items"][0]["title"] == "Fix cache"
+            assert "check windows" not in json.dumps(static)
+            assert all("resume" not in r for r in static["work"]["roots"])
+
+            with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
+                json.dump({"version": 1}, fh)
+            status, body = post({"op": "edit", "id": ident, "expected": 2, "title": "late"})
+            assert status == 403 and body["code"] == "disabled"
+        finally:
+            server.shutdown()
+            server.server_close()

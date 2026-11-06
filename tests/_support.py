@@ -52,6 +52,52 @@ def needs_uncapped_sqlite(fn):
 
 
 @contextmanager
+def isolated_annotations(config=None):
+    """Disposable config and authored-data roots for workflow model tests."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {
+            "XDG_CONFIG_HOME": os.path.join(tmp, "config"),
+            "XDG_DATA_HOME": os.path.join(tmp, "data"),
+        }
+        with patch.dict(os.environ, env):
+            if config is not None:
+                os.makedirs(os.path.join(tmp, "config", "opentab"))
+                with open(os.path.join(tmp, "config", "opentab", "workflow.json"), "w") as fh:
+                    fh.write(config if isinstance(config, str) else json.dumps(config))
+            yield tmp
+
+
+@contextmanager
+def _tags_on(enabled=True):
+    from opentab.persistence import session_tags
+
+    config = {"version": 1, "tags": {"enabled": enabled}} if enabled is not None else None
+    with isolated_annotations(config):
+        yield session_tags
+
+
+def _tag_app(session_id="a"):
+    rows = [
+        workflow("a", "2026-06-01 12:00:00", title="Alpha", cost=5),
+        workflow("b", "2026-06-01 13:00:00", title="Beta", cost=3),
+        workflow("c", "2026-06-01 14:00:00", title="Gamma", cost=1),
+    ]
+    rows[1].source, rows[2].source = "Codex", "Claude Code"
+    app = _app_on_session(rows, session_id)
+    app.refresh_tags()
+    return app
+
+
+def _type(app, text):
+    for ch in text:
+        app.handle_key(None, ord(ch))
+
+
+def _ids(app):
+    return [w.id for w in app.current_sessions()]
+
+
+@contextmanager
 def copilot_prices():
     """Distinct route/vendor cards expose accidental provider stripping."""
     from opentab.accounting import pricing

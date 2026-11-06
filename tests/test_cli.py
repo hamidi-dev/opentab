@@ -1319,6 +1319,9 @@ def test_web_subcommand_maps_onto_serve_and_web_fields():
     assert detailed.include_details is True and detailed.html == "r.html"
     split = _parse(["web", "--html", "r.html", "--details-dir", "details"])
     assert split.details_dir == "details" and named.details_dir is None
+    annotated = _parse(["web", "--html", "r.html", "--include-annotations"])
+    assert annotated.include_annotations is True and annotated.include_details is False
+    assert named.include_annotations is False
 
 
 def test_web_subcommand_takes_the_shared_globals_after_the_verb():
@@ -1332,6 +1335,7 @@ def test_static_web_rejects_server_options_before_any_access():
 
     for argv in (
         ["web", "--include-details"],
+        ["web", "--include-annotations"],
         ["web", "--headless", "--include-details"],
         ["web", "--details-dir", "details"],
         ["web", "--html", "r.html", "--include-details", "--details-dir", "details"],
@@ -1418,6 +1422,10 @@ def _help_tree(parser, path=()):
         if isinstance(action, argparse._SubParsersAction):
             for name, child in action.choices.items():
                 yield from _help_tree(child, (*path, name))
+
+
+# Experimental options that are deliberately accepted but absent from --help.
+_UNANNOUNCED_OPTIONS = {(("web",), "include_annotations")}
 
 
 def test_cli_help_covers_the_complete_command_tree_at_multiple_widths_without_access():
@@ -1518,7 +1526,8 @@ def test_cli_help_covers_the_complete_command_tree_at_multiple_widths_without_ac
                     displayed = [a for group in parser._action_groups for a in group._group_actions]
                     for action in parser._actions:
                         assert displayed.count(action) == 1, (path, action.dest)
-                        if not isinstance(action, argparse._SubParsersAction):
+                        hidden = (path, action.dest) in _UNANNOUNCED_OPTIONS
+                        if not isinstance(action, argparse._SubParsersAction) and not hidden:
                             assert action.help and action.help != argparse.SUPPRESS, (
                                 path,
                                 action.dest,

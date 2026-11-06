@@ -700,6 +700,23 @@ THEME_IDS = tuple(THEMES)
 DEFAULT_THEME = "tokyo-night"
 
 
+# Work-state keywords name ANSI-style colours in workflow.json; each gets a shade per
+# theme brightness so it reads on every theme. "default" and "white" use theme ink.
+STATE_COLOR_HEX = {
+    "red": ("#f7768e", "#c4314b"),
+    "green": ("#9ece6a", "#2f7d32"),
+    "yellow": ("#e0af68", "#9a6700"),
+    "blue": ("#7aa2f7", "#2f5bd3"),
+    "magenta": ("#bb9af7", "#8a3fc4"),
+    "cyan": ("#7dcfff", "#087a94"),
+}
+
+
+def state_color_hex(color: str, dark: bool) -> str | None:
+    pair = STATE_COLOR_HEX.get(color)
+    return None if pair is None else pair[0 if dark else 1]
+
+
 def resolve_theme(theme_id: str) -> dict:
     """The theme dict for an id, falling back to the default for an unknown id."""
     return THEMES.get(theme_id) or THEMES[DEFAULT_THEME]
