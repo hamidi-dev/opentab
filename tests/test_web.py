@@ -4934,3 +4934,72 @@ def test_web_work_items_live_edits_and_static_snapshot_privacy():
         finally:
             server.shutdown()
             server.server_close()
+
+
+def test_web_summary_averages_match_the_tui_arithmetic():
+    from opentab.accounting.averages import SessionPoint, range_averages
+
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript summary execution: Node.js is not installed (required in CI)")
+        return
+    js = _js_source()
+    functions = "\n".join(
+        re.search(r"function " + name + r"\([^)]*\) \{.*?\n\}", js, re.S)[0]
+        for name in ("spreadOf", "rangeBounds", "rangeAverages")
+    )
+    rows = [
+        ("2026-06-01 12:00:00", 0.5, 400, 30.0),
+        ("2026-06-01 13:00:00", 1.0, 600, None),
+        ("2026-06-03 12:00:00", 1.5, 800, 90.0),
+        ("2026-06-10 12:00:00", 40.0, 90_000, 3600.0),
+    ]
+    expected = range_averages(
+        [SessionPoint(d[:10], c, t, w) for d, c, t, w in rows],
+        "2026-06-01",
+        "2026-06-10",
+        "2026-05-20",
+        "2026-11-07",
+    )
+    workflows = [{"date": d, "api": c, "tokens": t, "dur": w} for d, c, t, w in rows]
+    history = [*workflows, {"date": "2026-05-20 09:00:00", "api": 0, "tokens": 0, "dur": None}]
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            f"""
+const MODE = 'api', ALL_W = {json.dumps(history)};
+const RANGE = {{kind: 'since', since: '2026-06-01', until: '2026-06-10'}};
+const cost = w => w.api, sum = (rows, f) => rows.reduce((a, r) => a + f(r), 0);
+const isoToday = () => '2026-11-07';
+{functions}
+process.stdout.write(JSON.stringify(rangeAverages({json.dumps(workflows)})));
+""",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    got = json.loads(result.stdout)
+    assert (got["start"], got["end"]) == (expected.start, expected.end)
+    assert (got["calendarDays"], got["activeDays"]) == (
+        expected.calendar_days,
+        expected.active_days,
+    )
+    assert (got["sessions"], got["cost"], got["tokens"]) == (
+        expected.sessions,
+        expected.cost,
+        expected.tokens,
+    )
+    for key, spread in (
+        ("costSpread", expected.cost_spread),
+        ("tokenSpread", expected.token_spread),
+        ("workedSpread", expected.worked_spread),
+    ):
+        assert [got[key][k] for k in ("median", "mean", "p90", "max", "count")] == [
+            spread.median,
+            spread.mean,
+            spread.p90,
+            spread.max,
+            spread.count,
+        ], key

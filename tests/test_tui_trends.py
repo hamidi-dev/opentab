@@ -141,6 +141,7 @@ def test_trends_weekly_week_navigation_keys():
     )
     app.handle_key(None, ord("T"))
     app.handle_key(None, ord("l"))
+    app.handle_key(None, ord("l"))
     assert app.trends and app.trend_tabs[app.trend_tab] == "Weekly"
     assert app.trend_week_index == 0
     app.handle_key(None, ord("j"))
@@ -162,7 +163,9 @@ def test_trends_daily_month_navigation_keys():
         ]
     )
     app.handle_key(None, ord("T"))
-    assert app.trends and app.trend_tab == 0 and app.trend_month_index == 0
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Summary"
+    app.handle_key(None, ord("l"))
+    assert app.trend_tabs[app.trend_tab] == "Daily" and app.trend_month_index == 0
     app.handle_key(None, ord("j"))
     assert app.trend_month_index == 1
     app.handle_key(None, ord("j"))
@@ -172,7 +175,7 @@ def test_trends_daily_month_navigation_keys():
     app.handle_key(None, ord("k"))
     assert app.trend_month_index == 1
     app.handle_key(None, ord("l"))
-    assert app.trends and app.trend_tab == 1
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Weekly"
 
 
 def test_log_scale_spreads_a_skewed_spend_distribution():
@@ -191,7 +194,7 @@ def test_trends_calendar_year_navigation_keys():
         ]
     )
     app.handle_key(None, ord("T"))
-    for _ in range(3):
+    for _ in range(4):
         app.handle_key(None, ord("l"))
     assert app.trends and app.trend_tabs[app.trend_tab] == "Calendar"
     assert app.trend_year_index == 0
@@ -511,6 +514,7 @@ def test_trend_daily_bars_focus_walk_and_drill():
         ]
     )
     app.handle_key(None, ord("T"))
+    app.handle_key(None, ord("l"))
     assert app.trend_tabs[app.trend_tab] == "Daily" and not app.trend_focus
     app.handle_key(None, 10)
     assert app.trend_focus
@@ -562,6 +566,7 @@ def test_trend_monthly_bar_drills_into_month():
 def test_trend_daily_marks_the_selected_bar_when_focused():
     app = app_with([workflow("a", "2026-06-10 12:00:00", cost=40)])
     app.handle_key(None, ord("T"))
+    app.handle_key(None, ord("l"))
     app.handle_key(None, 10)
     lines = app.renderer.trend_daily(100, 20)
     marked = next((ln for ln in lines if "▲" in ln), None)
@@ -804,6 +809,7 @@ def test_trend_sort_leaves_the_per_scope_harness_tables_alone():
 def test_trend_sort_is_inert_on_the_chart_tabs():
     app = _ranked_app()
     app.handle_key(None, ord("T"))
+    app.handle_key(None, ord("l"))
     assert app.trend_tabs[app.trend_tab] == "Daily"
     app.handle_key(None, ord("s"))
     assert not app.sort_menu and app.trends
@@ -1353,3 +1359,83 @@ def test_chart_metric_key_works_inside_a_trends_drill_and_names_empty_ranges():
 
     empty = trend_views.daily_layout(None, [], [], 80, 16, navigation_keys="j/k", tokens=True)
     assert empty.lines == ("# Daily tokens", "", "No tokens in the active range.")
+
+
+def _summary_app():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=0.5, tokens=400),
+            workflow("b", "2026-06-01 13:00:00", cost=1.0, tokens=600),
+            workflow("c", "2026-06-03 12:00:00", cost=1.5, tokens=800),
+            workflow("d", "2026-06-10 12:00:00", cost=40.0, tokens=90_000),
+        ],
+        since="2026-06-01",
+        until="2026-06-10",
+    )
+    app._model_by_root = {"d": [_model_row("anthropic/opus", 40.0, 90_000, runs=3)]}
+    return app
+
+
+def test_trends_open_on_a_summary_of_the_range():
+    app = _summary_app()
+    app.handle_key(None, ord("T"))
+    assert app.trend_tabs[app.trend_tab] == "Summary"
+    text = "\n".join(app.renderer.trend_summary(96))
+    # 10 calendar days, 3 of them with a session start; 4 sessions, $43 in all.
+    assert "2026-06-01 → 2026-06-10 · 10 days, 3 active" in text
+    assert "Sessions  4 · 0.40/day · 1.33/active day" in text
+    assert "$43.00 · $4.30/day · $14.33/active day" in text
+    lines = text.splitlines()
+    per_session = lines[next(i for i, line in enumerate(lines) if "median" in line) + 2]
+    assert per_session.split()[3:7] == ["$1.25", "$10.75", "$40.00", "$40.00"]
+    assert "8.6× the median" in text  # the mean says almost nothing about one session
+    assert "Token economics" in text  # where the list-rate dollars went
+
+
+def test_the_summary_follows_the_price_mode_and_explains_recorded_zeros():
+    app = _summary_app()
+    app.loaded[0].unpriced_tokens = 400
+    app.show_api_prices = True
+    assert "Est. cost" in "\n".join(app.renderer.trend_summary(96))
+    app.show_api_prices = False
+    text = "\n".join(app.renderer.trend_summary(96))
+    assert "│ Cost " in text and "counts as $0" in text
+
+
+def test_summary_keys_scroll_and_never_open_a_drill_or_sort():
+    app = _summary_app()
+    app.handle_key(None, ord("T"))
+    screen = FakeScreen(14, 100)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.handle_key(None, ord("j"))
+        assert app.trend_summary_scroll == 1 and app.trend_row_index == 0
+        for key in (10, ord("s")):
+            app.handle_key(None, key)
+        assert app.trend_drill is None and not app.sort_menu and app.trends
+        app.trend_summary_scroll = 10_000
+        app.renderer.draw_trends(screen, 0, 14, 100)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    # Clamped to the card's last page, so `k` scrolls back at once.
+    assert 0 < app.trend_summary_scroll < 10_000
+    assert "Trends" in screen_text(screen)
+
+
+def test_rolling_ranges_bound_the_summary_by_their_cutoff():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")], days=30)
+    since, until = app.trend_range_bounds()
+    assert since is not None and until is None
+    assert app_with([workflow("a", "2026-06-01 12:00:00")]).trend_range_bounds() == (None, None)
+
+
+def test_worked_coverage_is_a_note_under_the_table_not_a_stray_column():
+    app = _summary_app()
+    for w, worked in zip(app.loaded, (60.0, 120.0, None, 3600.0)):
+        w.worked_seconds = worked
+    lines = app.renderer.trend_summary(96)
+    row = next(line for line in lines if line.startswith("│ Worked"))
+    assert row.split()[2:6] == ["2m", "21m", "1h", "1h"] and "of" not in row
+    assert "Worked covers 3 of 4 sessions: the other 1 have no recorded working time." in lines

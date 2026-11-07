@@ -766,8 +766,8 @@ let NODE_DRILL = null;
 let NODE_PROMPT = null;
 let EXTRAS = { id: null, loading: false, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
 let EXTRAS_REQUEST = 0;
-const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Projects', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
-let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null, drillTab: null, sort: 'cost', desc: true };
+const TREND_TABS = ['Summary', 'Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Projects', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
+let TRENDS = { open: false, tab: 'Summary', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null, drillTab: null, sort: 'cost', desc: true };
 const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider'], ['all', 'models.dev']];
 let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '', expanded: null };
 // `w` affects only a session's Overview/tree and must remain independent of `$`.
@@ -4048,6 +4048,75 @@ function trendCalendar() {
     calendar(year, byDate, date => { closeTrends(); go('d', date); }),
     h('div', { class: 'tr-summary' }, h('span', null, 'total ', h('b', null, chartExact(total))), h('span', { class: 'mut' }, byDate.size + ' active days')));
 }
+// Mirrors accounting/averages.py: nearest-rank p90, median of the middle pair.
+function spreadOf(values) {
+  const v = values.slice().sort((a, b) => a - b), n = v.length;
+  if (!n) return null;
+  const mid = n >> 1, median = n % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+  const p90 = v[Math.min(n, Math.max(1, Math.ceil(0.9 * n))) - 1];
+  return { median, mean: v.reduce((a, b) => a + b, 0) / n, p90, max: v[n - 1], count: n };
+}
+function rangeBounds() {
+  const r = RANGE;
+  if (r.kind === 'days') return [isoDaysAgo(r.n), null];
+  if (r.kind === 'months') return [isoMonthsAgo(r.n), null];
+  if (r.kind === 'ytd') return [isoToday().slice(0, 4) + '-01-01', null];
+  if (r.kind === 'since') return [r.since || null, r.until || null];
+  return [null, null];
+}
+// Days run from the later of the range start and the first recorded session, so a
+// window that predates your history doesn't dilute the per-day rates.
+function rangeAverages(ws) {
+  const dated = ws.filter(w => /^\d{4}-\d{2}-\d{2}/.test(w.date || ''));
+  if (!dated.length) return null;
+  const days = [...new Set(dated.map(w => w.date.slice(0, 10)))].sort();
+  const history = ALL_W.map(w => (w.date || '').slice(0, 10)).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort()[0] || null;
+  const [since, until] = rangeBounds(), today = isoToday();
+  const floor = [since, history].filter(Boolean).sort().pop() || days[0];
+  const start = floor < days[0] ? floor : days[0];
+  const capped = until && until < today ? until : today;
+  const end = capped > days[days.length - 1] ? capped : days[days.length - 1];
+  const span = Math.round((Date.parse(end + 'T00:00:00Z') - Date.parse(start + 'T00:00:00Z')) / 864e5) + 1;
+  const worked = dated.filter(w => w.dur != null).map(w => w.dur);
+  return { start, end, calendarDays: Math.max(span, days.length), activeDays: days.length,
+    sessions: dated.length, cost: sum(dated, cost), tokens: sum(dated, w => w.tokens),
+    costSpread: spreadOf(dated.map(cost)), tokenSpread: spreadOf(dated.map(w => w.tokens)),
+    workedSpread: spreadOf(worked) };
+}
+function trendSummary() {
+  const a = rangeAverages(W);
+  if (!a) return h('div', { class: 'hint' }, 'No sessions in the active range.');
+  const perDay = v => v / a.calendarDays, perActive = v => v / a.activeDays;
+  const num = v => v === Math.round(v) || v >= 100 ? Math.round(v).toLocaleString('en-US') : v < 10 ? v.toFixed(2) : v.toFixed(1);
+  const tok = v => hTok(Math.round(v)), dur = v => v >= 1 ? hDur(v) : '0s';
+  const label = MODE === 'api' ? 'est. cost' : 'cost';
+  const body = h('div', null,
+    h('div', { class: 'hint' }, a.start + ' → ' + a.end + ' · ' + a.calendarDays.toLocaleString('en-US')
+      + ' days, ' + a.activeDays.toLocaleString('en-US') + ' active. Sessions count on the day they started.'),
+    tiles([
+      ['sessions / day', num(perDay(a.sessions)), num(perActive(a.sessions)) + ' per active day'],
+      [label + ' / day', money(perDay(a.cost)), money(perActive(a.cost)) + ' per active day', true],
+      ['tokens / day', tok(perDay(a.tokens)), tok(perActive(a.tokens)) + ' per active day'],
+      [label + ' / session', money(a.costSpread.median), 'median · mean ' + money(a.costSpread.mean), true],
+    ]));
+  const rows = [[label, a.costSpread, money], ['tokens', a.tokenSpread, tok]];
+  if (a.workedSpread) rows.push(['worked', a.workedSpread, dur]);
+  const table = h('div', { class: 'scroll' }, h('table', null,
+    h('thead', null, h('tr', null, ['Per session', 'Median', 'Mean', 'p90', 'Max'].map((c, i) => h('th', { class: i ? 'r' : null }, c)))),
+    h('tbody', null, rows.map(([k, sp, f]) => h('tr', null, h('td', null, k),
+      ...[sp.median, sp.mean, sp.p90, sp.max].map(v => h('td', { class: 'r' }, f(v))))))));
+  const notes = [];
+  if (a.costSpread.median > 0 && a.costSpread.mean >= 2 * a.costSpread.median)
+    notes.push(h('div', { class: 'hint' }, 'The mean is ' + (a.costSpread.mean / a.costSpread.median).toFixed(1)
+      + '× the median: a few large sessions carry the average.'));
+  if (a.workedSpread && a.workedSpread.count < a.sessions)
+    notes.push(h('div', { class: 'hint' }, 'Worked covers ' + a.workedSpread.count.toLocaleString('en-US') + ' of '
+      + a.sessions.toLocaleString('en-US') + ' sessions: the other ' + (a.sessions - a.workedSpread.count).toLocaleString('en-US')
+      + ' have no recorded working time.'));
+  if (MODE !== 'api' && W.some(w => w.unpriced > 0))
+    notes.push(h('div', { class: 'hint' }, 'Unpriced subscription usage counts as $0: press $ to estimate it.'));
+  return h('div', null, body, table, ...notes, tokenEconomicsPane(W, rangeLabel()));
+}
 function trendModels() {
   const rows = modelAgg(W).map(r => ({ name: r.model, cost: mCost(r), runs: r.runs, tokens: r.tokens }))
     .filter(r => r.cost > 0).sort((a, b) => b.cost - a.cost);
@@ -4091,7 +4160,7 @@ function trendMachines() {
     onRow: r => { TRENDS.drill = { kind: 'machine', key: r.name }; renderTrends(); },
     extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
 }
-function openTrends() { TRENDS.open = true; TRENDS.drill = null; if (!TREND_TABS.includes(TRENDS.tab)) TRENDS.tab = 'Daily'; renderTrends(); }
+function openTrends() { TRENDS.open = true; TRENDS.drill = null; if (!TREND_TABS.includes(TRENDS.tab)) TRENDS.tab = 'Summary'; renderTrends(); }
 function closeTrends() { TRENDS.open = false; TRENDS.drill = null; renderTrends(); }
 function renderTrends() {
   const host = document.getElementById('trends');
@@ -4099,7 +4168,7 @@ function renderTrends() {
   host.hidden = false; host.textContent = '';
   const tab = TRENDS.tab;
   const body = TRENDS.drill ? trendDrill()
-    : ({ Daily: trendDaily, Weekly: trendWeekly, Monthly: trendMonthly, Calendar: trendCalendar,
+    : ({ Summary: trendSummary, Daily: trendDaily, Weekly: trendWeekly, Monthly: trendMonthly, Calendar: trendCalendar,
         Models: trendModels, Providers: trendProviders, Projects: trendProjects,
         Harnesses: trendSources, Machines: trendMachines }[tab])();
   const footer = h('div', { class: 'tr-nav', style: 'margin-top:14px' });
