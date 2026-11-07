@@ -467,7 +467,7 @@ def _selection_row(args: argparse.Namespace, present: list[str], saved: dict) ->
                 "selection",
                 f"--harness remote → {_n(pulled, 'pulled machine')}{local}"
                 + (f" · {_n(broken, 'summary')} in that directory unreadable" if broken else ""),
-                "re-run `opentab pull HOST` for those machines; the fleet view skips them silently"
+                "re-run `opentab machines pull HOST` for those machines; the fleet view skips them silently"
                 if broken
                 else "",
             )
@@ -475,7 +475,7 @@ def _selection_row(args: argparse.Namespace, present: list[str], saved: dict) ->
             BAD,
             "selection",
             "--harness remote, but nothing has been pulled and this machine has no harness either",
-            "`opentab pull HOST` fetches a machine's summary over SSH",
+            "`opentab machines pull HOST` fetches a machine's summary over SSH",
         )
     if pick != "auto" and pick != "all":
         # A pinned absent harness is BAD because the equivalent TUI invocation exits.
@@ -952,8 +952,32 @@ def file_rows(args: argparse.Namespace, full: bool = False) -> list[Row]:
         )
     else:
         rows.append(
-            Row(INFO, "fleet", "no pulled machine summaries (`opentab pull HOST` fetches one)", "")
+            Row(
+                INFO,
+                "fleet",
+                "no pulled machine summaries (`opentab machines pull HOST` fetches one)",
+                "",
+            )
         )
+
+    try:
+        with open(os.path.join(paths.config_dir(), "remotes.json"), encoding="utf-8") as stream:
+            configured = json.load(stream)
+        if (
+            isinstance(configured, dict)
+            and isinstance(configured.get("machines"), dict)
+            and configured["machines"]
+        ):
+            rows.append(
+                Row(
+                    INFO,
+                    "saved machines",
+                    f"{len(configured['machines'])} saved connections",
+                    "check connectivity with `opentab machines status`",
+                )
+            )
+    except (OSError, ValueError):
+        pass
 
     legacy = _legacy_names()
     if legacy:

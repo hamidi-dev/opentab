@@ -44,7 +44,7 @@ override; relative values are ignored.
 | Cache `~/.cache/opentab/` | `prices.json` | Only on an explicit price refresh |
 | Cache `…/remotes/` | Summaries pulled from other machines | When you pull |
 | Cache `…/conversations/index.sqlite3` | Plaintext conversation text for search | Only when you confirm Build or Update |
-| Where you choose | `opentab-*.csv` (`e`), `opentab web --html FILE`, `opentab export FILE` | Only when you ask |
+| Where you choose | `opentab-*.csv` (`e`), `opentab web --html FILE`, `opentab machines export FILE` | Only when you ask |
 
 `state.json` and `notes.json` each have a `.lock` file beside them while being written.
 
@@ -105,7 +105,8 @@ request is local; OpenTab never checks whether you starred it.
 | You do | OpenTab connects to |
 |--------|---------------------|
 | `--refresh-models`, or `r` in the `P` overlay | models.dev, for list prices ([Refreshing rates](pricing.md#refreshing-rates)) |
-| `opentab pull`, fleet refresh | Your machines over SSH or HTTP(S) ([Multiple machines](machines.md)) |
+| `opentab machines pull`, fleet refresh | Your machines over SSH or HTTP(S) ([Multiple machines](machines.md)) |
+| `opentab machines add` (unless `--no-check`), `machines status` | Explicit SSH version probes or HTTP(S) export checks; no background polling |
 | Resume a remote session | That machine over SSH |
 | Open a remote turn, or request its content via the CLI or MCP | That machine over SSH, for that turn only ([Remote turns](machines.md#read-a-remote-turn)) |
 | Open a GitHub link (What's New, `o` on the star request) | Your browser opens github.com |
@@ -127,7 +128,7 @@ only commands you trust.
 | `y` | A clipboard tool, with the session's user and assistant text (no tools, thinking or attachments). `Ctrl-P` doesn't hide this explicit copy |
 | `K` | `$VISUAL`, `$EDITOR` or `vi` on `keymap.conf` |
 | `d` in Changes | Your `OPENTAB_DIFF_PAGER`, with the patch on stdin. It may keep or forward what it receives |
-| `opentab pull` over SSH | The saved remote export command, including a custom `cmd` |
+| `opentab machines pull` over SSH | The saved remote export command, including a custom `cmd` |
 | Remote turn reads | The remote OpenTab, via the saved `trace_cmd`, the export `cmd`, or `opentab`. Arguments OpenTab adds are always quoted |
 | `opentab web` | Your default browser (not with `--headless`) |
 

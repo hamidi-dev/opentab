@@ -1440,6 +1440,11 @@ def test_cli_help_covers_the_complete_command_tree_at_multiple_widths_without_ac
         "remote",
         "export",
         "forget",
+        "machines",
+        *(
+            "machines " + name
+            for name in ("list", "add", "status", "rename", "remove", "pull", "open", "export")
+        ),
         "mcp",
         "usage",
         "usage summary",
@@ -1544,7 +1549,8 @@ def test_cli_root_help_groups_each_command_once_and_guides_the_default_tui():
     assert len(subparsers) == 1
     text = parser.format_help(full=True)
     names = [name for _, group in COMMAND_GROUPS for name in group]
-    assert len(names) == len(set(names)) and set(names) == set(subparsers[0].choices)
+    assert len(names) == len(set(names))
+    assert set(names) == set(subparsers[0].choices) - {"pull", "remote", "export", "forget"}
     for title, group in COMMAND_GROUPS:
         assert text.count(f"  {title}:\n") == 1
         for name in group:
@@ -2400,6 +2406,11 @@ def test_remote_entry_parses_hosts_urls_and_named_specs():
     assert cli._remote_entry("box") == ("box", {"ssh": "box"})
     assert cli._remote_entry("mo@host.local") == ("host.local", {"ssh": "mo@host.local"})
     assert cli._remote_entry("build=mo@10.0.0.5") == ("build", {"ssh": "mo@10.0.0.5"})
+    assert cli._remote_entry("ssh://mo@host:2222") == ("host", {"ssh": "ssh://mo@host:2222"})
+    assert cli._remote_entry("https://host/usage?token=a=b") == (
+        "host",
+        {"url": "https://host/usage?token=a=b"},
+    )
     name, entry = cli._remote_entry("http://100.64.0.5:8321")
     assert name == "100.64.0.5" and entry == {"url": "http://100.64.0.5:8321"}
 
@@ -3005,7 +3016,7 @@ def test_pull_refuses_a_local_summary_before_saving_it_as_a_machine():
         err = io.StringIO()
         with _remotes_env(cfg), contextlib.redirect_stderr(err):
             cli.pull_command(_parse(["--pull", summary, "--remotes", d]))
-        assert "opentab remote" in err.getvalue()
+        assert "opentab machines open" in err.getvalue()
         assert not os.path.exists(cfg)  # nothing learned, nothing to clean up
 
 
@@ -3074,7 +3085,7 @@ def test_the_pull_refusal_names_the_target_not_the_whole_spec():
         with _remotes_env(cfg), contextlib.redirect_stderr(err):
             cli.pull_command(_parse(["--pull", f"office={summary}"]))
         out = err.getvalue()
-        assert f"opentab remote {summary}" in out and "office=" not in out
+        assert f"opentab machines open {summary}" in out and "office=" not in out
 
 
 def test_a_summary_named_like_a_demo_category_is_not_swallowed_silently():

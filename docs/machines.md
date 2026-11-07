@@ -1,13 +1,16 @@
 # Multiple machines
 
-`opentab pull` fetches usage summaries from your other machines and opens them next
+`opentab machines` manages saved connections and usage summaries from your other machines.
+`opentab machines pull` fetches their summaries and opens them next
 to this machine's history. Each remote only needs `opentab` installed; nothing runs
 in the background and nothing listens on a port.
 
 ```sh
-opentab pull laptop workstation gpu-box   # fetch in parallel, then browse
-opentab pull                              # refresh every saved machine
-opentab remote                            # reopen the last pull without connecting
+opentab machines list                    # saved targets and cached metadata; offline
+opentab machines add user@workstation     # check and save; does not pull
+opentab machines status                  # check all saved machines in parallel
+opentab machines pull                    # refresh every saved machine, then browse
+opentab machines open                    # reopen the last pull without connecting
 ```
 
 ## Pull a machine over SSH
@@ -16,10 +19,10 @@ A target is an SSH host alias (`box`), `user@host`, or `name=user@host` to give 
 a label. Your SSH config handles keys, ports and bastions. A port also works inline:
 
 ```sh
-opentab pull box=ssh://user@host:2222
+opentab machines pull box=ssh://user@host:2222
 ```
 
-Pull runs `opentab export -` on the remote and streams the summary back. Pull uses
+Pull runs `opentab --export -` on the remote (compatible with older versions) and streams the summary back. Pull uses
 SSH batch mode, so set up key-based login first; it never prompts for a password.
 
 A summary contains session titles, project paths, totals, per-model breakdowns and
@@ -32,8 +35,8 @@ with [demo mode](privacy.md#demo-mode).
 If you host an exported summary on your own access-controlled server, pull it by URL:
 
 ```sh
-opentab export usage.json                                   # on the source machine
-opentab pull workstation=https://private-host.example/usage.json
+opentab machines export usage.json                          # on the source machine
+opentab machines pull workstation=https://private-host.example/usage.json
 ```
 
 Pulling the URL again fetches whatever file is hosted there, not a fresh scan of that
@@ -65,10 +68,30 @@ in `~/.cache/opentab/remotes/`. Both follow their XDG overrides. Remove a machin
 its summary with:
 
 ```sh
-opentab forget workstation
+opentab machines rename workstation desktop
+opentab machines remove desktop
 ```
 
-Edit `remotes.json` when OpenTab is not on the remote's non-interactive `PATH`:
+`machines add [NAME=]TARGET` checks SSH in batch mode, then tries the remote's login
+shell and common install paths if OpenTab is not on the non-interactive `PATH`.
+When needed, it saves an absolute export command automatically. It never installs
+anything remotely or fetches a summary. Use `--no-check` to save an offline target.
+Existing names are rejected; choose a different `NAME=` or remove the old entry.
+URL targets must return a valid OpenTab export before they are saved.
+
+`machines list --json` and `machines status [NAME...] --json` emit
+`{"schema_version": 1, "machines": [...]}`. List stays offline; status checks SSH
+versions or fetches hosted exports without saving them. It reports reachability,
+authentication problems, missing OpenTab, remote version and cached-summary age;
+it exits 1 if any selected machine fails. `version_skew` flags versions before
+1.22.0, which cannot serve remote turn content; an unknown version is `null`.
+`last_pull` uses the cached file's modification time, while `exported_at` comes from
+the producer. Copying a cache file can therefore change the apparent pull time.
+
+Rename moves the saved connection and cached file, not the label inside the export.
+Remove exits 1 when none of the named machines existed. Configuration edits are
+locked and atomic; malformed or newer-format configuration is never overwritten.
+You can still edit `remotes.json` yourself when OpenTab is not writing it:
 
 ```json
 {
@@ -76,7 +99,7 @@ Edit `remotes.json` when OpenTab is not on the remote's non-interactive `PATH`:
   "machines": {
     "workstation": {
       "ssh": "user@workstation",
-      "cmd": "/home/user/.local/bin/opentab export --label workstation -"
+      "cmd": "/home/user/.local/bin/opentab --export --label workstation -"
     },
     "archive": {
       "url": "https://private-host.example/usage.json"
@@ -97,7 +120,7 @@ commands you trust.
 
 ### Reading turns with a custom `cmd`
 
-Turn reads reuse `cmd`: OpenTab drops its export part (`export`, `--export -`,
+Turn reads reuse `cmd`: OpenTab drops its export part (`machines export`, `export`, `--export -`,
 `--label`, date ranges) and runs the rest, so the entry above reads turns through
 `/home/user/.local/bin/opentab`. Variables such as `$HOME` still expand. Without
 `cmd`, turn reads run `opentab`.
@@ -129,13 +152,13 @@ SSH. The reader shows the machine and a loading state.
 
 After a failure, close and reopen the turn to retry. If the turn changed on the
 remote since your last pull, the read fails rather than guessing: refresh with `F` or
-`opentab pull`, then reopen it. Refreshing cannot bring back content the harness has
+`opentab machines pull`, then reopen it. Refreshing cannot bring back content the harness has
 deleted.
 
 Remote turns need all of these:
 
 - The summary was pulled into the default `~/.cache/opentab/remotes/` and opened
-  through the fleet view, for example with a bare `opentab remote`.
+  through the fleet view, for example with a bare `opentab machines open`.
 - The machine has a saved SSH connection and a usable turn command (see above).
 - The remote runs an OpenTab recent enough to serve turn content, and its harness
   still has the content.
@@ -151,14 +174,14 @@ OpenTab version; this machine is marked live. Nothing polls in the background.
 
 | Command or key | Effect |
 |----------------|--------|
-| `opentab pull` | Re-fetch every saved machine, in parallel; failures are reported per machine |
-| `opentab pull NAME...` | Re-fetch only those machines |
-| `opentab remote` | Open cached summaries without connecting |
+| `opentab machines pull` | Re-fetch every saved machine, in parallel; failures are reported per machine |
+| `opentab machines pull NAME...` | Re-fetch only those machines |
+| `opentab machines open` | Open cached summaries without connecting |
 | `F` | Same as above; on this machine it reloads local data |
 | Web report | A per-machine refresh button in `opentab web` |
 
 A failed fetch keeps the previous summary; old usage never drops to zero. Check the
-export time when a machine looks stale. Files opened with `opentab remote FILE...`
+export time when a machine looks stale. Files opened with `opentab machines open FILE...`
 can't be re-pulled in place, and demo mode disables in-app refresh.
 
 ## Move an export yourself
@@ -166,30 +189,30 @@ can't be re-pulled in place, and demo mode disables in-app refresh.
 When this machine can't reach the other one, export there:
 
 ```sh
-opentab export --label workstation usage.json
+opentab machines export --label workstation usage.json
 ```
 
 Copy `usage.json` over however you like, then open it here:
 
 ```sh
-opentab remote usage.json
+opentab machines open usage.json
 ```
 
 It opens merged with this machine's history; there is no import step.
-`opentab remote` accepts several files or a directory. To keep a file for later, put it
-in `~/.cache/opentab/remotes/`, and a bare `opentab remote` picks it up.
+`opentab machines open` accepts several files or a directory. To keep a file for later, put it
+in `~/.cache/opentab/remotes/`, and a bare `opentab machines open` picks it up.
 
 With SSH available, you can also capture an export directly:
 
 ```sh
-ssh box opentab export - > box.json
-opentab remote box.json
+ssh box opentab --export - > box.json
+opentab machines open box.json
 ```
 
 ## Good to know
 
 - A machine's name travels inside the export, not in the filename. It defaults to
-  the hostname; use `opentab export --label NAME` when two machines share one.
+  the hostname; use `opentab machines export --label NAME` when two machines share one.
 - The `name` in `name=target` names the saved connection, not the label inside the
   export.
 - `--demo` changes how the fleet view looks after a pull. It does not skip the
@@ -202,3 +225,6 @@ opentab remote box.json
   turns, 10,000 events). Errors never echo the remote's output.
 
 Changing the export format? See [Portable machine summaries](architecture.md#portable-machine-summaries).
+
+Old commands: `pull`, `remote`, `export` and `forget` remain silent, deprecated aliases
+for `machines pull`, `machines open`, `machines export` and `machines remove`; legacy flags also work.

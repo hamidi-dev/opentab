@@ -500,7 +500,7 @@ def test_a_summary_passed_as_a_bare_path_is_named_rather_than_called_ambiguous()
                 _parse([summary])
         except SystemExit:
             pass
-        assert "opentab remote" in err.getvalue()
+        assert "opentab machines open" in err.getvalue()
 
 
 def test_the_empty_fleet_line_stands_down_right_after_a_pull():

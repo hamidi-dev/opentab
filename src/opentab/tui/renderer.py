@@ -3087,7 +3087,7 @@ class Renderer:
             ]
         elif not self.machines_present:
             # Detail lines clip rather than wrap, so keep this discovery hint short.
-            lines += ["", "Only this machine. `opentab --pull HOST` adds another."]
+            lines += ["", "Only this machine. `opentab machines pull HOST` adds another."]
         if machine.live:
             # Pulled summaries contain no per-model rows to decompose.
             lines.append("")

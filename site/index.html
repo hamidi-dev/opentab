@@ -696,15 +696,15 @@ esac</code></pre>
     <div class="setup-panel" id="setup-panel-machines" role="tabpanel" aria-labelledby="setup-machines" tabindex="0">
       <div class="setup-copy">
         <h3>Laptop, workstation, server: one tab.</h3>
-        <p><code>opentab pull</code> fetches usage summaries over SSH and opens them beside this machine’s history. Each remote only needs <code>opentab</code> installed. Nothing runs in the background, nothing listens on a port.</p>
+        <p><code>opentab machines pull</code> fetches usage summaries over SSH and opens them beside this machine’s history. Each remote only needs <code>opentab</code> installed. Nothing runs in the background, nothing listens on a port.</p>
         <p>Individual turns are fetched when you open them, and <kbd>L</kbd> resumes a session on its own machine over SSH.</p>
         <a href="docs/#/machines">Connect your machines →</a>
       </div>
       <div class="snippet">
         <div class="snippet-bar"><span>shell</span><button class="copy" type="button" aria-label="Copy machine commands">copy</button></div>
-        <pre><code>opentab pull laptop workstation   <span class="c"># SSH host aliases</span>
-opentab pull                      <span class="c"># refresh every saved machine</span>
-opentab remote                    <span class="c"># reopen the last pull offline</span></code></pre>
+        <pre><code>opentab machines pull laptop workstation <span class="c"># SSH host aliases</span>
+opentab machines pull                    <span class="c"># refresh every saved machine</span>
+opentab machines open                    <span class="c"># reopen the last pull offline</span></code></pre>
       </div>
     </div>
 

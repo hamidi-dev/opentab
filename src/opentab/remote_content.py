@@ -202,6 +202,9 @@ def _derived_prefix(command) -> str:
         return ""
     words: list[str] = []
     for index, token in enumerate(tokens):
+        if token == "machines" and tokens[index + 1 : index + 2] == ["export"]:
+            tokens = tokens[index + 1 :]
+            break
         if token.startswith("-") or token == _EXPORT_SUBCOMMAND:
             tokens = tokens[index:]
             break

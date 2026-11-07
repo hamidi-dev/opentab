@@ -4914,7 +4914,7 @@ class App:
             self.reload()
             return
         if self._refresh_backend is None:
-            self.notify("refresh needs a pulled fleet (opentab pull)", "error")
+            self.notify("refresh needs a pulled fleet (opentab machines pull)", "error")
             return
         keys = self._refresh_keys([name] if name else None)
         if not keys:
