@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import opentab as ot
 
-from tests._support import FakeScreen, _model_row, fleet_app, screen_text, workflow
+from tests._support import AttrScreen, FakeScreen, _model_row, fleet_app, screen_text, workflow
 
 
 class _FrameScreen(FakeScreen):
@@ -401,3 +401,78 @@ def test_trends_whole_frames_paint_every_chart_and_ranked_drill():
                 assert "session" in screen_text(screen).lower()
                 app.handle_key(None, 27)
                 assert app.trend_drill is None
+
+
+def _scrim_curses(pairs, inits):
+    curses = ot.curses
+    return (
+        patch.object(curses, "color_pair", lambda n: n << 8, create=True),
+        patch.object(curses, "pair_number", lambda a: (a & curses.A_COLOR) >> 8, create=True),
+        patch.object(curses, "pair_content", lambda n: pairs[n], create=True),
+        patch.object(curses, "init_pair", lambda *a: inits.append(a), create=True),
+        patch.object(curses, "COLOR_PAIRS", 256, create=True),
+    )
+
+
+def test_backdrop_writes_fade_known_colours_and_dim_the_rest():
+    # Dimming happens as cells are written: a box glyph keeps its own pair (reading
+    # it back with inch() once turned U+2502 into pair 0x25 and painted it purple).
+    curses = ot.curses
+    themes = ot.presentation.themes
+    app = _frame_app()
+    renderer = app.renderer
+    app.colors_ok, app.has256 = True, True
+    renderer._themed_bg, renderer._can_change = True, False
+    bg = app.theme["roles"]["bg"]
+    renderer._index_hex = {16: bg, 17: "#ffffff", 18: "#c0caf5"}
+    renderer._reset_scrim()
+    base = renderer._BASE_PAIR
+    pairs = {1: (17, 16), 2: (200, 16), base: (18, 16)}
+    inits = []
+    screen = AttrScreen(3, 10)
+    patches = _scrim_curses(pairs, inits)
+    for p in patches:
+        p.start()
+    try:
+        renderer._begin_scrim(True)
+        renderer.write(screen, 0, 0, "│ab", (1 << 8) | curses.A_BOLD)
+        renderer.write(screen, 1, 0, "cd", 2 << 8)  # an index nobody recorded
+        renderer.write(screen, 2, 0, "Open")  # a plain label takes the bkgd pair
+        renderer._begin_scrim(False)
+        renderer.write(screen, 2, 5, "pop", 1 << 8)  # the popup itself
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    first = renderer._SCRIM_PAIR_BASE
+    assert {screen.attrs[0, x] for x in range(3)} == {(first << 8) | curses.A_BOLD}
+    faded = themes.nearest_256(themes.mix("#ffffff", bg, 0.5))
+    assert (first, faded, themes.nearest_256(bg)) in inits
+    assert screen.attrs[1, 0] == (2 << 8) | curses.A_DIM
+    assert screen.attrs[2, 0] == (first + 1) << 8
+    assert screen.attrs[2, 5] == 1 << 8
+    assert screen.cells[0, 0] == "│"
+
+
+def test_backdrop_without_colours_paints_dim():
+    app = _frame_app()
+    app.colors_ok = False
+    screen = AttrScreen(2, 4)
+    app.renderer._begin_scrim(True)
+    app.renderer.write(screen, 0, 0, "hi")
+    app.renderer._begin_scrim(False)
+    assert set(screen.attrs.values()) == {ot.curses.A_DIM}
+
+
+def test_popups_dim_the_view_but_the_theme_picker_does_not():
+    app = _frame_app()
+    renderer = app.renderer
+    assert not renderer.backdrop_dims()
+    app.star_prompt = True
+    assert renderer.backdrop_dims()
+    app.star_prompt = False
+    app.theme_menu = True  # the view behind it is the live preview
+    assert not renderer.backdrop_dims()
+    app.theme_menu = False
+    app.whats_new = True
+    assert renderer.backdrop_dims()

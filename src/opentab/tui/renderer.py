@@ -24,8 +24,10 @@ from opentab.annotations import MATCH_ALL
 from opentab.presentation.themes import (
     STATE_COLOR_HEX,
     button_surfaces,
+    hex_rgb,
     hex_rgb1000,
     ink_on,
+    mix,
     nearest_8,
     nearest_256,
     ramp,
@@ -718,7 +720,7 @@ class Renderer:
             for run in layout.runs:
                 glyph = thumb_glyph if run.style == "thumb" else track_glyph
                 attr = thumb_attr if run.style == "thumb" else track_attr
-                stdscr.vline(sy + run.y, sx, glyph, run.length, attr)
+                stdscr.vline(sy + run.y, sx, glyph, run.length, self._ink(attr))
         except curses.error:
             pass
 
@@ -870,6 +872,7 @@ class Renderer:
         self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
         self._tool_tree_runs = {}
         self.oy = self.ox = 0  # screen coordinates until the app frame is up
+        self._dimmed = False
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
             self.write(
@@ -879,14 +882,18 @@ class Renderer:
             stdscr.refresh()
             return
 
+        # A popup stands on a dimmed view: everything up to the popup paints faded.
+        searching = keymap.in_conversation_search(self.app)
+        self._begin_scrim(self.launch_menu is not None if searching else self.backdrop_dims())
         # Paint the outer frame in screen coordinates, then switch to its inner viewport.
         self.frame_app(stdscr, height, width)
         self.oy = self.ox = 1
         height -= 2
         width -= 2
 
-        if keymap.in_conversation_search(self.app):
+        if searching:
             self.draw_conversation_search(stdscr, height, width)
+            self._begin_scrim(False)
             if self.launch_menu is not None:
                 self.text_cursor = None
                 self.draw_launch_menu(stdscr, height, width)
@@ -964,6 +971,7 @@ class Renderer:
 
         # Reader actions depend on the output sections just laid out in the body.
         self.draw_footer(stdscr, height, width)
+        self._begin_scrim(False)
         if self.help and self.app.work_workspace is None:
             self.draw_help(stdscr, top, bottom, width)
         if self.toast_history:
@@ -990,7 +998,10 @@ class Renderer:
         elif self.harness_menu:
             self.draw_harness_menu(stdscr, height, width)
         elif self.app.work_workspace is not None:
+            # A popup over Work fades Work too.
+            self._begin_scrim(bool(self.help or self.whats_new or self.launch_menu is not None))
             self.draw_work(stdscr, height, width)
+            self._begin_scrim(False)
             if self.help:
                 self.draw_help(stdscr, top, bottom, width)
             if self.whats_new:
@@ -7367,6 +7378,20 @@ class Renderer:
     _STATE_COLOR_BASE = 66  # work-state keyword colours, after the button slots
     _STATE_PAIR = 83  # one pair per STATE_COLOR_HEX name, after the button pairs
     _state_colors_ok = False
+    # The scrim behind a popup: dimmed copies of whatever colours are on screen. Slots
+    # 72..119 (slot 119 is the last whose bold twin still fits in 256 colours); pairs
+    # 128..255, because an attribute's colour field holds pair numbers below 256 only.
+    _SCRIM_COLOR_BASE = 72
+    _SCRIM_COLOR_SLOTS = 48
+    _SCRIM_PAIR_BASE = 128
+    _SCRIM_PAIRS = 128
+    _SCRIM_WEIGHT = 0.5  # how far each colour moves toward the theme background
+    _index_hex: dict = {}  # palette index -> the hex it was loaded with (per theme)
+    _scrim_colors: dict = {}
+    _scrim_pairs: dict = {}
+    _scrim_next_color = 0
+    _scrim_next_pair = 0
+    _dimmed = False  # painting a popup's backdrop: every write goes through _scrim_attr
     _work_lines: dict = {}  # framed session-table line -> owning session (per build)
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
     # Did the five token-type pairs take? False on a pair-starved terminal, where the
@@ -7410,6 +7435,7 @@ class Renderer:
             curses.init_color(idx + 8, *rgb)
         except (curses.error, ValueError):
             pass  # no twin: bold may shift hue, but the un-bolded colour is still right
+        self._index_hex[idx] = hexcolor
         return idx
 
     def _color_index(self, hexcolor: str) -> int:
@@ -7441,6 +7467,7 @@ class Renderer:
             idx = nearest_256(hexcolor, frozenset(self._fallback_used))
             self._fallback_used.add(idx)
         cache[hexcolor] = idx
+        self._index_hex[idx] = hexcolor
         return idx
 
     def init_theme_colors(self) -> None:
@@ -7456,6 +7483,8 @@ class Renderer:
         # *means*; ncurses still erases to the terminal default, which is why it stayed
         # dark -- so we colour every cell instead.)
         self._theme_color_cache = {}
+        self._index_hex = {}
+        self._reset_scrim()
         self._next_color = 0  # slot NUMBER, not a palette index -- see _slot()
         self._fallback_used = set()  # indices claimed on the nearest-256 path this theme
         self._themed_bg = False
@@ -7627,6 +7656,110 @@ class Renderer:
         except (curses.error, ValueError):
             return False
 
+    def _reset_scrim(self) -> None:
+        self._scrim_colors = {}
+        self._scrim_pairs = {}
+        self._scrim_next_color = 0
+        self._scrim_next_pair = 0
+
+    def backdrop_dims(self) -> bool:
+        # Every popup sits on a dimmed view, except the theme picker: there the view
+        # behind it IS the preview, so fading it would show the wrong colours.
+        app, ws = self.app, self.app.work_workspace
+        return bool(
+            self.toast_history
+            or (ws is None and (self.help or self.whats_new))
+            or self.startup_warning is not None
+            or self.price_prompt
+            or self.star_prompt
+            or app.range_picker is not None
+            or self.demo_menu
+            or self.source_menu
+            or self.machine_menu
+            or self.harness_menu
+            or ws is not None
+            or self.tag_menu
+            or self.whatif_menu
+            or self.sort_menu
+            or self.launch_menu is not None
+            or app._trace_call_menu is not None
+        )
+
+    def _scrim_color(self, hexcolor: str) -> int:
+        cache = self._scrim_colors
+        if hexcolor in cache:
+            return cache[hexcolor]
+        if not self._can_change:
+            idx = nearest_256(hexcolor)  # the stock palette is untouched on this path
+            self._index_hex.setdefault(idx, hexcolor)
+        elif self._scrim_next_color < self._SCRIM_COLOR_SLOTS:
+            slot = self._SCRIM_COLOR_BASE + self._scrim_next_color
+            self._scrim_next_color += 1
+            idx = self._write_color(slot, hexcolor)
+            if idx is None:
+                idx = nearest_256(hexcolor)
+        else:
+            # Out of slots: borrow the closest dimmed colour already loaded.
+            rgb = hex_rgb(hexcolor)
+            near = min(cache, key=lambda h: sum((a - b) ** 2 for a, b in zip(hex_rgb(h), rgb)))
+            idx = cache[near]
+        cache[hexcolor] = idx
+        return idx
+
+    def _scrim_attr(self, attrs: int) -> int:
+        # The dimmed twin of one cell attribute: same bold/underline/reverse, its pair
+        # swapped for one whose colours sit halfway to the theme background. A pair whose
+        # colours we can't name (terminal default, an unknown index) just gets A_DIM.
+        fallback = attrs | curses.A_DIM
+        pair = curses.pair_number(attrs & curses.A_COLOR) or self._BASE_PAIR  # bkgd's pair
+        try:
+            fg, bg = curses.pair_content(pair)
+        except (curses.error, ValueError):
+            return fallback
+        fg_hex, bg_hex = self._index_hex.get(fg), self._index_hex.get(bg)
+        if fg_hex is None or bg_hex is None:
+            return fallback
+        key = (fg_hex, bg_hex)
+        dim = self._scrim_pairs.get(key)
+        if dim is None:
+            if self._scrim_next_pair >= self._SCRIM_PAIRS:
+                return fallback
+            base = self.app.theme["roles"]["bg"]
+            weight = self._SCRIM_WEIGHT
+            dim_fg = self._scrim_color(mix(fg_hex, base, weight))
+            dim_bg = self._scrim_color(mix(bg_hex, base, weight))
+            dim = self._SCRIM_PAIR_BASE + self._scrim_next_pair
+            self._scrim_next_pair += 1
+            if not self._set_pair(dim, dim_fg, dim_bg):
+                return fallback
+            self._scrim_pairs[key] = dim
+        return (attrs & ~curses.A_COLOR) | curses.color_pair(dim)
+
+    def _begin_scrim(self, on: bool) -> None:
+        # Paint what follows dimmed (the view behind a popup) or as-is (the popup). The
+        # dimming happens as cells are written: reading them back with inch() can't work,
+        # since it ORs a non-ASCII glyph's codepoint into the attribute bits (U+2502 reads
+        # as colour pair 0x25).
+        if (
+            on
+            and self._scrim_colorful()
+            and (
+                self._scrim_next_color > self._SCRIM_COLOR_SLOTS * 3 // 4
+                or self._scrim_next_pair > self._SCRIM_PAIRS * 3 // 4
+            )
+        ):
+            self._reset_scrim()  # heat ramps drift; start the cache over between frames
+        self._dimmed = on
+
+    def _scrim_colorful(self) -> bool:
+        return bool(self.colors_ok and self.has256 and getattr(self, "_themed_bg", False))
+
+    def _ink(self, attr: int) -> int:
+        # The attribute to paint with: dimmed while a popup's backdrop is being drawn.
+        if not self._dimmed:
+            return attr
+        return self._scrim_attr(attr) if self._scrim_colorful() else attr | curses.A_DIM
+
     def apply_background(self, stdscr) -> None:
         # Point the window background at the theme's base pair (ink on bg) so erase()
         # fills every cell with the theme bg and A_NORMAL text reads as theme ink. Called
@@ -7709,7 +7842,9 @@ class Renderer:
             written = self._write_color(slot, hexcolor)
             if written is not None:
                 return written
-        return nearest_256(hexcolor)
+        idx = nearest_256(hexcolor)
+        self._index_hex[idx] = hexcolor
+        return idx
 
     def _sync_heat_palette(self) -> None:
         # Re-init the calendar heat pairs (8..) for the current granularity so +/-
@@ -8134,6 +8269,7 @@ class Renderer:
     ) -> None:
         y += self.oy
         x += self.ox
+        attr = self._ink(attr)
         stdscr.addch(y, x, ul, attr)
         stdscr.addch(y, x + w - 1, ur, attr)
         stdscr.addch(y + h - 1, x, ll, attr)
@@ -8169,7 +8305,10 @@ class Renderer:
         # ACS_* exist only after initscr(), and a narrow build may not carry them at
         # all -- fall back to ASCII rather than raising mid-paint (as _paint_scrollbar does).
         glyph = getattr(curses, "ACS_HLINE", "-")
-        stdscr.hline(y + self.oy, x + self.ox, glyph, max(0, w))
+        if self._dimmed:
+            stdscr.hline(y + self.oy, x + self.ox, glyph, max(0, w), self._ink(0))
+        else:
+            stdscr.hline(y + self.oy, x + self.ox, glyph, max(0, w))
 
     def write(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
         height, width = stdscr.getmaxyx()
@@ -8182,7 +8321,7 @@ class Renderer:
             # overflows the row and wraps. The clip is against the *screen* edge, so
             # inside the app frame it stops one cell short of the right border --
             # which is the cell the border itself occupies.
-            stdscr.addstr(y, x, clip(text, max(0, width - x - 1)), attr)
+            stdscr.addstr(y, x, clip(text, max(0, width - x - 1)), self._ink(attr))
         except curses.error:
             pass
 
