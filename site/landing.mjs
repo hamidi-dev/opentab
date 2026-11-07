@@ -1,6 +1,31 @@
 // Lower-page interactions deliberately do not depend on the report download.
+// Tab sets: the session views and the setup recipes share one keyboard model.
+function tabset(root) {
+  const tabs = [...root.querySelectorAll('[role="tab"]')];
+  function select(tab) {
+    tabs.forEach(item => {
+      const selected = item === tab;
+      item.setAttribute("aria-selected", String(selected));
+      item.tabIndex = selected ? 0 : -1;
+      document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
+    });
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => select(tab));
+    tab.addEventListener("keydown", event => {
+      let next;
+      if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      else if (["ArrowRight", "ArrowDown"].includes(event.key)) next = (index + 1) % tabs.length;
+      else if (["ArrowLeft", "ArrowUp"].includes(event.key)) next = (index + tabs.length - 1) % tabs.length;
+      else return;
+      event.preventDefault();
+      select(tabs[next]);
+      tabs[next].focus();
+    });
+  });
+}
 const views = document.querySelector("[data-feature-views]");
-const tabs = [...views.querySelectorAll('[role="tab"]')];
 const tablist = views.querySelector('[role="tablist"]');
 const narrow = matchMedia("(max-width: 760px)");
 function orientation() {
@@ -8,28 +33,8 @@ function orientation() {
 }
 orientation();
 narrow.addEventListener("change", orientation);
-function selectView(tab) {
-  tabs.forEach(item => {
-    const selected = item === tab;
-    item.setAttribute("aria-selected", String(selected));
-    item.tabIndex = selected ? 0 : -1;
-    document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
-  });
-}
-tabs.forEach((tab, index) => {
-  tab.addEventListener("click", () => selectView(tab));
-  tab.addEventListener("keydown", event => {
-    let next;
-    if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = tabs.length - 1;
-    else if (["ArrowRight", "ArrowDown"].includes(event.key)) next = (index + 1) % tabs.length;
-    else if (["ArrowLeft", "ArrowUp"].includes(event.key)) next = (index + tabs.length - 1) % tabs.length;
-    else return;
-    event.preventDefault();
-    selectView(tabs[next]);
-    tabs[next].focus();
-  });
-});
+tabset(views);
+document.querySelectorAll("[data-tabset]").forEach(tabset);
 
 const colors = new Set(["cache-read", "output", "cache-write", "input", "reasoning"]);
 const count = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });

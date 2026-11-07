@@ -338,21 +338,46 @@ h2 {
 
 .tool-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; padding: 0; margin: 28px 0 0; list-style: none; }
 .tool-list li { padding: 16px 18px; background: var(--ink-2); font-size: 16px; }
-.workflow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 28px; }
-.workflow article { min-width: 0; padding: 26px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r); }
-.workflow h3 { margin: 0; font-family: var(--display); font-size: 23px; }
-.workflow p { color: var(--dim); margin: 12px 0 18px; }
-.workflow .command { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
-.workflow .command code { min-width: 0; flex: 1; overflow-wrap: anywhere; color: var(--lav); font-size: 12px; }
-.workflow .copy { flex-shrink: 0; }
+/* Recipes: one panel per setup. */
+.setup-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
+.setup-tabs button {
+  appearance: none; cursor: pointer; padding: 8px 15px; border-radius: 99px;
+  border: 1px solid var(--line); background: none; color: var(--dim); font: 13px var(--mono);
+}
+.setup-tabs button:hover { color: var(--text); }
+.setup-tabs button[aria-selected="true"] { color: var(--text); background: var(--ink-3); border-color: var(--frame); }
+.setup-panel {
+  display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 32px; align-items: start;
+  margin-top: 18px; padding: 30px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r);
+  animation: story-in .25s ease-out;
+}
+.setup-panel[hidden] { display: none; }
+.setup-copy h3 { margin: 0; font-family: var(--display); font-size: 25px; line-height: 1.2; }
+.setup-copy p { color: var(--dim); margin: 12px 0 0; }
+.setup-copy p code { color: var(--text); font-size: .88em; white-space: nowrap; }
+.setup-copy em { color: var(--text); font-style: normal; }
+.setup-copy > a { display: inline-block; margin-top: 16px; }
+.setup-copy .snippet { margin-top: 20px; }
+.snippet { min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--ink-3); overflow: hidden; }
+.snippet-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px 7px 14px; border-bottom: 1px solid var(--line); font: 12px var(--mono); color: var(--dim); }
+.snippet pre { margin: 0; padding: 15px 16px; overflow-x: auto; font: 13px/1.65 var(--mono); color: var(--text); }
+.snippet .c { color: var(--dim); }
+.setup-visual { margin: 0; }
+.setup-visual img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; }
+.setup-note { margin: 22px 0 0; color: var(--dim); font-size: 15px; max-width: 80ch; }
+.setup-note strong { color: var(--text); }
+.setup-keys { display: grid; gap: 10px; margin: 0; }
+.setup-keys div { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; align-items: baseline; padding: 14px 16px; background: var(--ink-3); border: 1px solid var(--line); border-radius: 10px; }
+.setup-keys dt kbd { font-size: 15px; }
+.setup-keys dd { margin: 0; color: var(--dim); font-size: 15px; }
 @media (max-width: 760px) {
   section.block { padding-top: 56px; }
+  .setup-panel { grid-template-columns: minmax(0, 1fr); padding: 22px; gap: 22px; }
+  .setup-tabs button { padding: 7px 12px; font-size: 12px; }
   .feature-views { grid-template-columns: minmax(0, 1fr); gap: 18px; }
   .feature-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .feature-tabs button { padding: 12px 7px; text-align: center; font-size: 14px; }
   .tool-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workflow { grid-template-columns: minmax(0, 1fr); }
-  .workflow article { padding: 22px; }
 }
 
 /* closing */
@@ -384,6 +409,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
     <div class="links">
       <a href="docs/">Docs</a>
       <a class="opt" href="#tools">Tools</a>
+      <a class="opt" href="#setups">Setups</a>
       <a class="opt" href="docs/#/changelog">Changelog</a>
       <a href="https://github.com/hamidi-dev/opentab">GitHub</a>
       <button class="theme-btn" type="button" data-theme-toggle aria-label="Switch light and dark">◐</button>
@@ -517,14 +543,152 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
   <p class="sub"><a href="docs/#/sources">See which details each harness provides →</a></p>
 </section>
 
-<section class="block wrap">
-  <h2>Fits your workflow.</h2>
-  <div class="workflow">
-    <article><h3>Terminal &amp; browser</h3><p>Investigate where you work: keyboard-driven in the terminal, or in a browser served on localhost.</p><div class="command"><code>opentab</code><button class="copy" type="button" aria-label="Copy terminal command">copy</button></div><div class="command"><code>opentab web</code><button class="copy" type="button" aria-label="Copy browser command">copy</button></div></article>
-    <article><h3>Across machines</h3><p>Bring your laptop and workstation into one view over SSH. Pull usage summaries; fetch individual remote turns when you open them. No background agent needed.</p><div class="command"><code>opentab pull laptop workstation</code><button class="copy" type="button" aria-label="Copy machine pull command">copy</button></div><a href="docs/#/machines">Connect your machines →</a></article>
-    <article><h3>Share a report</h3><p>Export a self-contained HTML report to open offline or share. Optional <code>--demo</code> scrambling lets you disguise selected fields; dates and the shape of the data stay real.</p><div class="command"><code>opentab --html report.html</code><button class="copy" type="button" aria-label="Copy report export command">copy</button></div><a href="docs/#/privacy">What an export contains →</a></article>
-    <article><h3>Local &amp; read-only</h3><p>No account. No telemetry. Your tools’ databases and transcripts stay unchanged. OpenTab stores its own notes, preferences and caches separately.</p><a href="docs/#/privacy">Read the privacy boundaries →</a></article>
+<section class="block wrap" id="setups">
+  <p class="kicker">Recipes</p>
+  <h2>Pick your setup.</h2>
+  <p class="sub">A few lines to wire OpenTab into the tools you already live in.</p>
+  <div class="setups" data-tabset>
+    <div class="setup-tabs" role="tablist" aria-label="Setups">
+      <button id="setup-herdr" type="button" role="tab" aria-selected="true" aria-controls="setup-panel-herdr" tabindex="0">Herdr</button>
+      <button id="setup-tmux" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-tmux" tabindex="-1">tmux</button>
+      <button id="setup-other" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-other" tabindex="-1">Zellij &amp; co</button>
+      <button id="setup-mcp" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-mcp" tabindex="-1">MCP</button>
+      <button id="setup-plan" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-plan" tabindex="-1">Subscriptions</button>
+      <button id="setup-machines" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-machines" tabindex="-1">Machines</button>
+      <button id="setup-reports" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-reports" tabindex="-1">Reports</button>
+      <button id="setup-scripts" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-scripts" tabindex="-1">Scripts</button>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-herdr" role="tabpanel" aria-labelledby="setup-herdr" tabindex="0">
+      <div class="setup-copy">
+        <h3>Prices in the Herdr sidebar.</h3>
+        <p>The <a href="https://github.com/hamidi-dev/herdr-opentab">herdr-opentab</a> plugin puts each running agent’s cost beside it, subagents included, plus how long it has been working or waiting. It updates itself as the session runs.</p>
+        <p>Inside Herdr, <kbd>L</kbd> in OpenTab reopens any session as a new Herdr tab or split.</p>
+        <div class="snippet">
+          <div class="snippet-bar"><span>shell</span><button class="copy" type="button" aria-label="Copy Herdr plugin setup">copy</button></div>
+          <pre><code>herdr plugin install hamidi-dev/herdr-opentab
+herdr plugin action invoke opentab.setup
+herdr server reload-config</code></pre>
+        </div>
+      </div>
+      <figure class="setup-visual"><img src="media/herdr-sidebar.png" loading="lazy" width="1190" height="694" alt="The Herdr sidebar with a price beside every agent; amounts synthetic"></figure>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-tmux" role="tabpanel" aria-labelledby="setup-tmux" tabindex="0" hidden>
+      <div class="setup-copy">
+        <h3>Cost in the status bar, the session one key away.</h3>
+        <p><code>opentab cost</code> prints the latest session’s cost for the pane’s project, subagents included, fast enough to poll. <code>--goto</code> opens that same session for inspection.</p>
+        <p>From there, <kbd>L</kbd> resumes any session in a new tmux window, a split or a popup.</p>
+        <a href="docs/#/sessions">Resuming sessions →</a>
+      </div>
+      <div class="snippet">
+        <div class="snippet-bar"><span>~/.tmux.conf</span><button class="copy" type="button" aria-label="Copy tmux configuration">copy</button></div>
+        <pre><code><span class="c"># this project's latest session cost, refreshed every 5 s</span>
+set -g status-interval 5
+set -g status-right '#(opentab cost "#{pane_current_path}") %H:%M'
+
+<span class="c"># prefix + o: open that session in a popup</span>
+bind o display-popup -E -w 90% -h 90% \
+  -d '#{pane_current_path}' 'opentab --goto'</code></pre>
+      </div>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-other" role="tabpanel" aria-labelledby="setup-other" tabindex="0" hidden>
+      <div class="setup-copy">
+        <h3>Zellij, WezTerm, kitty or anything with a CLI.</h3>
+        <p>OpenTab drives tmux and Herdr on its own. For everything else, drop an executable at <code>~/.config/opentab/launcher</code> and every <kbd>L</kbd> launch goes through it: a window, a split or a popup, with the directory and the resume command.</p>
+        <a href="docs/#/configuration#custom-launchers">Custom launchers →</a>
+      </div>
+      <div class="snippet">
+        <div class="snippet-bar"><span>~/.config/opentab/launcher</span><button class="copy" type="button" aria-label="Copy launcher script">copy</button></div>
+        <pre><code>#!/bin/sh
+<span class="c"># kind: window | hsplit | vsplit | popup</span>
+kind=$1 dir=$2 cmd=$3
+case $kind in
+  window) exec zellij action new-tab --cwd "$dir" -- sh -c "$cmd" ;;
+  popup)  exec zellij run --floating --cwd "$dir" -- sh -c "$cmd" ;;
+  *)      exec zellij run --cwd "$dir" -- sh -c "$cmd" ;;
+esac</code></pre>
+      </div>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-mcp" role="tabpanel" aria-labelledby="setup-mcp" tabindex="0" hidden>
+      <div class="setup-copy">
+        <h3>Let your agent ask about its own history.</h3>
+        <p><code>opentab mcp</code> answers usage questions over stdio, with no network port: <em>which project cost the most this month? Why was yesterday’s session so expensive?</em></p>
+        <p>Add <code>--allow-raw-content</code> and opt in to the search index, and it can search past conversations across your tools: <em>what did we decide about the cache last week?</em> The index stores conversation text in plaintext on your machine.</p>
+        <a href="docs/#/programmatic#mcp-server">MCP server →</a> &nbsp; <a href="docs/#/conversation-search">Conversation search →</a>
+      </div>
+      <div class="snippet">
+        <div class="snippet-bar"><span>MCP client config</span><button class="copy" type="button" aria-label="Copy MCP configuration">copy</button></div>
+        <pre><code>{
+  "mcpServers": {
+    "opentab": {
+      "command": "opentab",
+      "args": ["mcp"]
+    }
+  }
+}</code></pre>
+      </div>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-plan" role="tabpanel" aria-labelledby="setup-plan" tabindex="0" hidden>
+      <div class="setup-copy">
+        <h3>Your plan says $0. What did the work use?</h3>
+        <p>Subscription usage usually records no cost. OpenTab prices those tokens at API list rates, marked as estimates, so you can set a month of usage against what you pay for the plan.</p>
+        <a href="docs/#/pricing">How the money works →</a>
+      </div>
+      <dl class="setup-keys">
+        <div><dt><kbd>$</kbd></dt><dd>Switch between API-equivalent estimates and recorded spend.</dd></div>
+        <div><dt><kbd>w</kbd></dt><dd>Price a session’s exact tokens at another model’s rates. Usage stays fixed; it predicts nothing about quality.</dd></div>
+        <div><dt><kbd>P</kbd></dt><dd>Compare model and provider rates on your own token mix, cache included.</dd></div>
+      </dl>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-machines" role="tabpanel" aria-labelledby="setup-machines" tabindex="0" hidden>
+      <div class="setup-copy">
+        <h3>Laptop, workstation, server: one tab.</h3>
+        <p><code>opentab pull</code> fetches usage summaries over SSH and opens them beside this machine’s history. Each remote only needs <code>opentab</code> installed. Nothing runs in the background, nothing listens on a port.</p>
+        <p>Individual turns are fetched when you open them, and <kbd>L</kbd> resumes a session on its own machine over SSH.</p>
+        <a href="docs/#/machines">Connect your machines →</a>
+      </div>
+      <div class="snippet">
+        <div class="snippet-bar"><span>shell</span><button class="copy" type="button" aria-label="Copy machine commands">copy</button></div>
+        <pre><code>opentab pull laptop workstation   <span class="c"># SSH host aliases</span>
+opentab pull                      <span class="c"># refresh every saved machine</span>
+opentab remote                    <span class="c"># reopen the last pull offline</span></code></pre>
+      </div>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-reports" role="tabpanel" aria-labelledby="setup-reports" tabindex="0" hidden>
+      <div class="setup-copy">
+        <h3>One file to send, nothing to install.</h3>
+        <p>Export a self-contained HTML report that opens offline, with the same views as the browser app. Links to a month, a day or a session open exactly the part you want to show.</p>
+        <p>Optional <code>--demo</code> scrambling disguises selected fields; dates and the shape of the data stay real. Personal notes stay out of every report.</p>
+        <a href="docs/#/privacy">What an export contains →</a>
+      </div>
+      <div class="snippet">
+        <div class="snippet-bar"><span>shell</span><button class="copy" type="button" aria-label="Copy report commands">copy</button></div>
+        <pre><code>opentab --html report.html         <span class="c"># the whole history</span>
+opentab --demo --html demo.html    <span class="c"># scrambled for sharing</span></code></pre>
+      </div>
+    </div>
+
+    <div class="setup-panel" id="setup-panel-scripts" role="tabpanel" aria-labelledby="setup-scripts" tabindex="0" hidden>
+      <div class="setup-copy">
+        <h3>JSON for scripts, one line for status bars.</h3>
+        <p>Every command prints one versioned JSON document. Session keys name the machine and tool, so they never collide. Feed <code>opentab cost</code> to sketchybar, waybar or your prompt; <kbd>e</kbd> in the Sessions list exports CSV.</p>
+        <a href="docs/#/programmatic">Programmatic access →</a>
+      </div>
+      <div class="snippet">
+        <div class="snippet-bar"><span>shell</span><button class="copy" type="button" aria-label="Copy script examples">copy</button></div>
+        <pre><code>opentab usage summary --range 30d --group-by project --pretty
+opentab sessions list --range 7d --from-harness claude --limit 20
+opentab cost "$PWD"        <span class="c"># ~$1.04</span></code></pre>
+      </div>
+    </div>
   </div>
+  <p class="setup-note"><strong>Local &amp; read-only.</strong> No account, no telemetry. Your tools’ databases and transcripts stay unchanged; OpenTab keeps its own notes, preferences and caches separately. <a href="docs/#/privacy">Privacy boundaries →</a></p>
 </section>
 
 <section class="closing">
@@ -565,7 +729,7 @@ document.querySelectorAll("[data-install]").forEach(box => {
   }));
 });
 document.querySelectorAll(".copy").forEach(btn => btn.addEventListener("click", async () => {
-  const text = btn.parentElement.querySelector("code").textContent;
+  const text = btn.closest(".cmd, .snippet").querySelector("code").textContent;
   try { await navigator.clipboard.writeText(text); btn.textContent = "copied"; }
   catch { btn.textContent = "select it"; }
   setTimeout(() => (btn.textContent = "copy"), 1400);
