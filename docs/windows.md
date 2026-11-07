@@ -20,6 +20,7 @@ If `curses` is still missing, OpenTab prints a hint to install `windows-curses`.
 | `o` (open folder) | Opens Explorer |
 | `L` then `y` (copy resume command) | Copies a PowerShell 5 command that runs only if changing folder succeeds |
 | `opentab web` | Works with any Windows Python; it doesn't need `curses` |
+| `opentab launch` | Needs `fzf` on PATH (for example `winget install fzf`); without it, the command exits with an install hint. The list doesn't refresh live while the picker is open, so run `--refresh` to update it |
 
 ## WSL
 

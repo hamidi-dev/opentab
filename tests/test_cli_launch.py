@@ -94,7 +94,9 @@ def test_launch_missing_cache_cancel_and_refresh():
         args = cli.parse_args(
             ["launch", "--no-state", "--no-refresh", "--harness", "codex", "--codex-dir", tmp]
         )
-        with contextlib.redirect_stderr(io.StringIO()) as error:
+        with patch.object(picker.shutil, "which", return_value="fzf"), contextlib.redirect_stderr(
+            io.StringIO()
+        ) as error:
             assert cli._run(args) == 1
         assert "--refresh" in error.getvalue()
         _cache(args, "codex", [_row("abc", "Codex", tmp)])
@@ -154,15 +156,22 @@ def test_launch_ignored_missing_fzf_and_missing_directory():
             ["launch", "--no-refresh", "--harness", "claude", "--claude-dir", tmp]
         )
         _cache(args, "claude", [_row("ignore-me", "Claude Code", tmp)])
-        with patch.object(picker, "load_state", return_value={"ignored_sessions": ["ignore-me"]}):
+        with patch.object(
+            picker, "load_state", return_value={"ignored_sessions": ["ignore-me"]}
+        ), patch.object(picker.shutil, "which", return_value="fzf"):
             with contextlib.redirect_stderr(io.StringIO()) as error:
                 assert cli._run(args) == 1
             assert "no cached local sessions" in error.getvalue()
         args.no_state = True
-        with patch.object(picker.shutil, "which", return_value=None):
+        args.refresh = True
+        with patch.object(picker.shutil, "which", return_value=None), patch.object(
+            picker.sources, "make_store", side_effect=AssertionError("refreshed without fzf")
+        ):
             with contextlib.redirect_stderr(io.StringIO()) as error:
                 assert cli._run(args) == 1
             assert "fzf not found" in error.getvalue()
+            assert "refreshing" not in error.getvalue()
+        args.refresh = False
         _cache(args, "claude", [_row("gone", "Claude Code", os.path.join(tmp, "gone"))])
         with patch.object(picker.shutil, "which", return_value="fzf"), patch.object(
             picker.subprocess,
