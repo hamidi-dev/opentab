@@ -173,10 +173,14 @@ button.story-session { cursor: pointer; }
 .story-bottom p { margin: 0; color: var(--dim); font: 12px var(--mono); }
 .story-next { appearance: none; cursor: pointer; background: none; border: 0; color: var(--lav); font: 600 12px var(--mono); padding: 4px 0; text-decoration: none; }
 .story-loading { padding: 60px 26px; color: var(--dim); }
-.hero-install { display: flex; align-items: center; justify-content: space-between; gap: 40px; margin-top: 52px; padding-top: 28px; border-top: 1px solid var(--line); text-align: left; scroll-margin-top: 85px; }
-.hero-install > p { flex: 1; color: var(--dim); font-size: 15px; text-wrap: pretty; }
-.hero-install > p span { display: block; }
-.hero-install > p strong { display: block; font-family: var(--display); color: var(--text); font-size: 20px; margin-bottom: 5px; }
+.hero-install { display: flex; align-items: flex-start; justify-content: space-between; gap: 40px; margin-top: 52px; padding-top: 28px; border-top: 1px solid var(--line); text-align: left; scroll-margin-top: 85px; }
+.install-copy { flex: 1; min-width: 0; }
+.install-copy > p { margin: 0; color: var(--dim); font-size: 15px; text-wrap: pretty; }
+.install-copy > p span { display: block; }
+.tool-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0 0; padding: 0; list-style: none; scroll-margin-top: 85px; }
+.tool-strip li { padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; font: 12px var(--mono); color: var(--text); background: var(--ink-2); }
+.tool-strip-link { display: inline-block; margin-top: 10px; font-size: 14px; }
+.install-copy > p strong { display: block; font-family: var(--display); color: var(--text); font-size: 20px; margin-bottom: 5px; }
 .hero-install .install { margin: 0; }
 .stage { scroll-margin-top: 85px; }
 @media (max-width: 1000px) {
@@ -345,8 +349,6 @@ h2 {
 .feature-panel figcaption a { display: inline-block; margin-top: 8px; }
 
 /* token economics, interactive */
-.tool-list li { transition: background .25s, color .25s; }
-.tool-list li:hover { background: var(--ink-3); }
 .econ { margin-top: 28px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r); padding: 32px; }
 .econ .row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: 18px; margin: 14px 0; }
 .econ .row > span { font: 13px var(--mono); color: var(--dim); }
@@ -366,14 +368,13 @@ h2 {
 .econ .readout { margin-top: 22px; min-height: 3.4em; color: var(--dim); max-width: 70ch; }
 .econ .readout b { color: var(--text); }
 .econ .totals { margin: 0 0 24px; font: 14px/1.8 var(--mono); color: var(--text); }
+.econ-plan strong { color: var(--text); font-weight: 600; }
 .econ .basis { margin: 18px 0 0; font-size: 14px; color: var(--dim); }
 @media (max-width: 640px) {
   .econ { padding: 20px; }
   .econ .row { grid-template-columns: 1fr; gap: 6px; }
 }
 
-.tool-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; padding: 0; margin: 28px 0 0; list-style: none; }
-.tool-list li { padding: 16px 18px; background: var(--ink-2); font-size: 16px; }
 /* Recipes: one panel per setup. */
 .setup-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
 .setup-tabs button {
@@ -421,7 +422,6 @@ h2 {
   .feature-views { grid-template-columns: minmax(0, 1fr); gap: 18px; }
   .feature-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .feature-tabs button { padding: 12px 7px; text-align: center; font-size: 14px; }
-  .tool-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* closing */
@@ -471,7 +471,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
         <a class="hero-primary" href="report.html#/s/ses_0a9f3c2e71b4d58e6f20c1a7b9" data-story-open>Explore this session <span aria-hidden="true">↗</span></a>
         <a class="hero-secondary" href="#install">Install OpenTab</a>
       </div>
-      <p class="hero-trust">Local &amp; read-only · No account · No telemetry</p>
+      <p class="hero-trust">Free &amp; open source · Local &amp; read-only · No account · No telemetry</p>
     </div>
     <div class="investigation" aria-label="Follow a session from cost to recorded work" data-story>
       <div class="story-topline"><span>A number → the work behind it</span><span>Synthetic demo</span></div>
@@ -488,7 +488,14 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
     </div>
   </div>
   <div class="wrap hero-install" id="install">
-    <p><strong>Your history is already there.</strong><span>OpenTab reads the records your coding tools keep.</span><span>Try the real terminal or browser app below.</span></p>
+    <div class="install-copy">
+      <p><strong>Your history is already there.</strong><span>OpenTab reads the records your coding tools keep. Try the real terminal or browser app below.</span></p>
+      <ul class="tool-strip" id="tools" aria-label="Supported tools">
+        <li>OpenCode</li><li>Claude Code</li><li>Codex CLI</li><li>Hermes Agent</li><li>GitHub Copilot CLI</li><li>Copilot Chat in VS Code</li>
+        <li>pi-agent</li><li>omp</li><li>OpenClaw</li><li>zaly</li><li>Gemini CLI</li><li>Antigravity</li>
+      </ul>
+      <a class="tool-strip-link" href="docs/#/sources">What each tool records →</a>
+    </div>
     <div class="install" data-install>
       <div class="tabs" role="tablist">
         <button role="tab" aria-selected="true" data-cmd="pipx install opentab-ai">pipx</button>
@@ -541,23 +548,6 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
 </header>
 
 <main>
-<section class="block wrap" id="economics">
-  <p class="kicker">Token economics</p>
-  <h2>Tokens tell one story. Dollars tell another.</h2>
-  <p class="sub" data-econ-intro>A token isn't a unit of cost. Pick a type to see how its share of tokens compares with its share of estimated cost.</p>
-  <div class="econ" data-econ>
-    <p class="totals" data-econ-totals>Loading the synthetic showcase breakdown…</p>
-    <noscript><p>The interactive breakdown needs JavaScript. The pricing guide below explains the accounting without it.</p></noscript>
-    <div data-econ-charts hidden>
-      <div class="row"><span>share of tokens</span><div class="stack" data-stack="tok" role="group" aria-label="Share of tokens by type"></div></div>
-      <div class="row"><span>share of dollars</span><div class="stack" data-stack="usd" role="group" aria-label="Share of API list-price estimate by type"></div></div>
-      <div class="legend" data-legend role="group" aria-label="Select a token type"></div>
-      <p class="readout" data-readout aria-live="polite" aria-atomic="true"></p>
-    </div>
-    <p class="basis">Synthetic history · All tokens priced at API list rates, rather than mixing recorded spend and estimates. <a href="docs/#/pricing">How pricing works →</a></p>
-  </div>
-</section>
-
 <section class="block wrap" id="drill">
   <p class="kicker">Keep following the evidence</p>
   <h2>What filled the window? What changed?</h2>
@@ -581,16 +571,22 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
   </div>
 </section>
 
-<section class="block wrap" id="tools">
-  <p class="kicker">Across your coding tools</p>
-  <h2>Reads the tools you already use.</h2>
-  <p class="sub">OpenTab finds their local records on its own and opens them read-only. What you can drill into depends on what each tool writes down.</p>
-  <ul class="tool-list">
-    <li>OpenCode</li><li>Claude Code</li><li>Codex CLI</li><li>Hermes Agent</li>
-    <li>GitHub Copilot CLI</li><li>Copilot Chat in VS Code</li><li>pi-agent</li><li>omp</li>
-    <li>OpenClaw</li><li>zaly</li><li>Gemini CLI</li><li>Antigravity</li>
-  </ul>
-  <p class="sub"><a href="docs/#/sources">See which details each harness provides →</a></p>
+<section class="block wrap" id="economics">
+  <p class="kicker">Token economics</p>
+  <h2>Tokens tell one story. Dollars tell another.</h2>
+  <p class="sub" data-econ-intro>A token isn't a unit of cost. Pick a type to see how its share of tokens compares with its share of estimated cost.</p>
+  <div class="econ" data-econ>
+    <p class="totals" data-econ-totals>Loading the synthetic showcase breakdown…</p>
+    <noscript><p>The interactive breakdown needs JavaScript. The pricing guide below explains the accounting without it.</p></noscript>
+    <div data-econ-charts hidden>
+      <div class="row"><span>share of tokens</span><div class="stack" data-stack="tok" role="group" aria-label="Share of tokens by type"></div></div>
+      <div class="row"><span>share of dollars</span><div class="stack" data-stack="usd" role="group" aria-label="Share of API list-price estimate by type"></div></div>
+      <div class="legend" data-legend role="group" aria-label="Select a token type"></div>
+      <p class="readout" data-readout aria-live="polite" aria-atomic="true"></p>
+    </div>
+    <p class="basis">Synthetic history · All tokens priced at API list rates, rather than mixing recorded spend and estimates. <a href="docs/#/pricing">How pricing works →</a></p>
+  </div>
+  <p class="sub econ-plan"><strong>On a subscription?</strong> Your tools may record $0. OpenTab prices that usage at API list rates like these, labeled as estimates, so you can set it against what you pay for the plan.</p>
 </section>
 
 <section class="block wrap" id="setups">
