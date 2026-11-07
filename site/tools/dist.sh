@@ -36,6 +36,19 @@ rsync -aL --exclude=.DS_Store --exclude=__pycache__ --exclude=/tools/ --exclude=
 # would otherwise be unreadable to the web server.
 chmod -R u+rwX,go+rX "$dist"
 
+# The footer names the released version; stamp it from the package so it never goes stale.
+version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$site/../src/opentab/__init__.py")"
+[[ -n "$version" ]] || { echo "dist: no __version__ in src/opentab/__init__.py" >&2; exit 2; }
+python3 - "$dist/index.html" "$version" <<'PY'
+import re, sys
+path, version = sys.argv[1], sys.argv[2]
+text = open(path, encoding="utf-8").read()
+text, n = re.subn(r"OpenTab v[0-9][0-9A-Za-z.+-]*", f"OpenTab v{version}", text)
+if n != 1:
+    sys.exit(f"dist: expected one footer version in index.html, found {n}")
+open(path, "w", encoding="utf-8").write(text)
+PY
+
 # A macOS home path, not a placeholder such as /mnt/c/Users/<you> in the release notes.
 home_path='(^|[^A-Za-z])/Users/'
 if grep -rlqE "$home_path" "$dist" --include='*.html' --include='*.json'; then
