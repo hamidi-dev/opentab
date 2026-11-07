@@ -387,7 +387,7 @@ def test_launch_errors_never_resume_a_session():
             assert cli._run(args) == 1
             assert "opencode not found" in error.getvalue()
         args.refresh = True
-        with patch.object(
+        with patch.object(picker.shutil, "which", return_value="fzf"), patch.object(
             picker.sources, "make_store", side_effect=sqlite3.DatabaseError("broken source")
         ), contextlib.redirect_stderr(io.StringIO()) as error:
             assert cli._run(args) == 1
