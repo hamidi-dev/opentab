@@ -215,6 +215,11 @@ drills likewise return directly to their session lists. Calendar/chart drills st
 return through the date scope the user explicitly opened. The Trends session table
 retains its current-price-mode costs.
 
+The Trends Summary tab reads `trend_summary_averages()`, which feeds the active-range
+sessions to `accounting/averages.py`; the web report's `rangeAverages` mirrors it and a
+test holds the two to the same figures. Its token card is the same economics card over
+every model. It scrolls with `trend_summary_scroll`, separate from the drill's scroll.
+
 The attributed dollars are always **list-rate calculations** from per-model token
 rows, including the one-hour cache-write subset. They are not a decomposition of
 recorded spend. Unknown rates receive an estimate marker. Local models receive

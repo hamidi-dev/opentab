@@ -24,6 +24,7 @@ Trends charts spend over the active date range, and ranks what it went to.
 
 | Tab | Shows |
 |-----|-------|
+| Summary | Sessions, cost and tokens per day and per active day; per-session median, mean, p90 and max; where the list-rate dollars went |
 | Daily, Weekly, Monthly | Spend per day, week or month |
 | Calendar | A heatmap of daily spend |
 | Models, Providers, Projects, Harnesses | Rankings |
@@ -38,6 +39,12 @@ Trends charts spend over the active date range, and ranks what it went to.
 | `~` | Reverse a ranking |
 | `#` | [Chart tokens](#chart-tokens) instead of cost |
 | `Esc` | Back, then close |
+
+Trends opens on **Summary**. Per-day rates divide by the calendar days the range
+covers, starting no earlier than your first recorded session, and by the days a session
+started. Sessions count on the day they started, so a long session lands on one day;
+the per-session median is the cleaner comparison, because a few large sessions usually
+carry the mean. `j` / `k` scroll it.
 
 `Enter` on a ranked row opens its sessions. A model opens its **Economics** and
 **Sessions** tabs, like [Drill into a model](filters.md#drill-into-a-model) but for the

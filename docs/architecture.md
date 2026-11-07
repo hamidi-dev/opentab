@@ -32,6 +32,7 @@ package and installed command are both `opentab`.
 | `conversations/reader.py`, `conversations/pi.py`, `conversations/copilot.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors; fresh pi/omp discovery and Copilot session-bound extraction |
 | `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `accounting/models.py` | Workflow, qualified session identity and summary records |
+| `accounting/averages.py` | Range-wide per-day and per-active-day rates and the per-session median/mean/p90/max spread |
 | `accounting/tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
 | `stores/` | Harness readers, combined views, portable summaries and warm caches; `loader.py` parses cold backends in separate processes; `copilot_events.py` supplies session-bound Copilot execution metadata and lazy event details; `copilot_changes.py` reads recorded file-tool patches |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |

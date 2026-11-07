@@ -38,6 +38,7 @@ except ImportError:  # native Windows has no stdlib curses
 
 from opentab import __version__, sources, util
 from opentab import diagnostics as debug
+from opentab.accounting.averages import RangeAverages, SessionPoint, range_averages
 from opentab.accounting.models import (
     ALL_HARNESSES,
     ALL_MACHINES,
@@ -368,6 +369,7 @@ class App:
         {"title", "project", "harness", "model", "agent", "depth", "eff", "name"}
     )
     _TREND_TABS_BASE = (
+        "Summary",
         "Daily",
         "Weekly",
         "Monthly",
@@ -574,6 +576,7 @@ class App:
         self.trend_drill_index = 0
         self.trend_drill_tab = 0
         self.trend_drill_scroll = 0
+        self.trend_summary_scroll = 0  # the Summary tab's scroll, apart from any drill
         self.turn_drill: int | None = None
         # A prompt ordinal is valid only for its owning session; validate at point of use.
         self._turn_drill_session: str | None = None
@@ -8581,6 +8584,33 @@ class App:
             reverse=True,
         )
 
+    def trend_range_bounds(self) -> tuple[str | None, str | None]:
+        # The active range's inclusive start/end dates, None where it is open -- the
+        # same cutoffs ranged_workflows filters by, so a per-day average divides by
+        # the days the range actually selected.
+        if self.custom_since or self.custom_until:
+            return self.custom_since or None, self.custom_until or None
+        now = datetime.now()
+        if self.range_days is not None:
+            return (now - timedelta(days=self.range_days)).strftime("%Y-%m-%d"), None
+        if self.range_months is not None:
+            return month_window_start(self.range_months, now), None
+        return None, None
+
+    def trend_summary_averages(self) -> RangeAverages | None:
+        # The Summary tab's figures over the sessions every other Trends tab charts.
+        # Cost follows the active price mode; the history start keeps a window that
+        # predates the first recorded session from diluting the per-day rates.
+        since, until = self.trend_range_bounds()
+        history = min((w.created_at[:10] for w in self.loaded if w.created_at), default=None)
+        points = [
+            SessionPoint(w.created_at[:10], w.total_cost, w.total_tokens, w.worked_seconds)
+            for w in self.all_workflows
+            if w.created_at
+        ]
+        today = datetime.now().strftime("%Y-%m-%d")
+        return range_averages(points, since, until, history, today)
+
     @property
     def trend_tabs(self) -> tuple[str, ...]:
         # "Machines" rides on the base tabs only when the data spans machines (the fleet
@@ -9355,7 +9385,22 @@ class App:
                     else max(HEAT_MIN_LEVELS, self.cal_levels - 1)
                 )
                 return True
-            if not chart_tab:
+            if current == "Summary":
+                if act in ("down", "up", "page_down", "page_up", "top", "bottom"):
+                    step = self._page_step(stdscr) if act.startswith("page_") else 1
+                    if act in ("up", "page_up"):
+                        step = -step
+                    self.trend_summary_scroll = (
+                        0
+                        if act == "top"
+                        else 10_000
+                        if act == "bottom"
+                        else max(0, self.trend_summary_scroll + step)
+                    )
+                    return True
+                if act in ("select", "sort", "sort_reverse"):
+                    return True  # nothing to drill or order: a summary has no rows
+            elif not chart_tab:
                 # Ranked tabs (Models/Providers/Sources): down/up move the row cursor
                 # directly (no pager competes for them), select opens its sessions.
                 if act == "select":
@@ -10274,6 +10319,8 @@ class App:
             older = down  # wheel down pages to older buckets, mirroring j/k
             if self.trend_economics:
                 self.trend_drill_scroll = max(0, self.trend_drill_scroll + (3 if down else -3))
+            elif self.trend_drill is None and current == "Summary":
+                self.trend_summary_scroll = max(0, self.trend_summary_scroll + (3 if down else -3))
             elif self.trend_drill is not None:
                 n = len(self.trend_drill_sessions())
                 step = 1 if down else -1

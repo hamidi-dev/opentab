@@ -133,6 +133,7 @@ from opentab.tui.components.tables import (
 )
 from opentab.tui.components.token_cards import (
     EconomicsCategory,
+    TokenCard,
     token_breakdown_card,
     token_economics_card,
 )
@@ -7047,6 +7048,8 @@ class Renderer:
             )
         elif self.trend_drill is not None:
             lines = self.trend_drill_lines(inner_w, content_h)
+        elif current == "Summary":
+            lines = self.trend_summary(inner_w)
         elif current == "Calendar":
             # The heat map paints itself: its cells carry per-cell color attributes,
             # so it bypasses the generic string -> write_rich path the other tabs use.
@@ -7069,9 +7072,13 @@ class Renderer:
         else:
             lines = self.trend_models(inner_w, content_h)
         scroll = 0
+        summary = self.trend_drill is None and current == "Summary"
         if self.trend_economics:
             scroll = max(0, min(self.trend_drill_scroll, len(lines) - content_h))
             self.app.trend_drill_scroll = scroll
+        elif summary:
+            scroll = max(0, min(self.trend_summary_scroll, len(lines) - content_h))
+            self.app.trend_summary_scroll = scroll
         content = lines[scroll : scroll + content_h]
         # Center the chart in the panel instead of hugging the left edge: the
         # graph lines (everything but the "# title") move as one block so the
@@ -7133,8 +7140,48 @@ class Renderer:
             line0, drawn, start = self._trend_rows_at
             kind = "trendses" if self.trend_drill else "trendrow"
             self._add_rows_region(kind, y + 3 + line0, 2, width - 3, start, drawn)
-        if self.trend_economics:
+        if self.trend_economics or summary:
             self._paint_scrollbar(stdscr, y + 3, width - 1, len(lines), content_h, scroll)
+
+    def range_token_card(self, workflows: list[Workflow], width: int) -> TokenCard | None:
+        # The shared token-economics card at list rates over every model in `workflows`.
+        economics = self.app.token_economics(workflows)
+        if economics is None:
+            return None
+        categories = [
+            EconomicsCategory(label, economics.tokens[i], economics.cost[i], i)
+            for i, label in enumerate(TOKEN_TYPES)
+            if economics.tokens[i] > 0 or economics.cost[i] > 0
+        ]
+        return token_economics_card(
+            categories=categories,
+            total_tokens=economics.total_tokens,
+            total_cost=economics.total_cost,
+            inner_width=max(1, width - self.BOX_CHROME),
+            estimated=economics.estimated,
+            missing_cache_rate=economics.missing_cache_rate,
+            local_tokens=economics.local_tokens,
+            tier_context_missing=economics.tier_context_missing,
+            estimate_reasons=economics.estimate_reasons,
+            colored=self._token_series_ok,
+        )
+
+    def trend_summary(self, width: int) -> list[str]:
+        workflows = self.all_workflows
+        notes = []
+        if not self.show_api_prices and any(w.unpriced_tokens for w in workflows):
+            key = self._key("trends", "api_prices")
+            notes.append(f"Unpriced subscription usage counts as $0: press {key} to estimate it.")
+        return self._adopt_trend_layout(
+            trend_views.summary_layout(
+                self.app.trend_summary_averages(),
+                "Est. cost" if self.show_api_prices else "Cost",
+                self.range_token_card(workflows, min(width, trend_views.SUMMARY_WIDTH)),
+                width,
+                self.box_glyphs(),
+                notes,
+            )
+        )
 
     def _bar_chart(
         self,

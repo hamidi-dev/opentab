@@ -282,6 +282,10 @@ def trend_tab(app: App) -> str:
     return app.trend_tabs[app.trend_tab % len(app.trend_tabs)]
 
 
+def _summary_trend(app: App) -> bool:
+    return app.trend_drill is None and trend_tab(app) == "Summary"
+
+
 def _ranked_trend(app: App) -> bool:
     # Sortable-column vocabulary is the single source for which tabs are ranked rows.
     return bool(app.trend_sort_options())
@@ -294,6 +298,8 @@ def _trend_pager_alias(app: App) -> str:
 def _trend_jk(app: App) -> str:
     if app.trend_economics:
         return "scroll token economics"
+    if _summary_trend(app):
+        return "scroll the summary"
     if app.trend_drill is not None:
         return "move in the list"
     if _ranked_trend(app):
@@ -1158,7 +1164,7 @@ KEYS: tuple[Key, ...] = (
         actions=("select",),
         summary=_trend_enter,
         section="here",
-        when=in_trends,
+        when=lambda app: in_trends(app) and not _summary_trend(app),
         chip=lambda app: "sessions"
         if app.trend_economics
         else "drill"
@@ -1174,7 +1180,7 @@ KEYS: tuple[Key, ...] = (
         # Monthly has no paging dimension.
         when=lambda app: in_trends(app) and bool(_trend_jk(app)),
         chip=lambda app: "scroll"
-        if app.trend_economics
+        if app.trend_economics or _summary_trend(app)
         else "rows"
         if _ranked_trend(app) or app.trend_drill
         else "page",

@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Union
 
+from opentab.accounting.averages import RangeAverages, Spread
 from opentab.presentation.formatting import (
+    human_duration,
     human_tokens,
     money,
     pad,
@@ -465,6 +467,103 @@ def model_economics_layout(
             for span in economics.spans
         ),
     )
+
+
+SPREAD_LABEL = 10  # the row label; the four statistic columns share what the box leaves
+
+
+def _spread_row(label: str, cells: Sequence[str], column: int) -> str:
+    return f"{label:<{SPREAD_LABEL}}" + "".join(f"{cell:>{column}}" for cell in cells)
+
+
+def _spread_cells(spread: Spread, fmt: Callable[[float], str]) -> tuple[str, ...]:
+    return (fmt(spread.median), fmt(spread.mean), fmt(spread.p90), fmt(spread.max))
+
+
+SUMMARY_WIDTH = 96  # one column for the facts and the economics card, however wide the terminal
+
+
+def summary_layout(
+    averages: RangeAverages | None,
+    cost_label: str,
+    card: TokenCard | None,
+    width: int,
+    glyphs: Mapping[str, str],
+    notes: Sequence[str] = (),
+) -> TrendsLayout:
+    """Range-wide rates and the per-session spread, then where the list-rate dollars went.
+
+    Per-day rows divide by calendar days and by active days (days a session started);
+    per-session rows put the median before the mean because session costs are
+    heavy-tailed. The economics card below is always at list rates.
+    """
+    width = card_width = min(width, SUMMARY_WIDTH)
+    if averages is None:
+        empty = ruled_box(
+            "# Summary", "no sessions in this range", (), None, (), card_width, glyphs
+        )
+        return TrendsLayout(empty.lines, headers=(HeaderMap(empty.header_line or 0, ()),))
+    a = averages
+    span = f"{a.start} → {a.end} · {a.calendar_days:,} days, {a.active_days:,} active"
+
+    def rates(total: float, fmt: Callable[[float], str]) -> str:
+        return f"{fmt(total)} · {fmt(a.per_day(total))}/day · {fmt(a.per_active_day(total))}/active day"
+
+    def count(value: float) -> str:
+        if value == int(value) or value >= 100:
+            return f"{value:,.0f}"
+        return f"{value:.2f}" if value < 10 else f"{value:.1f}"
+
+    def tok(value: float) -> str:
+        return human_tokens(int(round(value)))
+
+    def dur(value: float) -> str:
+        return human_duration(value) if value >= 1 else "0s"
+
+    totals = (
+        f"Span      {span}",
+        f"Sessions  {rates(a.sessions, count)}",
+        f"{cost_label:<9} {rates(a.cost, money)}",
+        f"Tokens    {rates(a.tokens, tok)}",
+    )
+    # Spread the four columns over the box (less a right margin the size of the
+    # label's gap) instead of bunching them left of a wide empty band.
+    column = max(11, (card_width - BOX_CHROME - 2 * SPREAD_LABEL) // 4)
+    header = _spread_row("", ("median", "mean", "p90", "max"), column)
+    spread_rows = [
+        _spread_row(cost_label, _spread_cells(a.cost_spread, money), column),
+        _spread_row("Tokens", _spread_cells(a.token_spread, tok), column),
+    ]
+    coverage = []
+    if a.worked_spread is not None:
+        spread_rows.append(_spread_row("Worked", _spread_cells(a.worked_spread, dur), column))
+        known = a.worked_spread.count
+        if known < a.sessions:
+            coverage.append(
+                f"Worked covers {known:,} of {a.sessions:,} sessions: the other "
+                f"{a.sessions - known:,} have no recorded working time."
+            )
+    skew = []
+    if a.cost_spread.median > 0 and a.cost_spread.mean >= 2 * a.cost_spread.median:
+        ratio = a.cost_spread.mean / a.cost_spread.median
+        skew.append(f"The mean is {ratio:.1f}× the median: a few large sessions carry the average.")
+    totals_box = sectioned_box("# Summary", (totals,), card_width, (), glyphs)
+    spread_box = ruled_box(
+        "# Per session", header, spread_rows, None, (*skew, *coverage, *notes), card_width, glyphs
+    )
+    blocks = [*totals_box.lines, "", *spread_box.lines]
+    headers = [HeaderMap(len(totals_box.lines) + 1 + (spread_box.header_line or 1), ())]
+    spans: list[SemanticSpan] = []
+    if card is not None:
+        economics = token_card_layout(card, width, glyphs)
+        offset = len(blocks) + 1
+        blocks.extend(("", *economics.lines))
+        headers.extend(HeaderMap(h.line + offset, h.columns, h.target) for h in economics.headers)
+        spans.extend(
+            SemanticSpan(s.line + offset, s.column, s.length, s.role, s.value)
+            for s in economics.spans
+        )
+    return TrendsLayout(tuple(blocks), headers=tuple(headers), spans=tuple(spans))
 
 
 def calendar_layout(

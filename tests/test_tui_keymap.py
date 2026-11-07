@@ -302,6 +302,10 @@ def test_help_lists_the_keys_that_work_where_you_are():
     # Overlays own the keyboard, so they are their own context: their keys, not the
     # ones the view underneath would offer (which they swallow).
     app.trends = True
+    # Summary opens first: a scrollable card with nothing to drill, so no Enter hint.
+    assert [t for t, _ in app.renderer.help_sections()][0] == "Here — Trends · Summary"
+    assert "trends-page" in here(app) and "trends-enter" not in here(app)
+    app.trend_tab = app.trend_tabs.index("Daily")
     ids = {e.id for _t, rows in app.renderer.help_sections() for e in rows}
     assert {"trends-tabs", "trends-page", "trends-enter", "trends-close"} <= here(app)
     assert [t for t, _ in app.renderer.help_sections()][0] == "Here — Trends · Daily"
@@ -349,7 +353,7 @@ def test_help_lists_the_keys_that_work_where_you_are():
 
     # The two overlays cover each other: whichever was opened LAST owns the keyboard,
     # so that is the context, and the covered one's keys must not be advertised.
-    app.trend_tab = 0  # the earlier block left the cursor on Calendar
+    app.trend_tab = app.trend_tabs.index("Daily")  # the earlier block left it on Calendar
     app.trends = True  # T over the already-open P
     assert [t for t, _ in app.renderer.help_sections()][0] == "Here — Trends · Daily"
     ids = here(app)
@@ -486,7 +490,9 @@ def test_the_trends_sort_chip_only_shows_where_a_ranking_is_on_screen():
     app = _keymap_app()
     app.trends = True
     sort = next(e for e in ot.keymap.KEYS if e.id == "trends-sort")
-    assert app.trend_tabs[app.trend_tab] == "Daily" and not sort.shown(app)
+    assert app.trend_tabs[app.trend_tab] == "Summary" and not sort.shown(app)
+    app.trend_tab = app.trend_tabs.index("Daily")
+    assert not sort.shown(app)
     app.trend_tab = app.trend_tabs.index("Harnesses")
     assert sort.shown(app) and sort.chip_segments(app) == [("s sort", False)]
     # ...and not inside a drilled row's session list, which is its own ranking.
@@ -641,6 +647,7 @@ def test_the_focused_chart_and_calendar_shades_keep_their_own_keybar_chips():
     # help-only (the arrows not even that, once focused) while that hint existed.
     app = _keymap_app()
     app.trends = True
+    app.trend_tab = app.trend_tabs.index("Daily")
     arrows = next(e for e in ot.keymap.KEYS if e.id == "trends-chart-cursor")
     shades = next(e for e in ot.keymap.KEYS if e.id == "trends-shades")
     assert not arrows.shown(app)  # nothing to walk until Enter focuses a chart
@@ -698,6 +705,7 @@ def test_help_uses_the_dispatch_context_in_every_overlay_subview():
         app.can_harness_filter = lambda: True
         if ctx.startswith("trends"):
             app.trends = True
+            app.trend_tab = app.trend_tabs.index("Daily")
             app.trend_focus = ctx == "trends.chart"
             if ctx == "trends.drill":
                 app.trend_drill = ("provider", "anthropic")
@@ -729,6 +737,7 @@ def test_help_uses_the_dispatch_context_in_every_overlay_subview():
 def test_focused_chart_dispatches_remapped_global_actions_from_its_context():
     app = _keymap_app()
     app.trends = app.trend_focus = True
+    app.trend_tab = app.trend_tabs.index("Daily")
     app.keymap = ot.tui.bindings.Keymap({("trends.chart", "help"): ["v"]})
     app.handle_key(None, ord("?"))
     assert not app.help
