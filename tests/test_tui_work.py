@@ -223,3 +223,24 @@ def test_startup_warnings_keep_work_errors_and_rank_notes_last():
         app.toasts.clear()
         assert not app.refresh_authored()
         assert app.toasts[-1].text.startswith("notes: ")
+
+
+def test_state_colors_leave_the_button_colors_alone():
+    # Both inits run every frame; sharing a slot or pair painted every overlay
+    # button in the work-state red/green/yellow.
+    from opentab.presentation.themes import STATE_COLOR_HEX
+    from opentab.tui.renderer import Renderer
+
+    states = len(STATE_COLOR_HEX)
+    state_slots = set(range(Renderer._STATE_COLOR_BASE, Renderer._STATE_COLOR_BASE + states))
+    state_pairs = set(range(Renderer._STATE_PAIR, Renderer._STATE_PAIR + states))
+    button_slots = {Renderer._BUTTON_COLOR_BASE, Renderer._BUTTON_COLOR_BASE + 1}
+    button_pairs = {
+        Renderer._BUTTON_KEY_PAIR,
+        Renderer._BUTTON_LABEL_PAIR,
+        Renderer._BUTTON_PRIMARY_PAIR,
+        Renderer._BUTTON_SHADOW_PAIR,
+        Renderer._BUTTON_OFF_PAIR,
+    }
+    assert not state_slots & button_slots
+    assert not state_pairs & button_pairs

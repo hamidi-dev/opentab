@@ -7364,8 +7364,8 @@ class Renderer:
     _BUTTON_COLOR_BASE = 64  # button face + shadow colour slots, after the diff colours
     pressed_button: tuple[str, str] | None = None  # (context, action) held down this frame
     _buttons_ok = False  # every button pair took; otherwise buttons paint in reverse video
-    _STATE_COLOR_BASE = 64  # work-state keyword colours, after the diff slots
-    _STATE_PAIR = 80  # one pair per STATE_COLOR_HEX name, after the 40 diff pairs
+    _STATE_COLOR_BASE = 66  # work-state keyword colours, after the button slots
+    _STATE_PAIR = 83  # one pair per STATE_COLOR_HEX name, after the button pairs
     _state_colors_ok = False
     _work_lines: dict = {}  # framed session-table line -> owning session (per build)
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
