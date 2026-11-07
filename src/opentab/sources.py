@@ -166,7 +166,7 @@ def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -
                 if os.path.isfile(path) and _is_machine_summary(path):
                     parser.error(
                         f"{path} is an exported machine summary, not a harness -- open it "
-                        f"with `opentab remote {path}`"
+                        f"with `opentab machines open {path}`"
                     )
                 parser.error(f"can't tell which source {path!r} is -- pass --source explicitly")
             if args.source == "auto":
@@ -566,11 +566,11 @@ def _fleet_warning(remote, remotes, hostname: str, pulled: bool = False, live: b
         return f"fleet: skipped unreadable summar{plural} ({names}{more}) -- not an opentab export?"
     if not remote.machines and not pulled:
         where = short_path(remotes, 48) if isinstance(remotes, str) else "the given files"
-        return f"fleet: no machine summaries in {where} -- run `opentab pull HOST`"
+        return f"fleet: no machine summaries in {where} -- run `opentab machines pull HOST`"
     if live and hostname in remote.machines:
         return (
             f"fleet: pulled machine '{hostname}' has this machine's name; its sessions "
-            "merge into this one -- re-export it with `opentab export --label NAME`"
+            "merge into this one -- re-export it with `opentab machines export --label NAME`"
         )
     return ""
 
@@ -621,9 +621,9 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         if not subs:
             raise SystemExit(
                 f"No machine summaries found in {remotes} and no local data on this "
-                "machine. Run `opentab pull HOST` to fetch another box's spend over SSH "
-                "(or, where SSH from here is not possible, `opentab export -` on that "
-                "box, copy the file over, and open it with `opentab remote FILE`)."
+                "machine. Run `opentab machines pull HOST` to fetch another box's spend over SSH "
+                "(or, where SSH from here is not possible, `opentab machines export -` on that "
+                "box, copy the file over, and open it with `opentab machines open FILE`)."
             )
         # The bail above needs BOTH halves to be empty, so a fleet that found no summary
         # opens on local data alone and says nothing. Carry the reason to the frontends.

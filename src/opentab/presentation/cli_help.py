@@ -9,7 +9,7 @@ COMMAND_GROUPS = (
     ("Browse", ("tui", "web", "launch")),
     ("Query", ("cost", "usage", "sessions", "models", "sources")),
     ("Conversations", ("conversations",)),
-    ("Machines and exports", ("pull", "remote", "export", "forget")),
+    ("Machines", ("machines",)),
     ("Saved preferences", ("notes", "bookmarks", "ignore")),
     ("Setup and integration", ("doctor", "mcp")),
 )
@@ -45,6 +45,14 @@ class HelpParser(argparse.ArgumentParser):
             for item in super()._get_option_tuples(option_string)
             if not isinstance(item[0], _FullHelp)
         ]
+
+    def _check_value(self, action, value):
+        if isinstance(action, argparse._SubParsersAction) and value not in action.choices:
+            visible = ", ".join(repr(choice.dest) for choice in action._choices_actions)
+            raise argparse.ArgumentError(
+                action, f"invalid choice: {value!r} (choose from {visible})"
+            )
+        super()._check_value(action, value)
 
     def format_help(self, *, full=False):
         if full:

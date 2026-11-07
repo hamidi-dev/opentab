@@ -28,6 +28,7 @@ package and installed command are both `opentab`.
 | Module | Responsibility |
 |--------|----------------|
 | `cli/main.py`, `__main__.py` | Commands, argument routing and startup |
+| `cli/machines.py` | Fleet command parsers, connection probes and locked configuration edits |
 | `api/service.py`, `api/json_cli.py`, `api/mcp.py` | Headless accounting service, JSON commands and stdio MCP adapter |
 | `conversations/reader.py`, `conversations/pi.py`, `conversations/copilot.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors; fresh pi/omp discovery and Copilot session-bound extraction |
 | `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |

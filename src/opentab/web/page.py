@@ -3629,7 +3629,7 @@ function renderOverview(root, sc, ws) {
     else if (!meta.live)
       card.appendChild(h('div', { class: 'hint' }, 'summary only — Turns/Tools/Context aren\'t exported (opentab --serve to re-pull)'));
     else if (!META.machines)
-      card.appendChild(h('div', { class: 'hint' }, 'only this machine — `opentab --pull HOST` fetches another box\'s spend over SSH and merges it here'));
+      card.appendChild(h('div', { class: 'hint' }, 'only this machine — `opentab machines pull HOST` fetches another box\'s spend over SSH and merges it here'));
     root.appendChild(card);
   }
   const econ = tokenEconomicsPane(ws, scopeLabel(sc));

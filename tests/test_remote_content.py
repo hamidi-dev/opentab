@@ -454,6 +454,8 @@ def test_remote_trace_prefix_derives_from_the_pull_command():
         ("opentab --export -", "opentab"),
         ("$HOME/.local/bin/opentab --export -", "$HOME/.local/bin/opentab"),
         ("/usr/bin/opentab export --label box -", "/usr/bin/opentab"),
+        ("/usr/bin/opentab machines export --label box -", "/usr/bin/opentab"),
+        ("uv run opentab machines export -", "uv run opentab"),
         ("uv run opentab --export - --days 30", "uv run opentab"),
         ("NAME=value opentab --export=-", "NAME=value opentab"),
         ("opentab-ai --export -", "opentab-ai"),
@@ -464,6 +466,7 @@ def test_remote_trace_prefix_derives_from_the_pull_command():
     # and nothing may be spliced out of the middle of a compound command.
     for command in (
         "opentab --export - | gzip",
+        "opentab machines export - | gzip",
         "cd /srv && opentab --export -",
         "opentab --export -; rm -rf /tmp/x",
         "opentab --db /data/db --export -",  # an unrecognized flag is not dropped

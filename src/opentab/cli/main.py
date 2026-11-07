@@ -322,26 +322,26 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         const="-",
         default=None,
         metavar="FILE",
-        help="compatibility alias for `opentab export [FILE]` (default: stdout)",
+        help="compatibility alias for `opentab machines export [FILE]` (default: stdout)",
     )
     parser.add_argument(
         "--pull",
         nargs="*",
         default=None,
         metavar="HOST",
-        help="compatibility alias for `opentab pull [HOST ...]`; fetch and remember hosts",
+        help="compatibility alias for `opentab machines pull [HOST ...]`; fetch and remember hosts",
     )
     parser.add_argument(
         "--remote",
         action="store_true",
-        help="compatibility alias for `opentab remote`; open saved summaries offline",
+        help="compatibility alias for `opentab machines open`; open saved summaries offline",
     )
     parser.add_argument(
         "--forget",
         nargs="+",
         default=None,
         metavar="NAME",
-        help="compatibility alias for `opentab forget NAME ...`; remove saved hosts and local summaries",
+        help="compatibility alias for `opentab machines remove NAME ...`; remove saved hosts and local summaries",
     )
     parser.add_argument(
         "--html",
@@ -394,6 +394,7 @@ _SUBCOMMANDS = (
     "remote",
     "export",
     "forget",
+    "machines",
     "usage",
     "sessions",
     "conversations",
@@ -786,123 +787,9 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
         action="store_true",
         help="emit one versioned JSON document instead of the human-readable report",
     )
-    # Fleet subcommands map to legacy fields so both interfaces share one dispatch path.
-    pull = subs.add_parser(
-        "pull",
-        help="fetch other machines' spend over SSH and open them merged",
-        description="Fetch other machines' spend summaries over SSH (all in parallel) and "
-        "open them merged (the fleet view). Each HOST is remembered, so a later bare "
-        "`opentab pull` refreshes every saved machine. The remote just needs opentab on "
-        "its PATH -- it runs `opentab export -` there; nothing has to be listening. "
-        "--demo changes the fleet view after fetching; pull remains an explicit network "
-        "request and the remote export itself is not put in demo mode.",
-        epilog="Examples:\n  opentab pull user@host\n  opentab pull\n\n"
-        "Saved connections and HTTP sources: docs/machines.md",
-    )
-    fleet_globals = {
-        "source",
-        *_SOURCE_PATH_DESTS,
-        "days",
-        "since",
-        "until",
-        "demo",
-        "no_state",
-        "no_worktrees",
-        "remotes",
-        "theme",
-        "no_cache",
-    }
-    fleet_source_help = (
-        "fleet commands load remote summaries plus every present local harness; "
-        "--harness remote is an explicit alias (default: auto)"
-    )
-    _add_command_global_args(
-        pull,
-        fleet_globals,
-        source_choices=("auto", "remote"),
-        source_help=fleet_source_help,
-    )
-    pull.add_argument(
-        "hosts",
-        nargs="*",
-        metavar="HOST",
-        help="an ssh target -- `box`, `user@host`, `name=user@host`, or "
-        "`https://host/usage.json` for a hosted `opentab export` file. None given = refresh every machine "
-        "already in remotes.json. Set a machine's `cmd` in remotes.json if opentab isn't "
-        "on its non-interactive PATH",
-    )
-    remote = subs.add_parser(
-        "remote",
-        help="open pulled machines, or summary files copied over by hand",
-        description="Open the machine summaries already gathered by `opentab pull`, "
-        "merged into the fleet view, without re-fetching over SSH -- the offline twin of "
-        "`opentab pull`. Name one or more exported *.json FILEs to open summaries you "
-        "moved here yourself (`opentab export -` on the far side, scp, then "
-        "`opentab remote box.json`) instead of the pulled ones.",
-        epilog="Examples:\n  opentab remote\n  opentab remote box.json\n\n"
-        "Fleet setup: docs/machines.md",
-    )
-    _add_command_global_args(
-        remote,
-        fleet_globals,
-        source_choices=("auto", "remote"),
-        source_help=fleet_source_help,
-    )
-    remote.add_argument(
-        "files",
-        nargs="*",
-        metavar="FILE",
-        help="exported summaries to open instead of the pulled ones (from "
-        "`opentab export`); a directory works too. Without one, the machines already "
-        "pulled into --remotes are opened",
-    )
-    export = subs.add_parser(
-        "export",
-        help="write this machine's spend summary as portable JSON",
-        description="Write this machine's spend summary (every present harness by default, "
-        "or the local --harness selection) as a portable JSON file -- totals + per-model "
-        "breakdown, no transcripts. Copy "
-        "it to another machine and open it there with `opentab remote box.json`; "
-        "`opentab pull` is the automatic twin and takes an SSH target, never a file. "
-        "Selective --demo leaves other data real; review exports before sharing.",
-        epilog="Examples:\n  opentab export box.json\n  opentab export - --demo\n\n"
-        "Export content and privacy: docs/machines.md. Source setup: docs/sources.md",
-    )
-    _add_command_global_args(
-        export,
-        {"source", *_SOURCE_PATH_DESTS, "demo", "label", "no_cache"},
-        source_choices=_LOCAL_SOURCE_CHOICES,
-        source_help="which local harness to export (default: auto exports all present harnesses)",
-        help_overrides={
-            "demo": "anonymize titles, paths, prompts, and/or spend in the exported "
-            "summary; bare --demo applies every category, or pass a comma list such as "
-            "titles,spend. Selective demo leaves other data real; review the file before sharing"
-        },
-    )
-    export.add_argument(
-        "file",
-        nargs="?",
-        default="-",
-        metavar="FILE",
-        help="where to write it (default: stdout, so `ssh box opentab export > box.json` " "works)",
-    )
-    forget = subs.add_parser(
-        "forget",
-        help="drop machines from the saved fleet",
-        description="Remove machines from remotes.json and delete their cached summaries "
-        "(under --remotes), then exit. Remote machines and their source records are untouched.",
-        epilog="Examples:\n  opentab forget old-laptop\n\nFleet storage: docs/machines.md",
-    )
-    _add_command_global_args(forget, {"remotes"})
-    forget._option_string_actions[
-        "--remotes"
-    ].help = "directory containing the fleet configuration and cached summaries to remove"
-    forget.add_argument(
-        "names",
-        nargs="+",
-        metavar="NAME",
-        help="the machine name(s) to forget",
-    )
+    from opentab.cli.machines import add_parsers as add_machine_parsers
+
+    add_machine_parsers(subs, _add_command_global_args, _SOURCE_PATH_DESTS, _LOCAL_SOURCE_CHOICES)
     # Keep the machine-facing command tree out of this already large compatibility parser.
     if machine:
         from opentab.api.json_cli import add_parsers
@@ -936,25 +823,6 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
             "Paths are redacted by default. Errors exit 1; warnings alone do not.",
             {"json", "full"},
         ),
-        pull: (
-            "Fetch machine summaries over SSH or HTTP and open the combined fleet view.\n"
-            "Hosts are remembered. With no host, refresh all saved machines.",
-            {"days", "demo", "remotes"},
-        ),
-        remote: (
-            "Browse saved machine summaries offline, alongside local sessions.\n"
-            "Pass files to open copied exports instead of the saved fleet.",
-            {"days", "demo", "remotes"},
-        ),
-        export: (
-            "Write this machine's usage as portable JSON: totals and models, no transcripts.\n"
-            "Open it elsewhere with opentab remote FILE. Review before sharing.",
-            {"label", "demo", "source"},
-        ),
-        forget: (
-            "Remove saved hosts and their local summary files. Remote data stays intact.",
-            {"remotes"},
-        ),
     }
     brief = {
         "path": "Source file or directory; harness detected automatically.",
@@ -980,7 +848,7 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
         "refresh": "Refresh local caches before opening the picker.",
         "no_refresh": "Show existing caches only; never read harness records.",
     }
-    for command in (tui, web, status, launch, doctor, pull, remote, export, forget):
+    for command in (tui, web, status, launch, doctor):
         arrange_help(
             command,
             source_paths=_SOURCE_PATH_DESTS,
@@ -989,9 +857,7 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
             else (),
             summary=guides[command][0],
             common=guides[command][1],
-            brief={**brief, "remotes": "Directory holding saved hosts and their cached summaries."}
-            if command is forget
-            else brief,
+            brief=brief,
         )
     return parser
 
@@ -1007,6 +873,10 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 def _apply_subcommand(args: argparse.Namespace) -> None:
     # Map subcommands onto the legacy namespace so there is one dispatch path.
     command = getattr(args, "command", None)
+    if command == "machines":
+        command = {"open": "remote", "remove": "forget"}.get(
+            args.machines_action, args.machines_action
+        )
     if command == "web":
         if args.web_port is not None:
             args.port = args.web_port
@@ -1060,7 +930,10 @@ def _validate_remote_files(parser: argparse.ArgumentParser, args: argparse.Names
     # A named summary that is missing fails HERE rather than opening a fleet of this
     # machine alone: the user pointed at a file, so "it showed nothing" is the one
     # answer that cannot be acted on. A pulled-machines launch keeps its soft path.
-    if getattr(args, "command", None) != "remote":
+    if not (
+        getattr(args, "command", None) == "remote"
+        or (getattr(args, "command", None) == "machines" and args.machines_action == "open")
+    ):
         return
     files = list(getattr(args, "files", None) or ())
     if not files:
@@ -1072,7 +945,7 @@ def _validate_remote_files(parser: argparse.ArgumentParser, args: argparse.Names
         if isinstance(demo, str) and demo != "all" and os.path.isfile(demo):
             parser.error(
                 f"remote: --demo read {demo!r} as a category, not a file. Put the file "
-                f"first (`opentab remote {demo} --demo`) or separate it (`--demo -- {demo}`)"
+                f"first (`opentab machines open {demo} --demo`) or separate it (`--demo -- {demo}`)"
             )
         return
     if getattr(args, "remotes", None):  # runs before _apply_subcommand: still the flag
@@ -1129,7 +1002,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     _validate_remote_files(parser, args)
     _validate_web_args(parser, args)
     _apply_subcommand(args)
-    if args.command in ("tui", "web", "pull", "remote"):
+    if args.command in ("tui", "web", "pull", "remote") or (
+        args.command == "machines" and args.machines_action in ("pull", "open")
+    ):
         # Presentation paths do not pass through the service's range validation.
         # Check the effective bounds before discovering or opening any source.
         try:
@@ -1860,28 +1735,24 @@ def _atomic_text(path: str, text: str) -> None:
 
 
 def _save_remotes(machines: dict) -> None:
-    # Best-effort and atomic: an unwritable config must not break a launch.
-    path = remotes_config_path()
-    document, readable = _read_remotes_document()
-    if not readable:
-        raise SystemExit("could not read remotes.json; refusing to overwrite saved machines")
-    # Unknown envelope fields and entries are authored data, not disposable cache.
-    unknown = {
-        key: value
-        for key, value in document.get("machines", {}).items()
-        if not isinstance(value, dict)
-    }
-    document.setdefault("version", REMOTES_VERSION)
-    document["machines"] = {**unknown, **machines}
+    from opentab.cli.machines import update_remotes
+
+    def replace(saved):
+        for name in list(saved):
+            if isinstance(saved[name], dict) and name not in machines:
+                del saved[name]
+        saved.update(machines)
+
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        _atomic_text(path, json.dumps(document, indent=2, sort_keys=True))
-    except OSError:
-        pass
+        update_remotes(sys.modules[__name__], replace)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _pull_target(spec: str) -> str:
     # The destination half of a `name=target` pull spec, split as _remote_entry does.
+    if spec.startswith(("http://", "https://", "ssh://")):
+        return spec
     _, sep, rest = spec.partition("=")
     return rest if sep else spec
 
@@ -1924,9 +1795,8 @@ def _remotes_write_dir(args: argparse.Namespace) -> str:
 
 
 def _remote_entry(spec: str) -> tuple[str, dict]:
-    name, sep, rest = spec.partition("=")
-    if not sep:
-        rest, name = spec, ""
+    rest = _pull_target(spec)
+    name = spec.partition("=")[0] if rest != spec else ""
     if rest.startswith(("http://", "https://")):
         entry = {"url": rest}
         host = rest.split("://", 1)[1]
@@ -1934,7 +1804,12 @@ def _remote_entry(spec: str) -> tuple[str, dict]:
         entry = {"ssh": rest}
         host = rest
     if not name:
-        name = host.split("@")[-1].split("/")[0].split(":")[0] or rest
+        if "://" in rest:
+            from urllib.parse import urlsplit
+
+            name = urlsplit(rest).hostname or rest
+        else:
+            name = host.split("@")[-1].split("/")[0].split(":")[0] or rest
     return name, entry
 
 
@@ -2029,36 +1904,45 @@ def pull_command(args: argparse.Namespace) -> None:
         # The ssh:// escape hatch only reads sensibly for a bare name that happens to
         # be a local file; it is nonsense spelled over `./box.json`.
         bare = [t for t in paths if not t.startswith(("./", "../", "/", "~"))]
-        hint = f"\n  (a host really named that: opentab pull ssh://{bare[0]})" if bare else ""
+        hint = (
+            f"\n  (a host really named that: opentab machines pull ssh://{bare[0]})" if bare else ""
+        )
         sys.stderr.write(
             f"opentab pull: {', '.join(paths)} looks like an exported summary, not an "
-            f"ssh target.\n  Open it with: opentab remote {' '.join(paths)}{hint}\n"
+            f"ssh target.\n  Open it with: opentab machines open {' '.join(paths)}{hint}\n"
         )
         return
     if tokens:
-        targets: dict = {}
-        for spec in tokens:
-            name, entry = _remote_entry(spec)
-            saved = machines.get(name)
-            if spec == name and isinstance(saved, dict) and (saved.get("ssh") or saved.get("url")):
-                targets[name] = saved
-            else:
-                # Preserve orthogonal fields while repairing or replacing the target.
-                merged = {**(saved or {}), **entry}
-                # SSH and URL are mutually exclusive; a stale URL otherwise wins.
-                if "ssh" in entry:
-                    merged.pop("url", None)
-                elif "url" in entry:
-                    merged.pop("ssh", None)
-                machines[name] = merged
-                targets[name] = merged
-        _save_remotes(machines)
+        from opentab.cli.machines import update_remotes
+
+        def learn(machines):
+            targets = {}
+            for spec in tokens:
+                name, entry = _remote_entry(spec)
+                saved = machines.get(name)
+                if (
+                    spec == name
+                    and isinstance(saved, dict)
+                    and (saved.get("ssh") or saved.get("url"))
+                ):
+                    targets[name] = saved
+                else:
+                    merged = {**(saved if isinstance(saved, dict) else {}), **entry}
+                    merged.pop("url" if "ssh" in entry else "ssh", None)
+                    machines[name] = merged
+                    targets[name] = merged
+            return targets
+
+        try:
+            targets = update_remotes(sys.modules[__name__], learn)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
     else:
         targets = dict(machines)
     if not targets:
         sys.stderr.write(
-            "opentab --pull: no machines configured. Add one, e.g. "
-            "`opentab --pull user@host` (or name=user@host, or a URL of a hosted export JSON).\n"
+            "opentab machines pull: no machines configured. Add one, e.g. "
+            "`opentab machines add user@host` (or name=user@host, or a URL of a hosted export JSON).\n"
         )
         return
     remotes_dir = _remotes_write_dir(args)
@@ -2142,17 +2026,29 @@ def _make_ssh_targets_fn():
 
 
 def forget_command(args: argparse.Namespace) -> int:
-    machines = _load_remotes(for_update=True)
+    from opentab.cli.machines import update_remotes
+
     remotes_dir = _remotes_write_dir(args)
-    for name in args.forget:
-        existed = machines.pop(name, None) is not None
-        try:
-            os.remove(os.path.join(remotes_dir, _summary_filename(name)))
-        except OSError:
-            pass
-        sys.stderr.write(f"{'forgot' if existed else 'no such machine:'} {name}\n")
-    _save_remotes(machines)
-    return 0
+
+    def remove(machines):
+        count = 0
+        for name in args.forget:
+            existed = name in machines
+            if existed:
+                machines.pop(name)
+                count += 1
+            try:
+                os.remove(os.path.join(remotes_dir, _summary_filename(name)))
+            except FileNotFoundError:
+                pass
+            sys.stderr.write(f"{'forgot' if existed else 'no such machine:'} {name}\n")
+        return count
+
+    try:
+        count = update_remotes(sys.modules[__name__], remove)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    return 0 if count else 1
 
 
 def _home_path(path: str) -> str:
@@ -2301,6 +2197,15 @@ def main() -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
+    if getattr(args, "command", None) == "machines" and args.machines_action in (
+        "list",
+        "add",
+        "status",
+        "rename",
+    ):
+        from opentab.cli.machines import command
+
+        return command(args, sys.modules[__name__])
     if getattr(args, "command", None) == "launch":
         from opentab.cli.launch import launch_command
 

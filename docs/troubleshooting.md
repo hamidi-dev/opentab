@@ -80,16 +80,17 @@ subscription and credit plans.
 **Fix**: press `$` to price those tokens at API list rates, and `P` to see the rates.
 See [Pricing](pricing.md).
 
-## `opentab pull` can't reach a machine
+## `opentab machines pull` can't reach a machine
 
 **Cause**: OpenTab runs SSH in batch mode, so a login that asks for a password fails.
-Over HTTP(S), the URL must return `opentab export` JSON, not the `opentab web` page.
+Run `opentab machines status NAME` to check the saved connection and version.
+Over HTTP(S), the URL must return `opentab machines export` JSON, not the `opentab web` page.
 
 **Fix**: test the same SSH login by hand first. Give a port inline, or use a `Host`
 block in `~/.ssh/config` (port, key, `ProxyJump` all apply) and pull by its alias:
 
 ```sh
-opentab pull box=ssh://user@host:2222
+opentab machines pull box=ssh://user@host:2222
 ```
 
 If `opentab` isn't on the remote's non-interactive `PATH`, set that machine's `cmd` in
@@ -103,13 +104,13 @@ If `opentab` isn't on the remote's non-interactive `PATH`, set that machine's `c
 **Fix**: export on that machine, copy the file over, and open it here:
 
 ```sh
-opentab export --label workstation box.json  # there
-opentab remote box.json                      # here: merged with local history
+opentab machines export --label workstation box.json  # there
+opentab machines open box.json                        # here: merged with local history
 ```
 
-`opentab remote` also takes several files or a folder. To keep a summary, put it in
+`opentab machines open` also takes several files or a folder. To keep a summary, put it in
 `~/.cache/opentab/remotes/` (or `$XDG_CACHE_HOME/opentab/remotes`; create the folder
-first). A bare `opentab remote` then finds it.
+first). A bare `opentab machines open` then finds it.
 
 - **The machine's name comes from the export, not the file name.** Two boxes with the
   same hostname merge into one; re-export with `--label NAME`. OpenTab warns at startup.

@@ -178,7 +178,7 @@ prompts even without traces. Personal notes stay out of web reports. [Web browse
 ## Every machine, one tab
 
 Your laptop, workstation, and remote box can all contribute to the same view.
-**`opentab pull`** gathers usage summaries over SSH, with no background agent or listening
+**`opentab machines pull`** gathers usage summaries over SSH, with no background agent or listening
 service and no raw traces in summaries. [SSH setup and managing machines](docs/machines.md)
 
 ## Live prices in your sidebar
