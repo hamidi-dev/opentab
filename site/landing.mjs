@@ -24,6 +24,8 @@ function tabset(root) {
       tabs[next].focus();
     });
   });
+  // Panels ship visible so the page reads without JavaScript; hide the inactive ones now.
+  select(tabs.find(tab => tab.getAttribute("aria-selected") === "true") || tabs[0]);
 }
 const views = document.querySelector("[data-feature-views]");
 const tablist = views.querySelector('[role="tablist"]');

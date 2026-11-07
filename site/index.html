@@ -308,7 +308,28 @@ h2 {
 .sub { color: var(--dim); max-width: 60ch; margin: 18px 0 0; font-size: 18px; }
 
 /* Select a question, then inspect the full screen. */
-.demo-intro { position: relative; z-index: 1; text-align: left; margin-bottom: 28px; }
+.demo-intro { position: relative; z-index: 1; text-align: left; margin-bottom: 28px; display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; }
+/* The terminal app is one click away, and says so. */
+.tui-cta { flex-shrink: 0; display: grid; justify-items: end; gap: 9px; }
+.tui-cta[hidden] { display: none; }
+.tui-cta button {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 12px;
+  padding: 12px 22px 12px 14px; border-radius: 999px; background: var(--text); color: var(--ink);
+  font: 700 17px var(--display); transition: transform .15s, box-shadow .15s;
+  box-shadow: 0 0 0 5px color-mix(in oklab, var(--lav) 30%, transparent);
+}
+.tui-cta button .play {
+  display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--spectrum); color: #fff; font-size: 11px; padding-left: 2px; box-sizing: border-box;
+}
+.tui-cta button:hover { transform: scale(1.04); box-shadow: 0 0 0 8px color-mix(in oklab, var(--lav) 40%, transparent); }
+.tui-cta button:focus-visible { outline: 2px solid var(--lav); outline-offset: 4px; }
+.tui-cta small { font: 12px var(--mono); color: var(--dim); }
+.mode button[data-mode="tui"] span { color: var(--t-cache-write); }
+.mode button.nudge { animation: nudge 2s ease-out 3; }
+/* A beat, then a rest, three times; any terminal click stops it. */
+@keyframes nudge { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--lav) 75%, transparent); } 55%, 100% { box-shadow: 0 0 0 12px transparent; } }
+@media (max-width: 760px) { .demo-intro { display: block; } .tui-cta { display: none; } }
 .demo-intro h2 { max-width: 24ch; }
 .feature-views { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 28px; margin-top: 32px; align-items: start; }
 .feature-tabs { display: grid; gap: 8px; }
@@ -482,8 +503,14 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
 
   <div class="wrap stage" id="stage">
     <div class="demo-intro">
-      <h2>Now investigate it yourself.</h2>
-      <p class="sub">Run the real OpenTab right here, nothing to install, with a year of synthetic history. Pick a session and follow the work behind the numbers.</p>
+      <div>
+        <h2>Now investigate it yourself.</h2>
+        <p class="sub">The real OpenTab, right here, with a year of synthetic history. Pick a session and follow the work behind the numbers.</p>
+      </div>
+      <div class="tui-cta" data-tui-cta>
+        <button type="button" data-start><span class="play" aria-hidden="true">▶</span>Run the real terminal app</button>
+        <small>The actual TUI, in this tab · nothing to install</small>
+      </div>
     </div>
     <div class="glow" aria-hidden="true"></div>
     <div class="window">
@@ -492,8 +519,8 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
         <div class="url" data-url>~ opentab</div>
         <a class="full" href="try/" data-full hidden>full page</a>
         <div class="mode" role="tablist">
-          <button role="tab" aria-selected="true" data-mode="tui">terminal</button>
-          <button role="tab" aria-selected="false" data-mode="web">browser</button>
+          <button role="tab" aria-selected="false" data-mode="tui"><span aria-hidden="true">▶ </span>terminal</button>
+          <button role="tab" aria-selected="true" data-mode="web">browser</button>
         </div>
       </div>
       <div class="screen">
@@ -574,7 +601,7 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
     <div class="setup-tabs" role="tablist" aria-label="Setups">
       <button id="setup-herdr" type="button" role="tab" aria-selected="true" aria-controls="setup-panel-herdr" tabindex="0">Herdr</button>
       <button id="setup-tmux" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-tmux" tabindex="-1">tmux</button>
-      <button id="setup-other" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-other" tabindex="-1">Zellij &amp; co</button>
+      <button id="setup-other" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-other" tabindex="-1">Other terminals</button>
       <button id="setup-mcp" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-mcp" tabindex="-1">MCP</button>
       <button id="setup-plan" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-plan" tabindex="-1">Subscriptions</button>
       <button id="setup-machines" type="button" role="tab" aria-selected="false" aria-controls="setup-panel-machines" tabindex="-1">Machines</button>
@@ -585,23 +612,24 @@ try { const t = localStorage.getItem("ot-theme") || localStorage.getItem("ot-doc
     <div class="setup-panel" id="setup-panel-herdr" role="tabpanel" aria-labelledby="setup-herdr" tabindex="0">
       <div class="setup-copy">
         <h3>Prices in the Herdr sidebar.</h3>
-        <p>The <a href="https://github.com/hamidi-dev/herdr-opentab">herdr-opentab</a> plugin puts each running agent’s cost beside it, subagents included, plus how long it has been working or waiting. It updates itself as the session runs.</p>
-        <p>Inside Herdr, <kbd>L</kbd> in OpenTab reopens any session as a new Herdr tab or split.</p>
+        <p>The <a href="https://github.com/hamidi-dev/herdr-opentab">herdr-opentab</a> plugin puts each running agent’s cost beside it, subagents included, plus how long it has been working or waiting. It updates itself as the session runs. Herdr’s integration for your agent lets two panes in one repo show their own sessions.</p>
+        <p>Inside Herdr, <kbd>L</kbd> in OpenTab reopens a supported session as a new Herdr tab or split.</p>
         <div class="snippet">
           <div class="snippet-bar"><span>shell</span><button class="copy" type="button" aria-label="Copy Herdr plugin setup">copy</button></div>
           <pre><code>herdr plugin install hamidi-dev/herdr-opentab
 herdr plugin action invoke opentab.setup
-herdr server reload-config</code></pre>
+herdr server reload-config
+herdr integration install claude   <span class="c"># or codex, opencode, …</span></code></pre>
         </div>
       </div>
       <figure class="setup-visual"><img src="media/herdr-sidebar.png" loading="lazy" width="1190" height="694" alt="The Herdr sidebar with a price beside every agent; amounts synthetic"></figure>
     </div>
 
-    <div class="setup-panel" id="setup-panel-tmux" role="tabpanel" aria-labelledby="setup-tmux" tabindex="0" hidden>
+    <div class="setup-panel" id="setup-panel-tmux" role="tabpanel" aria-labelledby="setup-tmux" tabindex="0">
       <div class="setup-copy">
         <h3>Cost in the status bar, the session one key away.</h3>
         <p><code>opentab cost</code> prints the latest session’s cost for the pane’s project, subagents included, fast enough to poll. <code>--goto</code> opens that same session for inspection.</p>
-        <p>From there, <kbd>L</kbd> resumes any session in a new tmux window, a split or a popup.</p>
+        <p>From there, <kbd>L</kbd> resumes a supported session in a new tmux window, a split or a popup.</p>
         <a href="docs/#/sessions">Resuming sessions →</a>
       </div>
       <div class="snippet">
@@ -616,10 +644,10 @@ bind o display-popup -E -w 90% -h 90% \
       </div>
     </div>
 
-    <div class="setup-panel" id="setup-panel-other" role="tabpanel" aria-labelledby="setup-other" tabindex="0" hidden>
+    <div class="setup-panel" id="setup-panel-other" role="tabpanel" aria-labelledby="setup-other" tabindex="0">
       <div class="setup-copy">
         <h3>Zellij, WezTerm, kitty or anything with a CLI.</h3>
-        <p>OpenTab drives tmux and Herdr on its own. For everything else, drop an executable at <code>~/.config/opentab/launcher</code> and every <kbd>L</kbd> launch goes through it: a window, a split or a popup, with the directory and the resume command.</p>
+        <p>OpenTab drives tmux and Herdr on its own. For everything else, drop an executable script at <code>~/.config/opentab/launcher</code> (<code>chmod +x</code>) and every <kbd>L</kbd> launch goes through it: a window, a split or a popup, with the directory and the resume command.</p>
         <a href="docs/#/configuration#custom-launchers">Custom launchers →</a>
       </div>
       <div class="snippet">
@@ -629,13 +657,14 @@ bind o display-popup -E -w 90% -h 90% \
 kind=$1 dir=$2 cmd=$3
 case $kind in
   window) exec zellij action new-tab --cwd "$dir" -- sh -c "$cmd" ;;
+  hsplit) exec zellij run --direction right --cwd "$dir" -- sh -c "$cmd" ;;
+  vsplit) exec zellij run --direction down --cwd "$dir" -- sh -c "$cmd" ;;
   popup)  exec zellij run --floating --cwd "$dir" -- sh -c "$cmd" ;;
-  *)      exec zellij run --cwd "$dir" -- sh -c "$cmd" ;;
 esac</code></pre>
       </div>
     </div>
 
-    <div class="setup-panel" id="setup-panel-mcp" role="tabpanel" aria-labelledby="setup-mcp" tabindex="0" hidden>
+    <div class="setup-panel" id="setup-panel-mcp" role="tabpanel" aria-labelledby="setup-mcp" tabindex="0">
       <div class="setup-copy">
         <h3>Let your agent ask about its own history.</h3>
         <p><code>opentab mcp</code> answers usage questions over stdio, with no network port: <em>which project cost the most this month? Why was yesterday’s session so expensive?</em></p>
@@ -655,7 +684,7 @@ esac</code></pre>
       </div>
     </div>
 
-    <div class="setup-panel" id="setup-panel-plan" role="tabpanel" aria-labelledby="setup-plan" tabindex="0" hidden>
+    <div class="setup-panel" id="setup-panel-plan" role="tabpanel" aria-labelledby="setup-plan" tabindex="0">
       <div class="setup-copy">
         <h3>Your plan says $0. What did the work use?</h3>
         <p>Subscription usage usually records no cost. OpenTab prices those tokens at API list rates, marked as estimates, so you can set a month of usage against what you pay for the plan.</p>
@@ -668,7 +697,7 @@ esac</code></pre>
       </dl>
     </div>
 
-    <div class="setup-panel" id="setup-panel-machines" role="tabpanel" aria-labelledby="setup-machines" tabindex="0" hidden>
+    <div class="setup-panel" id="setup-panel-machines" role="tabpanel" aria-labelledby="setup-machines" tabindex="0">
       <div class="setup-copy">
         <h3>Laptop, workstation, server: one tab.</h3>
         <p><code>opentab pull</code> fetches usage summaries over SSH and opens them beside this machine’s history. Each remote only needs <code>opentab</code> installed. Nothing runs in the background, nothing listens on a port.</p>
@@ -683,24 +712,25 @@ opentab remote                    <span class="c"># reopen the last pull offline
       </div>
     </div>
 
-    <div class="setup-panel" id="setup-panel-reports" role="tabpanel" aria-labelledby="setup-reports" tabindex="0" hidden>
+    <div class="setup-panel" id="setup-panel-reports" role="tabpanel" aria-labelledby="setup-reports" tabindex="0">
       <div class="setup-copy">
         <h3>One file to send, nothing to install.</h3>
-        <p>Export a self-contained HTML report that opens offline, with the same views as the browser app. Links to a month, a day or a session open exactly the part you want to show.</p>
+        <p>Export a self-contained HTML report that opens offline: overview, trends and model comparisons. Add <code>--include-details</code> for each session’s Turns, Tools and Context; that bundles your prompts too. Links to a month, a day or a session open exactly the part you want to show.</p>
         <p>Optional <code>--demo</code> scrambling disguises selected fields; dates and the shape of the data stay real. Personal notes stay out of every report.</p>
         <a href="docs/#/privacy">What an export contains →</a>
       </div>
       <div class="snippet">
         <div class="snippet-bar"><span>shell</span><button class="copy" type="button" aria-label="Copy report commands">copy</button></div>
-        <pre><code>opentab --html report.html         <span class="c"># the whole history</span>
-opentab --demo --html demo.html    <span class="c"># scrambled for sharing</span></code></pre>
+        <pre><code>opentab --html report.html                       <span class="c"># overview and trends</span>
+opentab web --html full.html --include-details   <span class="c"># plus Turns, Tools, Context</span>
+opentab --demo --html demo.html                  <span class="c"># scrambled for sharing</span></code></pre>
       </div>
     </div>
 
-    <div class="setup-panel" id="setup-panel-scripts" role="tabpanel" aria-labelledby="setup-scripts" tabindex="0" hidden>
+    <div class="setup-panel" id="setup-panel-scripts" role="tabpanel" aria-labelledby="setup-scripts" tabindex="0">
       <div class="setup-copy">
         <h3>JSON for scripts, one line for status bars.</h3>
-        <p>Every command prints one versioned JSON document. Session keys name the machine and tool, so they never collide. Feed <code>opentab cost</code> to sketchybar, waybar or your prompt; <kbd>e</kbd> in the Sessions list exports CSV.</p>
+        <p>The query commands print one versioned JSON document each. Session keys name the machine and tool, so they never collide. Feed <code>opentab cost</code> to sketchybar, waybar or your prompt; <kbd>e</kbd> in the Sessions list exports CSV.</p>
         <a href="docs/#/programmatic">Programmatic access →</a>
       </div>
       <div class="snippet">
@@ -779,13 +809,16 @@ const hints = {
   app: "This is OpenTab itself, not a recording. Click into it, press <kbd>?</kbd> for keys; the mouse works too.",
   web: "This is the real <code>opentab web</code> report, built from synthetic data. A year of synthetic history; open any session for its Turns, Tools and Context. Press <kbd>?</kbd> inside it for keys.",
 };
-function show(mode) {
+const cta = document.querySelector("[data-tui-cta]");
+function show(mode, load = true) {
   document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-selected", b.dataset.mode === mode));
+  if (mode === "tui") document.querySelector('[data-mode="tui"]').classList.remove("nudge");
   tuiPane.hidden = mode !== "tui" || started;
   const report = document.querySelector('[data-pane="web"]');
   report.hidden = mode !== "web";
-  // The report is 1.6 MB; most visitors never open this tab, so it loads on first view.
-  if (mode === "web" && !report.getAttribute("src")) report.src = report.dataset.src;
+  // The report is 1.6 MB: it loads when the stage approaches, or when someone asks for it.
+  if (mode === "web" && load && !report.getAttribute("src")) report.src = report.dataset.src;
+  cta.hidden = started;
   if (app) app.classList.toggle("away", mode !== "tui" || !started);
   full.hidden = !(started && mode === "tui");
   url.textContent = mode === "tui" ? "~ opentab" : "opentab web — localhost";
@@ -818,7 +851,7 @@ document.querySelectorAll("[data-story-open]").forEach(link => link.addEventList
 // The app mounts hidden as soon as a pointer rests on the button (or keyboard focus reaches
 // it), so its ~10 MB download has a head start when the click lands. Not on page load:
 // most visitors never start it, and Save-Data asks us not to guess.
-const start = document.querySelector("[data-start]");
+const starts = document.querySelectorAll("[data-start]");
 function mountApp() {
   if (app || !self.crossOriginIsolated) return;
   app = document.createElement("iframe");
@@ -830,17 +863,32 @@ function mountApp() {
   app.addEventListener("load", () => { if (started) app.contentWindow.focus(); });
 }
 const warm = () => { if (!navigator.connection?.saveData) mountApp(); };
-start.addEventListener("pointerenter", warm);
-start.addEventListener("focus", warm);
-start.addEventListener("click", () => {
-  if (!self.crossOriginIsolated) { location.href = "try/"; return; }
-  mountApp();
-  if (!started) self.otCount?.("start");
-  started = true;
-  show("tui");
+starts.forEach(start => {
+  start.addEventListener("pointerenter", warm);
+  start.addEventListener("focus", warm);
+  start.addEventListener("click", () => {
+    if (!self.crossOriginIsolated) { location.href = "try/"; return; }
+    mountApp();
+    if (!started) self.otCount?.("start");
+    started = true;
+    show("tui");
+  });
 });
-// The terminal app needs a keyboard and some width; phones get the report first.
-show(matchMedia("(max-width: 760px)").matches ? "web" : "tui");
+// The report is interactive at once, so it is the default; the terminal is one click away.
+// It loads a screen before the stage is reached, and the terminal tab pulses once on arrival.
+show("web", false);
+const stage = document.querySelector("#stage");
+new IntersectionObserver((entries, observer) => {
+  if (!entries.some(e => e.isIntersecting)) return;
+  observer.disconnect();
+  if (!document.querySelector('[data-pane="web"]').hidden) show("web");
+}, { rootMargin: "100% 0px" }).observe(stage);
+new IntersectionObserver((entries, observer) => {
+  if (!entries.some(e => e.isIntersecting)) return;
+  observer.disconnect();
+  const tui = document.querySelector('[data-mode="tui"]');
+  if (!started && tui.getAttribute("aria-selected") !== "true") tui.classList.add("nudge");
+}, { threshold: 0.4 }).observe(stage);
 
 </script>
 </body>
