@@ -1,6 +1,25 @@
 {
   "releases": [
     {
+      "version": "1.35.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "See what a typical day and a typical session cost: Trends now opens on a Summary of spend per day and per active day, plus the per-session median, mean, p90 and max.", "hint": {"text": "Open Trends; it starts on Summary", "binding": {"context": "main", "action": "trends"}}},
+            {"text": "Move through the opentab launch picker with Alt-J/Alt-K, even when tmux binds those keys: open it in a tmux popup.", "hint": {"text": "Run opentab launch --tmux"}}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "opentab launch without fzf installed now stops at once with an install hint, before refreshing."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.35.0"
+    },
+    {
       "version": "1.34.0",
       "sections": [
         {
