@@ -383,6 +383,11 @@ def _refreshed(args, cached: list[Workflow]) -> list[Workflow]:
 
 
 def launch_command(args) -> int:
+    # Check before --refresh so a missing picker fails fast, not after a full refresh.
+    fzf = shutil.which("fzf")
+    if not fzf:
+        print("launch: fzf not found on PATH (install fzf to use the picker)", file=sys.stderr)
+        return 1
     cached = _load(args)
     if args.refresh:
         print("launch: refreshing local caches...", file=sys.stderr)
@@ -399,10 +404,6 @@ def launch_command(args) -> int:
             "launch: no cached local sessions; run `opentab launch --refresh` first",
             file=sys.stderr,
         )
-        return 1
-    fzf = shutil.which("fzf")
-    if not fzf:
-        print("launch: fzf not found on PATH (install fzf to use the picker)", file=sys.stderr)
         return 1
     # Opaque ordinal selection avoids collisions across titles, harnesses and IDs.
     layout = _layout(rows, shutil.get_terminal_size((100, 24)).columns)
