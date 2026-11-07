@@ -707,7 +707,7 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
         description="Pick a local session by title, harness, project and activity. Opens "
         "instantly from existing OpenTab rollup caches, refreshes them in the background "
         "and swaps in the updated list (fzf 0.36+). Requires fzf on PATH.",
-        epilog="Examples:\n  opentab launch\n  opentab launch --refresh\n  opentab launch --no-refresh\n\n"
+        epilog="Examples:\n  opentab launch\n  opentab launch --refresh\n  opentab launch --no-refresh\n  opentab launch --tmux\n\n"
         "Cache behavior: docs/caching.md",
     )
     _add_command_global_args(
@@ -752,6 +752,12 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
         "--no-refresh",
         action="store_true",
         help="show only the existing caches; never read harness data",
+    )
+    launch.add_argument(
+        "--tmux",
+        action="store_true",
+        help="inside tmux, open the picker in a tmux popup, where keys tmux binds "
+        "(such as Alt-J/K) still reach it (fzf 0.53+; ignored elsewhere)",
     )
     doctor = subs.add_parser(
         "doctor",
@@ -923,7 +929,7 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
             "Choose a cached local session in fzf, then resume it in this terminal.\n"
             "Opens from cache and swaps in a background refresh; --refresh waits for it\n"
             "first, --no-refresh never reads harness records.",
-            {"refresh", "no_refresh", "source"},
+            {"refresh", "no_refresh", "tmux", "source"},
         ),
         doctor: (
             "Find missing sources and configuration problems. Read-only; nothing repaired.\n"
