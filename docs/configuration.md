@@ -135,7 +135,8 @@ This example routes launches through zellij:
 kind=$1 dir=$2 cmd=$3
 case $kind in
   window) exec zellij action new-tab --cwd "$dir" -- sh -c "$cmd" ;;
+  hsplit) exec zellij run --direction right --cwd "$dir" -- sh -c "$cmd" ;;
+  vsplit) exec zellij run --direction down --cwd "$dir" -- sh -c "$cmd" ;;
   popup)  exec zellij run --floating --cwd "$dir" -- sh -c "$cmd" ;;
-  *)      exec zellij run --cwd "$dir" -- sh -c "$cmd" ;;
 esac
 ```
