@@ -45,6 +45,13 @@ from tests._support import (
 )
 
 
+def _seed_remotes(machines: dict) -> None:
+    # Saved machines through the same locked edit the CLI uses.
+    from opentab.cli.machines import update_remotes
+
+    update_remotes(cli, lambda saved: saved.update(machines))
+
+
 def test_presentation_date_options_reject_bad_bounds_before_loading_sources():
     for command in ([], ["tui"], ["web"], ["pull"], ["remote"]):
         for flags in (
@@ -98,7 +105,7 @@ def test_remote_config_saves_preserve_unknown_fields_and_entries():
         with open(config, "w") as stream:
             json.dump(payload, stream)
         with patch.object(cli, "remotes_config_path", return_value=config):
-            cli._save_remotes({"box": {"ssh": "box", "future": "keep"}})
+            _seed_remotes({"box": {"ssh": "box", "future": "keep"}})
         with open(config) as stream:
             actual = json.load(stream)
         assert actual["future"] == payload["future"]
@@ -2449,7 +2456,7 @@ def test_remotes_config_round_trips():
         cfg = os.path.join(d, "remotes.json")
         with _remotes_env(cfg):
             assert cli._load_remotes() == {}  # missing file is empty, never fatal
-            cli._save_remotes({"box": {"ssh": "box"}})
+            _seed_remotes({"box": {"ssh": "box"}})
             assert cli._load_remotes() == {"box": {"ssh": "box"}}
 
 
@@ -2487,7 +2494,7 @@ def test_make_refresh_fn_repulls_named_machines_over_the_pull_workers():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg, fetch):
-            cli._save_remotes({"server": {"ssh": "server"}, "desktop": {"ssh": "root@desktop"}})
+            _seed_remotes({"server": {"ssh": "server"}, "desktop": {"ssh": "root@desktop"}})
             fn = cli._make_refresh_fn(_parse(["--remote", "--remotes", rdir]))
             results = dict((n, (c, e)) for n, c, e in fn(["server"]))
             assert results == {"server": (2, "")}  # only server, its 2 sessions
@@ -2505,7 +2512,7 @@ def test_pull_with_no_hosts_refreshes_every_saved_machine():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "mo@server"}})
+            _seed_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "mo@server"}})
         args = _parse(["--pull", "--remotes", rdir])  # bare --pull
         with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
             cli.pull_command(args)
@@ -2520,7 +2527,7 @@ def test_forget_removes_a_machine_and_its_cached_summary():
         with open(os.path.join(rdir, "laptop.json"), "w", encoding="utf-8") as fh:
             fh.write("{}")
         with _remotes_env(cfg):
-            cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "server"}})
+            _seed_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "server"}})
         args = _parse(["--forget", "laptop", "--remotes", rdir])
         with _remotes_env(cfg), contextlib.redirect_stderr(io.StringIO()):
             assert cli.forget_command(args) == 0
@@ -2556,7 +2563,7 @@ def test_pull_relearn_swaps_url_target_to_ssh():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            cli._save_remotes({"box": {"url": "http://old:8321"}})
+            _seed_remotes({"box": {"url": "http://old:8321"}})
         args = _parse(["--pull", "box=newhost", "--remotes", rdir])
         with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
             cli.pull_command(args)
@@ -2584,7 +2591,7 @@ def test_pull_repairs_a_cmd_only_saved_entry():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            cli._save_remotes({"box": {"cmd": "/opt/opentab --export -"}})
+            _seed_remotes({"box": {"cmd": "/opt/opentab --export -"}})
         args = _parse(["--pull", "box", "--remotes", rdir])
         with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
             cli.pull_command(args)
@@ -2822,7 +2829,7 @@ def test_pull_with_timings_refreshes_the_fleet_before_profiling():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            cli._save_remotes({"server": {"ssh": "server"}})
+            _seed_remotes({"server": {"ssh": "server"}})
         cli.sources.available_sources = lambda args: []
         cli.resolve_source = lambda args, state: "remote"
         cli.sources.make_store = lambda args, key: (_Stub(), "")
@@ -2867,7 +2874,7 @@ def test_remote_timings_without_pull_never_fetches():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            cli._save_remotes({"server": {"ssh": "server"}})
+            _seed_remotes({"server": {"ssh": "server"}})
         cli.sources.available_sources = lambda args: []
         cli.resolve_source = lambda args, state: "remote"
         cli.sources.make_store = lambda args, key: (_Stub(), "")
@@ -3061,7 +3068,7 @@ def test_a_pull_refuses_to_write_beside_a_summary_file():
         with _remotes_env(cfg), contextlib.redirect_stderr(err):
             cli.pull_command(_parse(["--pull", "server", "--remotes", summary]))
         assert "needs a directory" in err.getvalue()
-        assert not os.path.exists(cfg)  # refused before _save_remotes learns the host
+        assert not os.path.exists(cfg)  # refused before the pull learns the host
 
 
 def test_a_positional_directory_keeps_its_refresh():

@@ -204,6 +204,10 @@ def _valid_name(name):
         raise ValueError("machine name must be nonempty and contain no control characters")
 
 
+def _taken(name):
+    return f"machine {name!r} already exists; choose another NAME=TARGET"
+
+
 def _cache_metadata(backend, name, directory):
     try:
         filename = os.path.join(directory, backend._summary_filename(name))
@@ -281,9 +285,11 @@ def _probe_ssh(entry):
     target = entry.get("ssh")
     if not isinstance(target, str) or not target or target.startswith("-"):
         return {"status": "error", "error": "invalid SSH target", "opentab_version": None}
-    # Check the same executable as pull/turn reads when a custom command is saved.
-    script = _SSH_PROBE
-    if entry.get("cmd") or entry.get("trace_cmd"):
+    # ssh hands the command to the remote login shell, which may not be POSIX (fish).
+    # Run the discovery script under /bin/sh; a custom cmd stays raw, exactly as pull sends it.
+    discover = not (entry.get("cmd") or entry.get("trace_cmd"))
+    script = "/bin/sh -c " + shlex.quote(_SSH_PROBE)
+    if not discover:
         from opentab.remote_content import _argv_prefix, _derived_prefix
 
         prefix = (
@@ -344,14 +350,12 @@ def _probe_ssh(entry):
                 "opentab_version": None,
             }
         lines = proc.stdout.strip().splitlines()
-        version = next(
-            (
-                line.removeprefix("opentab ").strip()
-                for line in reversed(lines)
-                if line.startswith("opentab ")
-            ),
-            None,
+        # Login-shell noise may precede the probe's record, so read the version, the path
+        # before it and the default marker after it from the same (last) record.
+        index = next(
+            (i for i in reversed(range(len(lines))) if lines[i].startswith("opentab ")), None
         )
+        version = lines[index].removeprefix("opentab ").strip() if index is not None else ""
         if not version:
             return {
                 "status": "error",
@@ -359,15 +363,14 @@ def _probe_ssh(entry):
                 "opentab_version": None,
             }
         result = {"status": "reachable", "error": None, "opentab_version": version}
-        if script == _SSH_PROBE:
-            index = next(i for i, line in enumerate(lines) if line.startswith("opentab "))
+        if discover:
             if index == 0 or not lines[index - 1].startswith("/"):
                 return {
                     "status": "error",
                     "error": "probe did not return an absolute OpenTab path",
                     "opentab_version": version,
                 }
-            if lines[-1] != "default":
+            if lines[index + 1 : index + 2] != ["default"]:
                 result["cmd"] = shlex.quote(lines[index - 1]) + " --export -"
                 result["trace_cmd"] = [lines[index - 1]]
         return result
@@ -435,20 +438,26 @@ def command(args, backend):
             target = entry.get("url") or entry.get("ssh")
             if not isinstance(target, str) or not target or target.startswith("-"):
                 raise ValueError("invalid machine target")
+            # Fail fast on a taken name; the locked edit below re-checks for races.
+            if name in _editable_document(backend)["machines"]:
+                raise ValueError(_taken(name))
             if not args.no_check:
                 result = probe(backend, name, entry)
                 if result["status"] != "reachable":
                     raise ValueError(result["error"])
                 if result.get("cmd"):
                     entry["cmd"] = result["cmd"]
-                    from opentab.remote_content import _derived_prefix
+                    from opentab.remote_content import _argv_prefix, _derived_prefix
 
-                    if not _derived_prefix(result["cmd"]):
-                        entry["trace_cmd"] = result["trace_cmd"]
+                    # Turn reads run the derived prefix through the remote shell unquoted;
+                    # keep the argv form whenever that text is not the quoted path (`'`, `$`).
+                    trace = result.get("trace_cmd")
+                    if trace and _derived_prefix(result["cmd"]) != _argv_prefix(trace):
+                        entry["trace_cmd"] = trace
 
             def add(machines):
                 if name in machines:
-                    raise ValueError(f"machine {name!r} already exists; choose another NAME=TARGET")
+                    raise ValueError(_taken(name))
                 machines[name] = entry
 
             update_remotes(backend, add)
