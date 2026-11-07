@@ -528,7 +528,7 @@ def _parser_digest() -> str:
     if _PARSER_DIGEST is None:
         try:
             source = __loader__.get_data(__file__)  # noqa: F821 -- set by the import system
-        except Exception:  # noqa: BLE001 -- any loader without get_data: no identity, no cache
+        except (AttributeError, NameError, OSError):  # noqa: BLE001 -- any loader without get_data: no identity, no cache
             source = None
         _PARSER_DIGEST = hashlib.sha1(source).hexdigest() if source else ""
     return _PARSER_DIGEST
