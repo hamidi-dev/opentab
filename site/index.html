@@ -131,6 +131,18 @@ nav.top .links a:hover { color: var(--text); }
 .story-heatmap { display: grid; grid-template-rows: repeat(7, 1fr); grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; height: 77px; margin-top: 18px; }
 .story-heatmap i { display: block; border-radius: 1px; background: color-mix(in srgb, var(--lav) var(--heat), var(--ink-3)); }
 .story-heatmap i.selected { background: var(--t-cache-write); outline: 2px solid var(--t-cache-write); outline-offset: 2px; z-index: 1; }
+/* Hover a day: it lifts, its neighbours brighten a little, and its spend appears above it. */
+.story-heatmap { position: relative; }
+.story-heatmap i { transition: transform .18s ease-out, filter .25s ease-out; }
+.story-heatmap i.near { filter: brightness(1.45); }
+.story-heatmap i.hot { transform: scale(1.9); filter: brightness(1.6); z-index: 2; border-radius: 2px; box-shadow: 0 0 0 1px var(--ink-2); }
+.heat-tip {
+  position: absolute; z-index: 3; bottom: 100%; left: 0; transform: translate(-50%, -8px);
+  padding: 4px 8px; border-radius: 6px; background: var(--text); color: var(--ink);
+  font: 600 11px var(--mono); white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity .15s, left .12s ease-out, top .12s ease-out;
+}
+.heat-tip.on { opacity: 1; }
 .story-axis { display: flex; justify-content: space-between; margin-top: 9px; font: 12px var(--mono); color: var(--dim); }
 .story-axis .selected-day { color: var(--t-cache-write); }
 .story-session { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 11px 0; color: var(--dim); font: 13px/1.4 var(--body); }
@@ -311,6 +323,8 @@ h2 {
 .feature-panel figcaption a { display: inline-block; margin-top: 8px; }
 
 /* token economics, interactive */
+.tool-list li { transition: background .25s, color .25s; }
+.tool-list li:hover { background: var(--ink-3); }
 .econ { margin-top: 28px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r); padding: 32px; }
 .econ .row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: 18px; margin: 14px 0; }
 .econ .row > span { font: 13px var(--mono); color: var(--dim); }
@@ -346,6 +360,14 @@ h2 {
 }
 .setup-tabs button:hover { color: var(--text); }
 .setup-tabs button[aria-selected="true"] { color: var(--text); background: var(--ink-3); border-color: var(--frame); }
+.setup-tabs { position: relative; }
+.setup-tabs button { position: relative; z-index: 1; transition: color .2s, border-color .2s; }
+.setup-tabs.has-pill button[aria-selected="true"] { background: none; border-color: transparent; }
+.setup-pill {
+  position: absolute; top: 0; left: 0; z-index: 0; border-radius: 99px; pointer-events: none;
+  background: var(--ink-3); border: 1px solid var(--frame);
+}
+.setup-pill.moving { transition: transform .32s cubic-bezier(.3, .8, .2, 1), width .32s cubic-bezier(.3, .8, .2, 1), height .32s; }
 .setup-panel {
   display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 32px; align-items: start;
   margin-top: 18px; padding: 30px; background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r);

@@ -36,6 +36,33 @@ narrow.addEventListener("change", orientation);
 tabset(views);
 document.querySelectorAll("[data-tabset]").forEach(tabset);
 
+// The recipe chips share one highlight that glides to the selected chip. It is placed
+// once without a transition, then animates; the global reduced-motion rule stills it.
+document.querySelectorAll(".setup-tabs").forEach(list => {
+  const pill = document.createElement("span");
+  pill.className = "setup-pill";
+  pill.setAttribute("aria-hidden", "true");
+  list.prepend(pill);
+  list.classList.add("has-pill");
+  function place() {
+    const tab = list.querySelector('[aria-selected="true"]');
+    if (!tab) return;
+    pill.style.width = `${tab.offsetWidth}px`;
+    pill.style.height = `${tab.offsetHeight}px`;
+    pill.style.transform = `translate(${tab.offsetLeft}px, ${tab.offsetTop}px)`;
+  }
+  place();
+  requestAnimationFrame(() => pill.classList.add("moving"));
+  list.addEventListener("click", () => requestAnimationFrame(place));
+  list.addEventListener("keydown", () => requestAnimationFrame(place));
+  new ResizeObserver(() => {
+    pill.classList.remove("moving");
+    place();
+    requestAnimationFrame(() => pill.classList.add("moving"));
+  }).observe(list);
+  document.fonts?.ready.then(place);
+});
+
 const colors = new Set(["cache-read", "output", "cache-write", "input", "reasoning"]);
 const count = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 });

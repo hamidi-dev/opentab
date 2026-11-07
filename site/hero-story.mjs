@@ -78,9 +78,42 @@ async function init() {
   data.days.forEach(d => {
     const cell = el("i", d.date === selectedDate ? "selected" : "");
     cell.style.setProperty("--heat", d.cost ? `${18 + 82 * Math.sqrt(d.cost / max)}%` : "0%");
-    cell.title = `${date(d.date)} · ${money(d.cost)}`;
+    cell.dataset.tip = `${date(d.date)} · ${money(d.cost)}`;
     heatmap.append(cell);
   });
+  // Hover a day: it lifts, the days around it brighten, and its spend shows above it.
+  // The grid flows by column, so neighbours are ±1 (same week) and ±7 (adjacent weeks).
+  const cells = [...heatmap.children];
+  const tip = el("span", "heat-tip");
+  tip.setAttribute("aria-hidden", "true");
+  heatmap.append(tip);
+  let lit = [];
+  function clear() {
+    lit.forEach(c => c.classList.remove("hot", "near"));
+    lit = [];
+    tip.classList.remove("on");
+  }
+  heatmap.addEventListener("pointerover", event => {
+    const cell = event.target;
+    if (event.pointerType !== "mouse" || cell.tagName !== "I" || !cell.dataset.tip) return;
+    clear();
+    const i = cells.indexOf(cell);
+    const row = i % 7;
+    const near = [i - 7, i + 7, row > 0 ? i - 1 : -1, row < 6 ? i + 1 : -1];
+    near.forEach(j => { if (cells[j]?.dataset.tip) { cells[j].classList.add("near"); lit.push(cells[j]); } });
+    cell.classList.add("hot");
+    lit.push(cell);
+    tip.textContent = cell.dataset.tip;
+    const x = cell.offsetLeft + cell.offsetWidth / 2;
+    tip.style.left = `${Math.min(Math.max(x, 60), heatmap.offsetWidth - 60)}px`;
+    // Upper rows show the label below the day, so it never covers the headline.
+    const below = row < 3;
+    tip.style.top = `${below ? cell.offsetTop + cell.offsetHeight : cell.offsetTop}px`;
+    tip.style.bottom = "auto";
+    tip.style.transform = below ? "translate(-50%, 8px)" : "translate(-50%, calc(-100% - 8px))";
+    tip.classList.add("on");
+  });
+  heatmap.addEventListener("pointerleave", clear);
   const axis = el("div", "story-axis");
   axis.append(el("span", "", date(data.days[0].date)), el("span", "selected-day", `${date(selectedDate)} ↑`));
   overview.append(heatmap, axis);
