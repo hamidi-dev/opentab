@@ -1734,21 +1734,6 @@ def _atomic_text(path: str, text: str) -> None:
                 os.unlink(tmp)
 
 
-def _save_remotes(machines: dict) -> None:
-    from opentab.cli.machines import update_remotes
-
-    def replace(saved):
-        for name in list(saved):
-            if isinstance(saved[name], dict) and name not in machines:
-                del saved[name]
-        saved.update(machines)
-
-    try:
-        update_remotes(sys.modules[__name__], replace)
-    except (OSError, ValueError) as exc:
-        raise SystemExit(str(exc)) from exc
-
-
 def _pull_target(spec: str) -> str:
     # The destination half of a `name=target` pull spec, split as _remote_entry does.
     if spec.startswith(("http://", "https://", "ssh://")):
@@ -1895,7 +1880,7 @@ def pull_command(args: argparse.Namespace) -> None:
             f"{default_remotes_dir()}, or name a directory.\n"
         )
         return
-    # Refuse a local summary BEFORE _save_remotes below persists it as a machine.
+    # Refuse a local summary BEFORE the locked edit below persists it as a machine.
     files = [t for t in tokens if _looks_like_a_summary_path(t)]
     if files:
         # Both suggestions must name the TARGET, never the `name=target` spec: `opentab

@@ -89,6 +89,8 @@ it exits 1 if any selected machine fails. `version_skew` flags versions before
 the producer. Copying a cache file can therefore change the apparent pull time.
 
 Rename moves the saved connection and cached file, not the label inside the export.
+Rename while no pull is running and OpenTab is closed: a pull in flight still writes the
+old name, and an open fleet keeps routing resume by it until you reopen it.
 Remove exits 1 when none of the named machines existed. Configuration edits are
 locked and atomic; malformed or newer-format configuration is never overwritten.
 You can still edit `remotes.json` yourself when OpenTab is not writing it:

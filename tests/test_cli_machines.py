@@ -3,12 +3,17 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 from unittest.mock import patch
 
+from opentab import RemoteStore
 from opentab.cli import machines
 from opentab.cli import main as cli
+
+from tests._support import _parse
+from tests.test_cli import _fake_summary_text
 
 
 @contextlib.contextmanager
@@ -121,6 +126,40 @@ def test_machine_add_no_check_collision_and_local_file_rejection():
         assert not os.path.exists(os.path.join(directory, "box.json"))
 
 
+def test_machine_add_rejects_a_taken_name_before_probing():
+    with fleet({"version": 1, "machines": {"box": {"ssh": "old"}}}) as (_, config), patch.object(
+        machines, "probe", side_effect=AssertionError("network")
+    ):
+        before = read(config)
+        code, _, errors = run("add", "box=user@new")
+        assert code == 1 and "already exists" in errors
+        assert read(config) == before
+
+
+def test_machine_add_keeps_argv_trace_cmd_when_the_shell_text_would_change_it():
+    from opentab import remote_content
+
+    for path, keeps in (
+        ("/opt/bin/opentab", False),
+        ("/opt/team's/bin/opentab", True),
+        ("/opt/$x/bin/opentab", True),
+        ("/opt/my tools/opentab", True),
+    ):
+        result = {
+            "status": "reachable",
+            "error": None,
+            "opentab_version": "1.34.0",
+            "cmd": shlex.quote(path) + " --export -",
+            "trace_cmd": [path],
+        }
+        with fleet() as (directory, config), patch.object(machines, "probe", return_value=result):
+            assert run("add", "box")[0] == 0
+            entry = read(config)["machines"]["box"]
+            assert ("trace_cmd" in entry) is keeps, (path, entry)
+            with patch.object(remote_content.paths, "config_dir", return_value=directory):
+                assert remote_content.saved_connections()["box"].command == shlex.quote(path)
+
+
 def test_machine_add_reloads_after_probe_and_keeps_concurrent_edits():
     with fleet() as (_, config):
 
@@ -186,10 +225,14 @@ def test_machine_status_reports_failures_versions_and_cache_age_without_writing(
             "error": None if name == "a" else "authentication required",
         }
 
-    with fleet(document) as (_, config), patch.object(machines, "probe", side_effect=probe):
+    with fleet(document) as (directory, config), patch.object(machines, "probe", side_effect=probe):
+        with open(os.path.join(directory, "a.json"), "w") as stream:
+            json.dump({"opentab_version": "1.21.0"}, stream)
+        os.utime(os.path.join(directory, "a.json"), (0, os.path.getmtime(config) - 120))
         code, text, _ = run("status", "--json")
         a, b = json.loads(text)["machines"]
         assert code == 1 and a["version_skew"] is True
+        assert isinstance(a["cache_age_seconds"], int) and a["cache_age_seconds"] >= 120
         assert b["status"] == "auth required" and b["cache_age_seconds"] is None
         assert read(config) == document
         assert run("status", "a")[0] == 0
@@ -208,7 +251,30 @@ def test_ssh_probe_batch_mode_discovers_absolute_command_and_classifies_safe_err
             assert result["status"] == "reachable" and result.get("cmd") == cmd
             argv = call.call_args.args[0]
             assert "BatchMode=yes" in argv and "ConnectTimeout=8" in argv
+            # A non-POSIX login shell (fish) only has to run `/bin/sh -c '...'`.
+            assert argv[-1] == "/bin/sh -c " + shlex.quote(machines._SSH_PROBE)
             assert call.call_count == 1
+    with patch.object(
+        machines.subprocess,
+        "run",
+        return_value=subprocess.CompletedProcess([], 0, "opentab 1.34.0\n", ""),
+    ) as call:
+        result = machines._probe_ssh({"ssh": "box", "cmd": "/opt/bin/opentab --export -"})
+        assert call.call_args.args[0][-1] == "/opt/bin/opentab --version"
+        assert result == {"status": "reachable", "error": None, "opentab_version": "1.34.0"}
+    # Login-shell noise before the record never decides the saved path or version.
+    noisy = "/banner/opentab\nopentab banner\n/real/opentab\nopentab 1.34.0\n"
+    with patch.object(
+        machines.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, noisy, "")
+    ):
+        result = machines._probe_ssh({"ssh": "box"})
+        assert result["opentab_version"] == "1.34.0"
+        assert result["cmd"] == "/real/opentab --export -"
+    noisy = "/usr/bin/opentab\nopentab 1.34.0\ndefault\nbye from .bashrc\n"
+    with patch.object(
+        machines.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, noisy, "")
+    ):
+        assert "cmd" not in machines._probe_ssh({"ssh": "box"})
     for code, stderr, status in (
         (255, "Permission denied secret", "auth required"),
         (127, "secret", "opentab missing"),
@@ -264,6 +330,8 @@ def test_machine_rename_preserves_resume_and_turn_connection_provenance():
             "machines": {"old": {"ssh": "user@box", "cmd": "/opt/bin/opentab machines export -"}},
         }
     ) as (directory, _):
+        with open(os.path.join(directory, "old.json"), "w") as stream:
+            stream.write(_fake_summary_text("box", ["s1"]))
         with patch.object(paths, "config_dir", return_value=directory):
             before = remote_content.saved_connections()
             assert "old" in before
@@ -271,6 +339,9 @@ def test_machine_rename_preserves_resume_and_turn_connection_provenance():
             after = remote_content.saved_connections()
             assert "new" in after and "old" not in after
             assert cli._make_ssh_targets_fn()() == {"new": "user@box"}
+            # A pulled summary routes by its filename, so the moved file joins "new".
+            store = RemoteStore(directory, _parse([]))
+            assert store.machine_meta["box"]["key"] == "new"
 
 
 def test_machine_concurrent_writers_merge_under_one_lock():
@@ -307,8 +378,12 @@ def test_ssh_probe_script_finds_off_path_and_reports_broken_install():
             with open(binary, "w") as stream:
                 stream.write("#!/bin/sh\n" + body + "\n")
             os.chmod(binary, 0o700)
+            # Through the exact quoting ssh sends to the remote login shell.
             result = subprocess.run(
-                ["/bin/sh", "-c", machines._SSH_PROBE], env=env, capture_output=True, text=True
+                ["/bin/sh", "-c", "/bin/sh -c " + shlex.quote(machines._SSH_PROBE)],
+                env=env,
+                capture_output=True,
+                text=True,
             )
             assert result.returncode == code, result
             if code == 0:
