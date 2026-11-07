@@ -135,6 +135,7 @@ nav.top .links a:hover { color: var(--text); }
 .story-heatmap { position: relative; }
 .story-heatmap i { transition: transform .18s ease-out, filter .25s ease-out; }
 .story-heatmap i.near { filter: brightness(1.45); }
+.story-heatmap i[data-day] { cursor: pointer; }
 .story-heatmap i.hot { transform: scale(1.9); filter: brightness(1.6); z-index: 2; border-radius: 2px; box-shadow: 0 0 0 1px var(--ink-2); }
 .heat-tip {
   position: absolute; z-index: 3; bottom: 100%; left: 0; transform: translate(-50%, -8px);
@@ -795,19 +796,24 @@ function show(mode) {
 document.querySelectorAll("[data-mode]").forEach(btn => btn.addEventListener("click", () => show(btn.dataset.mode)));
 // The lightweight story links into the same session in the actual report.
 // A normal link still works without JavaScript, and modifier-click opens a new tab.
-document.querySelectorAll("[data-story-open]").forEach(link => link.addEventListener("click", event => {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault();
+// The hero heatmap opens a clicked day the same way (self.otOpenReport).
+function openReport(href) {
   const report = document.querySelector('[data-pane="web"]');
-  const target = new URL(link.href);
+  const target = new URL(href, location.href);
   if (report.contentWindow && report.contentWindow.location.href.startsWith(target.origin + target.pathname)) {
     report.contentWindow.location.hash = target.hash;
   } else {
-    report.src = link.getAttribute("href");
+    report.src = href;
   }
   show("web");
   document.querySelector("#stage").scrollIntoView({ behavior: reduced ? "instant" : "smooth", block: "start" });
   report.focus({ preventScroll: true });
+}
+self.otOpenReport = openReport;
+document.querySelectorAll("[data-story-open]").forEach(link => link.addEventListener("click", event => {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  openReport(link.getAttribute("href"));
 }));
 // The app mounts hidden as soon as a pointer rests on the button (or keyboard focus reaches
 // it), so its ~10 MB download has a head start when the click lands. Not on page load:

@@ -79,6 +79,11 @@ async function init() {
     const cell = el("i", d.date === selectedDate ? "selected" : "");
     cell.style.setProperty("--heat", d.cost ? `${18 + 82 * Math.sqrt(d.cost / max)}%` : "0%");
     cell.dataset.tip = `${date(d.date)} · ${money(d.cost)}`;
+    // Days with spend open in the real report below; empty days have nothing to show.
+    if (d.cost) {
+      cell.dataset.day = d.date;
+      cell.dataset.tip += " · click to open";
+    }
     heatmap.append(cell);
   });
   // Hover a day: it lifts, the days around it brighten, and its spend shows above it.
@@ -114,6 +119,12 @@ async function init() {
     tip.classList.add("on");
   });
   heatmap.addEventListener("pointerleave", clear);
+  heatmap.addEventListener("click", event => {
+    const day = event.target.dataset?.day;
+    if (!day) return;
+    const href = `report.html#/d/${day}`;
+    if (self.otOpenReport) self.otOpenReport(href); else location.href = href;
+  });
   const axis = el("div", "story-axis");
   axis.append(el("span", "", date(data.days[0].date)), el("span", "selected-day", `${date(selectedDate)} ↑`));
   overview.append(heatmap, axis);
