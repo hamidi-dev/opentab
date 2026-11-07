@@ -266,18 +266,28 @@ def _visible(args, rows: list[Workflow]) -> list[Workflow]:
     return sorted(rows, key=_activity, reverse=True)
 
 
-def _reloads(fzf: str) -> bool:
-    """fzf 0.36 added the load event and reload-sync that swap in the refreshed list."""
-    if sys.platform == "win32" or not hasattr(os, "mkfifo"):
-        return False
+def _fzf_version(fzf: str) -> tuple[int, int] | None:
     try:
         version = subprocess.run(
             [fzf, "--version"], capture_output=True, text=True, timeout=5, check=False
         ).stdout
         major, minor = (int(part) for part in version.split()[0].split(".")[:2])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-        return False
-    return (major, minor) >= (0, 36)
+        return None
+    return major, minor
+
+
+def _reloads() -> bool:
+    """Whether a FIFO can carry the refreshed list (fzf side checked separately)."""
+    return sys.platform != "win32" and hasattr(os, "mkfifo")
+
+
+def _tmux_popup(version: tuple[int, int] | None) -> list[str]:
+    """fzf 0.53 added --tmux. A popup receives keys before tmux's own bindings, so
+    keys a pane would lose to tmux (Alt-J/K pane navigation) reach the picker."""
+    if not os.environ.get("TMUX") or version is None or version < (0, 53):
+        return []
+    return ["--tmux=center,100%,100%"]
 
 
 class _BackgroundRefresh:
@@ -398,7 +408,10 @@ def launch_command(args) -> int:
     layout = _layout(rows, shutil.get_terminal_size((100, 24)).columns)
     menu, heading = _picker_table(rows, layout)
     background = None
-    if not args.refresh and not args.no_refresh and _reloads(fzf):
+    refreshing = not args.refresh and not args.no_refresh and _reloads()
+    version = _fzf_version(fzf) if refreshing or args.tmux else None
+    # fzf 0.36 added the load event and reload-sync that swap in the refreshed list.
+    if refreshing and version is not None and version >= (0, 36):
         try:
             background = _BackgroundRefresh(args, cached, rows, layout)
         except OSError:
@@ -432,7 +445,11 @@ def launch_command(args) -> int:
                 "--color=border:8,header:8,info:8,prompt:6,pointer:6,hl:3,hl+:3",
                 "--prompt=Find session › ",
                 f"--header=Enter resume · Esc cancel · newest first\n\n{heading}",
+                # Vim-style movement that leaves the query keys alone; the user's own
+                # fzf bindings are dropped with FZF_DEFAULT_OPTS above.
+                "--bind=alt-j:down,alt-k:up",
                 *(["--bind", bind] if bind else []),
+                *(_tmux_popup(version) if args.tmux else []),
             ],
             input=menu.encode("utf-8"),
             capture_output=True,

@@ -639,6 +639,10 @@ The picker uses aligned tool, compact project, updated-time and session columns;
 narrow terminals give priority to the title. Long titles remain fully searchable.
 The picker uses its own fzf options instead of `FZF_DEFAULT_OPTS` or
 `FZF_DEFAULT_OPTS_FILE`, so global bindings cannot change its selection protocol.
+It binds Alt-J/Alt-K to move down and up alongside fzf's default movement keys.
+`--tmux` opens the picker in a tmux popup (fzf 0.53+, only inside tmux): a popup
+receives keys before tmux's root bindings, so Alt-J/Alt-K still reach it when tmux
+binds them for pane navigation. The selected session still starts in the original pane.
 
 `opentab cost` is a curses-free fast path using raw stores, not persistent
 rollups. `--harness` limits which local tool it queries. It is polled every few

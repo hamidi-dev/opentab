@@ -63,6 +63,7 @@ def test_cached_launch_is_headless_unique_and_argv_safe():
             assert lines[1].startswith("1\t") and "OpenCode" in lines[1]
             assert "Same   [31m" in lines[0] and "\x1b[31m" not in lines[0]
             assert "--tiebreak=index" in argv
+            assert "--bind=alt-j:down,alt-k:up" in argv
             return subprocess.CompletedProcess(argv, 0, lines[1].encode() + b"\0", b"")
 
         with patch("opentab.stores.cached.cache_dir", return_value=os.path.join(tmp, "cache")):
@@ -529,6 +530,36 @@ def test_no_refresh_never_probes_fzf_or_reads_harness_records():
             picker.subprocess, "run", side_effect=fake_fzf
         ):
             assert cli._run(args) == 0
+
+
+def test_tmux_popup_only_inside_tmux_with_fzf_that_supports_it():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = _background_args(tmp, "--no-refresh", "--tmux")
+        _cache(args, "claude", [_row("old", "Claude Code", tmp)])
+        calls = []
+
+        def fake_fzf(version):
+            def run(argv, **kwargs):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, version, "")
+                calls.append([arg for arg in argv if arg.startswith("--tmux")])
+                return subprocess.CompletedProcess(argv, 130, b"", b"")
+
+            return run
+
+        with patch.object(picker.shutil, "which", return_value="/bin/fzf"):
+            for version, tmux in (
+                ("0.54.1\n", "/tmp/tmux-1/default,1,0"),
+                ("0.52.0\n", "/tmp/tmux-1/default,1,0"),
+                ("0.54.1\n", ""),
+            ):
+                with patch.dict(picker.os.environ, {"TMUX": tmux}), patch.object(
+                    picker.subprocess, "run", side_effect=fake_fzf(version)
+                ):
+                    assert cli._run(args) == 0
+        assert calls == [["--tmux=center,100%,100%"], [], []]
 
 
 def test_index_skips_rollup_parsing_until_a_cache_is_replaced():
