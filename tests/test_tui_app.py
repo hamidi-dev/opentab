@@ -6339,8 +6339,20 @@ def test_reverse_sort_key_and_picker_flip_the_active_list_direction():
 CTRL_T, CTRL_G, TAB, ENTER, ESC = 20, 7, 9, 10, 27
 
 
-def test_tags_stay_invisible_until_workflow_json_enables_them():
-    for enabled in (None, False):
+def test_tags_are_on_by_default_and_hidden_only_when_switched_off():
+    with _tags_on(None) as session_tags:
+        app = _tag_app()
+        assert app.tags_active and not app.org_available
+        assert keymap.BY_ID["tags"].shown(app) and keymap.BY_ID["tag-filter"].shown(app)
+        assert not os.path.exists(session_tags.tags_path())
+        # Overlays do not dispatch main tag keys, so they must not advertise them.
+        for overlay in ("P", "T"):
+            app = _tag_app()
+            app.handle_key(None, ord(overlay))
+            assert app.overlay_top
+            assert not keymap.BY_ID["tags"].shown(app)
+            assert not keymap.BY_ID["tag-filter"].shown(app)
+    for enabled in (False,):
         with _tags_on(enabled) as session_tags:
             app = _tag_app()
             assert not app.tags_active
@@ -6486,6 +6498,8 @@ def test_tag_filter_narrows_session_drills_but_not_rankings():
         usage = [(w, w.total_cost, w.total_tokens) for w in rows]
         assert [row[0].id for row in app._tag_filtered_usage(usage)] == [rows[0].id]
         assert app.months[0].cost == before  # parent scope totals are unchanged
-        assert not keymap.BY_ID["tags"].shown(app) and not keymap.BY_ID["tag-filter"].shown(app)
-        app.handle_key(None, ord("O"))
+        # Tags alone live in the main keymap; Org mode stays out of reach.
         assert keymap.BY_ID["tags"].shown(app) and keymap.BY_ID["tag-filter"].shown(app)
+        assert keymap.BY_ID["tags"].context(app) == "main"
+        app.handle_key(None, ord("O"))
+        assert not app.org_active and keymap.BY_ID["tags"].context(app) == "main"

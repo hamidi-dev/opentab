@@ -9,7 +9,10 @@ def test_work_switch_independent_and_defaults_only_enabled():
         assert config.tags and not config.work_items and config.states == ()
     with isolated({"version": 1, "work_items": {"enabled": True}}):
         config = load_workflow_config()
-        assert not config.tags and config.work_items and config.states == DEFAULT_STATES
+        assert config.tags and config.work_items and config.states == DEFAULT_STATES
+    with isolated(None):
+        config = load_workflow_config()
+        assert config.tags and not config.work_items and not config.error
 
 
 def test_custom_states_validate_and_fail_independently():

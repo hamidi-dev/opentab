@@ -1,8 +1,9 @@
-"""Explicit opt-in switches for experimental authored annotations.
+"""Feature switches for authored annotations.
 
-``$XDG_CONFIG_HOME/opentab/workflow.json`` turns features on; its existence alone does
-not. A missing, unreadable, malformed or newer file leaves every feature off and is
-never rewritten here, so a correction plus reload is always enough to recover.
+``$XDG_CONFIG_HOME/opentab/workflow.json`` overrides each feature's default: session
+tags are on unless ``"tags": {"enabled": false}``; work items stay off unless explicitly
+enabled. Any doubt about the file (unreadable, malformed, newer) means each feature's
+default. The file is never rewritten here, so a correction plus reload always recovers.
 """
 from __future__ import annotations
 
@@ -79,7 +80,7 @@ def _states(section: dict) -> tuple[WorkState, ...]:
 
 @dataclass(frozen=True)
 class WorkflowConfig:
-    tags: bool = False
+    tags: bool = True
     work_items: bool = False
     # Human-readable reason the file could not enable anything; empty when it was fine.
     error: str = ""
@@ -92,20 +93,20 @@ def config_path() -> str:
     return os.path.join(paths.config_dir(), "workflow.json")
 
 
-def _enabled(payload: dict, section: str) -> tuple[bool, str]:
+def _enabled(payload: dict, section: str, default: bool) -> tuple[bool, str]:
     value = payload.get(section)
     if value is None:
-        return False, ""
+        return default, ""
     if not isinstance(value, dict):
-        return False, f"{section} must be an object"
-    flag = value.get("enabled", False)
+        return default, f"{section} must be an object"
+    flag = value.get("enabled", default)
     if not isinstance(flag, bool):
-        return False, f"{section}.enabled must be true or false"
+        return default, f"{section}.enabled must be true or false"
     return flag, ""
 
 
 def load_workflow_config(path: str | None = None) -> WorkflowConfig:
-    """Read the switches; any doubt about the file means off, with a reason."""
+    """Read the switches; any doubt about the file means defaults, with a reason."""
     path = path or config_path()
     try:
         with open(path, encoding="utf-8") as fh:
@@ -124,8 +125,8 @@ def load_workflow_config(path: str | None = None) -> WorkflowConfig:
     if version > CONFIG_VERSION:
         return WorkflowConfig(error="workflow.json uses a newer format — upgrade OpenTab")
     # Sections fail independently: a broken work-items block must not disable tags.
-    tags, tags_error = _enabled(payload, "tags")
-    work_items, items_error = _enabled(payload, "work_items")
+    tags, tags_error = _enabled(payload, "tags", True)
+    work_items, items_error = _enabled(payload, "work_items", False)
     states = ()
     if work_items:
         try:
