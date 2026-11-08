@@ -4477,16 +4477,16 @@ def test_web_tags_never_reach_static_reports_or_disabled_servers():
         app = app_with([workflow("w1", "2026-05-01 10:00:00")])
         app.refresh_tags()
         key = app.session_tag_key(app.loaded[0])
-        app.tags.set_tags(key, [], 0, create=["private label"])
+        app.tags.set_tags(key, [], 0, create=["private-label"])
         static = ot.build_payload(app)
         assert "tags" not in static and "key" not in static["workflows"][0]
-        assert "private label" not in ot.render_html(static)
+        assert "private-label" not in ot.render_html(static)
         # A live page carries them only while the switch is on.
         server, base = _serve(app)
         try:
             data = _page_data(urllib.request.urlopen(base + "/").read().decode())
             assert data["workflows"][0]["key"] == key
-            assert [d["label"] for d in data["tags"]["defs"]] == ["private label"]
+            assert [d["label"] for d in data["tags"]["defs"]] == ["private-label"]
             set_tags_pref(False)
             # A stale page that still shows controls cannot keep writing.
             status, body = _post_tags(base, {"key": key, "expected": 1, "tagIds": []})
@@ -4494,7 +4494,7 @@ def test_web_tags_never_reach_static_reports_or_disabled_servers():
             server.reload()
             data = _page_data(urllib.request.urlopen(base + "/").read().decode())
             assert "tags" not in data and "key" not in data["workflows"][0]
-            assert "private label" not in urllib.request.urlopen(base + "/").read().decode()
+            assert "private-label" not in urllib.request.urlopen(base + "/").read().decode()
         finally:
             server.shutdown()
             server.server_close()
@@ -4552,12 +4552,47 @@ def test_web_shipped_tag_filters_and_late_saves_stay_scoped():
     assert node is not None, "Node.js is required for browser tag behavior"
     js = _js_source()
     block = js[js.index("let TAGS = DATA.tags") : js.index("function topSessionsTable(")]
+    from opentab.annotations import parse_tag_query
+
+    labels = {"tb": "bug", "ta": "Alpha", "tc": "client x", "ts": "Straße", "tu": "untagged"}
+    parity = {}
+    for query in (
+        "",
+        "fix  #bug login",
+        "#AL",
+        "#bug|client_x #a",
+        "#client-X",
+        "#nope x",
+        "#untagged",
+        "a #",
+        "#bug ",
+        "#bug|cl",
+        "##bug",
+        "#STRASSE",
+        "#STRAẞE",
+        "#bug\u0085#alpha",
+        "#bug\u00a0x",
+        "#bug\u001c",
+        "#bug\ufeffx",
+    ):
+        parsed = parse_tag_query(query, labels)
+        groups = [sorted(g) for g in parsed.filter.groups] if parsed.filter else []
+        parity[query] = {
+            "text": parsed.text,
+            "groups": groups,
+            "unknown": list(parsed.unknown),
+            "partial": parsed.partial,
+        }
     script = (
-        r"""
+        "const PY_PARSE = "
+        + json.dumps(parity)
+        + ";\n"
+        + r"""
 const assert = require('assert');
-const DATA = { tags: { editable: true, defs: [{id: 'tb', label: 'bug', rev: 1}, {id: 'ta', label: 'Alpha', rev: 1}],
+const DATA = { tags: { editable: true, defs: [{id: 'tb', label: 'bug', rev: 1}, {id: 'ta', label: 'Alpha', rev: 1}, {id: 'tc', label: 'client x', rev: 1}, {id: 'ts', label: 'Straße', rev: 1}, {id: 'tu', label: 'untagged', rev: 1}],
   assign: { k1: { ids: ['tb', 'ta'], rev: 2 }, k2: { ids: ['ta', 'gone'], rev: 1 } } } };
 const META = { serve: true, demo: false };
+let FILTER = '';
 const document = { activeElement: null, getElementById: () => ({ hidden: true, textContent: '' }) };
 let renders = 0; const render = () => { renders += 1; };
 const h = () => ({});
@@ -4570,12 +4605,47 @@ renderTagPick = () => {};
 const w1 = { key: 'k1', title: 'one' }, w2 = { key: 'k2', title: 'two' }, w3 = { key: 'k3', title: 'three' };
 assert.deepStrictEqual(tagLabels(w1), ['Alpha', 'bug']);
 assert.deepStrictEqual(tagLabels(w2), ['Alpha', '?gone']);
-TAGFILTER = { mode: 'all', ids: new Set(['ta', 'tb']) };
+FILTER = '#alpha #bug';
 assert.deepStrictEqual([w1, w2, w3].filter(tagMatches), [w1]);
-TAGFILTER = { mode: 'any', ids: new Set(['tb', 'gone']) };
+FILTER = '#bug|alpha';
 assert.deepStrictEqual([w1, w2, w3].filter(tagMatches), [w1, w2]);
-TAGFILTER = { mode: 'untagged', ids: new Set() };
+FILTER = '#untagged';
 assert.deepStrictEqual([w1, w2, w3].filter(tagMatches), [w3]);
+FILTER = '#nope';
+assert.deepStrictEqual([w1, w2, w3].filter(tagMatches), []);
+// The browser parses `/` exactly like the TUI (annotations.parse_tag_query).
+for (const [q, want] of Object.entries(PY_PARSE)) {
+  FILTER = q;
+  const got = tagQuery();
+  assert.deepStrictEqual({ text: got.text, groups: got.groups.map(g => [...g].sort()), unknown: got.unknown, partial: got.partial }, want, q);
+}
+// The editor treats a name that types like an existing tag as that tag, not a draft.
+openTagEditor(w3); tagPickCommit('Client_X');
+assert.ok(TAGPICK.checked.has('tc') && !TAGPICK.drafts.length); closeTagPick();
+// With legacy colliding names, an exact spelling picks its own tag (like session_tags._owner).
+TAGS.defs = TAGS.defs.concat([{ id: 'tl', label: 'client-x', rev: 1 }]);
+openTagEditor(w3); tagPickCommit('client-x');
+assert.ok(TAGPICK.checked.has('tl') && !TAGPICK.checked.has('tc')); closeTagPick();
+TAGS.defs = TAGS.defs.filter(d => d.id !== 'tl');
+// Length counts characters like the server; a refused name is not silently dropped.
+openTagEditor(w3); tagPickCommit('😀'.repeat(21));
+assert.equal(TAGPICK.drafts.length, 1); assert.equal(TAGPICK.error, ''); closeTagPick();
+openTagEditor(w3); TAGPICK.q = 'x'.repeat(41); saveTags();
+assert.equal(pending.length, 0); assert.ok(TAGPICK.error.includes('40')); closeTagPick();
+// Renaming a tag keeps an active filter on it.
+FILTER = '#bug|alpha fix'; renameFilterToken('bug', 'defect');
+assert.equal(FILTER, '#defect|alpha fix');
+assert.equal(completedFilter('fix\u00a0#bu', 'bug'), 'fix\u00a0#bug ');
+assert.equal(completedFilter('#bug|cl', 'client x'), '#bug|client-x ');
+FILTER = 'fix\u00a0#bug|x  #b'; renameFilterToken('bug', 'defect');
+assert.equal(FILTER, 'fix\u00a0#defect|x  #b');
+// A save replaces the definitions: the parsed filter must see a newly created tag.
+FILTER = '#cl';
+assert.deepStrictEqual([...tagQuery().groups[0]], ['tc']);
+TAGS.defs = TAGS.defs.concat([{ id: 'tn', label: 'client-new', rev: 1 }]);
+assert.deepStrictEqual([...tagQuery().groups[0]].sort(), ['tc', 'tn']);
+TAGS.defs = TAGS.defs.filter(d => d.id !== 'tn');
+FILTER = '';
 // A save for w1 that resolves after the user moved on to w2's editor.
 openTagEditor(w1);
 TAGPICK.checked.delete('tb');
@@ -4610,17 +4680,17 @@ def test_web_annotation_export_is_catalog_only_allowlisted_and_separate_from_det
         app = app_with([workflow("w1", "2026-05-01 10:00:00")])
         app.refresh_tags()
         key = app.session_tag_key(app.loaded[0])
-        app.tags.set_tags(key, [], 0, create=["included, label"])
+        app.tags.set_tags(key, [], 0, create=["included,label"])
         missing = ot.SessionRef("missing", "opencode", "gone").encode()
-        app.tags.set_tags(missing, [], 0, create=["outside catalog"])
-        app.tags.create("unused definition")
+        app.tags.set_tags(missing, [], 0, create=["outside-catalog"])
+        app.tags.create("unused-definition")
         ordinary = report.build_payload(app)
         annotated = report.build_payload(app, include_annotations=True)
         assert "tags" not in ordinary and "key" not in ordinary["workflows"][0]
         assert "sessionExtras" not in annotated
         assert annotated["tags"]["editable"] is False
         assert set(annotated["tags"]["assign"]) == {key}
-        assert [d["label"] for d in annotated["tags"]["defs"]] == ["included, label"]
+        assert [d["label"] for d in annotated["tags"]["defs"]] == ["included,label"]
         assert all(set(d) == {"id", "label"} for d in annotated["tags"]["defs"])
         assert set(annotated["tags"]["assign"][key]) == {"ids"}
         app.args.html = os.path.join(tmp, "annotations.html")
@@ -4630,7 +4700,7 @@ def test_web_annotation_export_is_catalog_only_allowlisted_and_separate_from_det
         with open(app.args.html) as fh:
             actual = _page_data(fh.read())
         assert actual["tags"] == annotated["tags"]
-        assert "outside catalog" not in json.dumps(actual)
+        assert "outside-catalog" not in json.dumps(actual)
         assert "notes" not in actual and "sessionExtras" not in actual
         # Explicit requests fail before serializing or creating an output file.
         app.tags.disable()
@@ -4814,25 +4884,27 @@ const row = id => tagAggregateRows(roots).find(r => r.id === id);
 assert.deepEqual(Object.fromEntries(tagAggregateRows(roots).map(r => [r.id || 'untagged', [r.sessions,r.cost,r.costMeasured,r.seconds,r.timeMeasured]])), PYTHON_TAGS);
 assert.equal(row('x').cost, 5); assert.equal(row('y').cost, 8);
 assert.equal(row('y').sessions, 2); assert.equal(row('y').seconds, 60);
-assert.equal(row('y').timeMeasured, 1); assert.ok(tagTime(row('y')).includes('1/2 sessions measured'));
-TAGFILTER = {mode:'any', ids:new Set(['x','y'])}; assert.equal(tagAccounting(roots.filter(tagMatches)).cost, 8);
-TAGFILTER.mode = 'all'; assert.equal(tagAccounting(roots.filter(tagMatches)).cost, 5);
+assert.equal(row('y').timeMeasured, 1); assert.ok(tagTime(row('y')).endsWith('(1/2)'));
+assert.ok(!tagTime(row('x')).includes('('));
+FILTER = '#x|y'; assert.equal(tagAccounting(roots.filter(tagMatches)).cost, 8);
+FILTER = '#x #y'; assert.equal(tagAccounting(roots.filter(tagMatches)).cost, 5);
 MODE = 'api'; assert.equal(row('y').cost, 80);
 WHATIF.model = 'unrelated/comparison'; assert.equal(row('y').cost, 80);
-MODE = 'real'; TAGFILTER = null; location.hash = '#/'; BROWSE = 'tags';
+MODE = 'real'; FILTER = ''; location.hash = '#/'; BROWSE = 'tags';
 openSession('a'); assert.equal(RETURN.from, '#/'); assert.equal(RETURN.to, '#/s/a');
 location.hash = '#/'; RETURN = null;
 renderTagsBrowse({kind:'all'}, roots);
 let view = document.getElementById('view');
-assert.ok(view.textContent.includes('Tag rows overlap'));
+assert.ok(view.textContent.includes('do not add up'));
 assert.ok(view.textContent.includes('Recorded cost'));
-assert.ok(!view.textContent.includes('bulk add')); assert.ok(!view.textContent.includes('delete globally'));
+assert.ok(!view.textContent.includes('bulk add')); assert.ok(!view.textContent.includes('delete'));
+assert.ok(!view.textContent.includes('measured'));
 assert.equal(requests.length, 0);
 openTagEditor(ALL_W[0]); assert.equal(TAGPICK, null);
 openBulkTags('add'); assert.equal(TAGPICK, null);
 // Click a tag aggregate: the exact matching roots and matching subtotal agree.
 all(view, 'tbody')[0].children.find(r => r.textContent.startsWith('X')).events.click();
-assert.deepEqual(ALL_W.filter(tagMatches).map(w => w.id), ['a']);
+assert.equal(FILTER, '#X '); assert.deepEqual(ALL_W.filter(tagMatches).map(w => w.id), ['a']);
 META.serve = true; TAGS.editable = true;
 TAG_SELECTED.set('ka', 2); TAG_SELECTED.set('kb', 1);
 openBulkTags('add'); TAGPICK.checked.add('x');
@@ -4850,13 +4922,27 @@ setTimeout(() => {
   setTimeout(() => {
     assert.equal(TAGPICK.op, 'delete'); assert.ok(TAGPICK.error.includes('refresh and review'));
     closeTagPick(); META.serve = false; TAGS.editable = false;
-    TAGFILTER = null;
+    FILTER = '';
     TAGS.assign.kb.ids = []; assert.equal(tagAggregateRows(ALL_W).find(r=>r.id===null).sessions,1);
     ALL_W[1].dur = 120; assert.equal(tagAccounting(roots).seconds,180);
     ALL_W[0].real = null; assert.equal(tagAccounting(roots).costMeasured,1);
     ALL_W[1].real = 0; ALL_W[1].unpriced = 100;
     assert.equal(tagAccounting(roots).costMeasured,0);
-    console.log('ok');
+    // Keyboard selection past the eighth suggestion stays visible and highlighted.
+    TAGS.defs = Array.from({length: 10}, (_, i) => ({id: 'd' + i, label: 'd' + i, rev: 1}));
+    TAG_BASE = ALL_W; FILTER = '#d'; TAG_SUGGEST = 9;
+    const box = tagSuggestBox(), opts = box.children.filter(c => c.tag === 'button');
+    assert.equal(opts.length, 8); assert.ok(box.textContent.includes('+2 more'));
+    const on = opts.filter(o => o.className === 'on');
+    TAG_SUGGEST_OPEN = true; const ranked = tagSuggestions(); TAG_SUGGEST_OPEN = false;
+    assert.equal(ranked.length, 10);
+    assert.equal(on.length, 1); assert.equal(on[0].children[0].textContent, '#' + ranked[9].label);
+    // Renaming through the live server keeps an active filter on the renamed tag.
+    META.serve = true; TAGS.editable = true; TAGS.defs = [{id: 'y', label: 'Y', rev: 1, affected: 1}];
+    FILTER = '#y fix'; openTagMaintenance('y', 'rename'); TAGPICK.label = 'why'; saveTagOperation();
+    requests[requests.length - 1].resolve({json: () => Promise.resolve({ok: true,
+      tags: {editable: true, defs: [{id: 'y', label: 'why', rev: 2}], assign: {}, revision: 5}})});
+    setTimeout(() => { assert.equal(FILTER, '#why fix'); console.log('ok'); }, 0);
   }, 0);
 }, 0);
 """

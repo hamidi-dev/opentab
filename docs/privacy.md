@@ -39,14 +39,14 @@ override; relative values are ignored.
 | Config `~/.config/opentab/` | `keymap.conf`, `remotes.json` (saved machines), optional `launcher` hook | When you set them up |
 | State `~/.local/state/opentab/` | `state.json`: last harness, sorts, diff layout, bookmarks, ignores, pins, and which notices you've seen (search intro, last announced version, the star request's launch count up to 3, reminder date, dismissal) | On exit; off with `--no-state` |
 | State `…/debug/` | A JSONL debug log | Only with `--debug` or `--debug-log FILE` |
-| Data `~/.local/share/opentab/` | `notes.json`: your session notes | On every note edit |
+| Data `~/.local/share/opentab/` | `notes.json`: your session notes; `session-tags.json`: your session tags | On every note or tag edit |
 | Cache `~/.cache/opentab/cache/` | A warm-start summary per harness | After parsing changed files; off with `--no-cache` or `--demo` |
 | Cache `~/.cache/opentab/` | `prices.json` | Only on an explicit price refresh |
 | Cache `…/remotes/` | Summaries pulled from other machines | When you pull |
 | Cache `…/conversations/index.sqlite3` | Plaintext conversation text for search | Only when you confirm Build or Update |
 | Where you choose | `opentab-*.csv` (`e`), `opentab web --html FILE`, `opentab machines export FILE` | Only when you ask |
 
-`state.json` and `notes.json` each have a `.lock` file beside them while being written.
+`state.json`, `notes.json` and `session-tags.json` each have a `.lock` file beside them while being written.
 
 ### Debug logs
 

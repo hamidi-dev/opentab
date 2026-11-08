@@ -247,6 +247,15 @@ tbody tr.rowlink:focus{outline:2px solid var(--accent);outline-offset:-2px;backg
 input.filter{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);
   border-radius:4px;padding:4px 10px;width:260px;max-width:100%;margin-bottom:10px}
 input.filter:focus{outline:none;border-color:var(--accent)}
+.fbox{position:relative;display:inline-block;max-width:100%}
+.tsug{position:absolute;left:0;top:calc(100% - 8px);z-index:20;min-width:100%;max-width:min(560px,92vw);
+  display:grid;gap:1px;padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 18px var(--scrim)}
+.tsug button{display:grid;grid-template-columns:minmax(8em,1fr) 7.5em 7.5em 7em;gap:12px;align-items:baseline;
+  font:inherit;font-size:12px;text-align:left;padding:4px 8px;border:0;border-radius:4px;background:none;color:var(--ink);cursor:pointer;white-space:nowrap}
+.tsug button>span:first-child{overflow:hidden;text-overflow:ellipsis}
+.tsug button>span+span{color:var(--ink2);text-align:right;font-variant-numeric:tabular-nums}
+.tsug button.on,.tsug button:hover{background:var(--panel2)}
+.tsug-more{font-size:11px;color:var(--mut);padding:2px 8px}
 .ychips{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
 .ychips button{font:inherit;font-size:11px;padding:2px 10px;border:1px solid var(--line);
   border-radius:4px;background:var(--panel);color:var(--ink2);cursor:pointer}
@@ -1784,10 +1793,26 @@ function projectsTable(id, ws, collapse, onRow) {
   ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25,
     onRow: onRow === undefined ? (r => { go('p', r.project); }) : onRow });
 }
+function refocusFilter() {
+  const el = document.getElementById('filter-input');
+  if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
+function setFilter(v) { FILTER = v; TAG_SUGGEST = 0; render(false); refocusFilter(); }
 function filterInput() {
-  return h('input', { class: 'filter', id: 'filter-input', placeholder: 'filter sessions…', value: FILTER,
-    oninput: e => { FILTER = e.target.value; render(false); const el = document.getElementById('filter-input');
-      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } });
+  const input = h('input', { class: 'filter', id: 'filter-input', value: FILTER, autocomplete: 'off',
+    placeholder: tagsOn() ? 'filter sessions… #tag' : 'filter sessions…', 'aria-label': 'filter sessions',
+    oninput: e => setFilter(e.target.value) });
+  input.addEventListener('keydown', e => {
+    const rows = tagSuggestions();
+    if (!rows.length) return;
+    if (e.key === 'Tab') {
+      e.preventDefault(); completeTagSuggestion(rows[TAG_SUGGEST % rows.length]);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); TAG_SUGGEST = (TAG_SUGGEST + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length;
+      render(false); refocusFilter();
+    }
+  });
+  return h('span', { class: 'fbox' }, input, tagSuggestBox());
 }
 function sessionCols(model) {
   const cols = [
@@ -1825,29 +1850,29 @@ function sessionCols(model) {
 }
 function sessionsTable(id, ws, model) {
   let rows = ws;
-  if (FILTER) {
-    const q = FILTER.toLowerCase();
-    rows = ws.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q));
-  }
+  rows = textFiltered(ws);
   if (tagsOn()) {
     TAG_BASE = rows;
-    rows = rows.filter(tagMatches);
+    rows = tagFilter() ? uniqueTagRoots(rows.filter(tagMatches)) : rows;
   }
   if (model) rows = rows.map(w => {
     const usage = modelSessionUsage(w, model);
     return { ...w, modelCost: usage.listCost, modelTokens: usage.tokens, modelEst: usage.est };
   });
-  const empty = tagsOn() && TAGFILTER && !rows.length
-    ? h('div', { class: 'hint' }, 'No sessions match ' + tagFilterLabel() + ' — change or clear the tag filter.') : null;
-  return h('div', null, filterInput(), tagFilterButton(), bulkTagControls(), empty,
+  const tq = tagQuery();
+  const empty = tq && tq.unknown.length && !rows.length
+    ? h('div', { class: 'hint' }, 'No tag named ' + tq.unknown.join(', ') + ' — edit the filter.')
+    : tagFilter() && !rows.length ? h('div', { class: 'hint' }, 'No sessions match ' + tagFilterLabel() + '.') : null;
+  const summary = tagFilter() && rows.length ? h('div', { class: 'hint' }, ...tagSummary(rows)) : null;
+  return h('div', null, filterInput(), bulkTagControls(), empty, summary,
     table(id, sessionCols(model), rows, { defaultSort: { key: model ? 'modelCost' : 'cost', desc: true }, collapse: 25,
       rowLabel: tagsOn() ? (r => 'Open session ' + r.title) : undefined,
       onRow: r => { openSession(r.id); } }));
 }
 // -- experimental session tags (explicit static snapshots are read-only) ----------
 let TAGS = DATA.tags || null;
-let TAGFILTER = null;  // { mode: 'all' | 'any' | 'untagged', ids: Set }; transient
-let TAGPICK = null;    // the open editor or filter dialog
+let TAG_SUGGEST = 0;   // highlighted #tag completion
+let TAGPICK = null;    // the open tag editor
 let TAG_REQ = 0;
 let TAG_BASE = [];     // the last session list before the tag filter, for counts
 let TAG_SELECTED = new Map(); // exact key => revision captured at selection, never all matches
@@ -1865,17 +1890,99 @@ function tagLabels(w) {
   const known = ids.filter(id => TAGS.defs.some(d => d.id === id)).map(tagLabel).sort((a, b) => tagFold(a) < tagFold(b) ? -1 : 1);
   return known.concat(ids.filter(id => !TAGS.defs.some(d => d.id === id)).map(id => '?' + id));
 }
-function tagMatches(w) {
-  if (!TAGFILTER || !tagsOn()) return true;
-  const ids = new Set(tagIds(w));
-  if (TAGFILTER.mode === 'untagged') return ids.size === 0;
-  const want = [...TAGFILTER.ids];
-  return TAGFILTER.mode === 'any' ? want.some(id => ids.has(id)) : want.every(id => ids.has(id));
+// `#tag` tokens in the filter box, parsed exactly like the TUI's (annotations.parse_tag_query):
+// spaces mean all-of, `|` any-of, an exact name wins over a prefix, `#untagged` means none.
+// Mirrors session_tags.label_key: NFC, lower-case (not locale), spaces and _ as -.
+// WS mirrors session_tags.WHITESPACE: the whitespace both runtimes agree on.
+const TAG_WS = '\t\n\v\f\r    -     　';
+const TAG_SPACES = new RegExp('[' + TAG_WS + ']+'), TAG_SEPS = new RegExp('[' + TAG_WS + '_]+', 'g');
+const tagTokenKey = v => v.normalize('NFC').replace(new RegExp('^[' + TAG_WS + ']+|[' + TAG_WS + ']+$', 'g'), '').toLowerCase().normalize('NFC').replace(TAG_SEPS, '-');
+const tagToken = v => '#' + v.replace(new RegExp('^[' + TAG_WS + ']+|[' + TAG_WS + ']+$', 'g'), '').replace(TAG_SEPS, '-');
+let TAGQ_MEMO = null;
+function tagQuery() {
+  if (!tagsOn()) return null;
+  // Keyed on the definitions array: every save that changes names replaces it.
+  if (TAGQ_MEMO && TAGQ_MEMO.q === FILTER && TAGQ_MEMO.defs === TAGS.defs) return TAGQ_MEMO.parsed;
+  const byKey = new Map();
+  TAGS.defs.forEach(d => { const k = tagTokenKey(d.label); byKey.set(k, (byKey.get(k) || []).concat(d.id)); });
+  const words = [], groups = [], unknown = [], tokens = FILTER.split(TAG_SPACES).filter(Boolean);
+  tokens.forEach(t => {
+    if (!t.startsWith('#')) { words.push(t); return; }
+    const parts = t.slice(1).split('|').map(p => p.replace(/^#+/, '')).filter(Boolean);
+    if (!parts.length) return;
+    const group = new Set();
+    parts.forEach(part => {
+      const key = tagTokenKey(part);
+      if (key === 'untagged') group.add('');  // always synthetic, like the TUI
+      else if (byKey.has(key)) byKey.get(key).forEach(id => group.add(id));
+      else {
+        const hits = [...byKey].filter(([k]) => k.startsWith(key)).flatMap(([, ids]) => ids);
+        hits.forEach(id => group.add(id));
+        if (!hits.length) unknown.push('#' + part);
+      }
+    });
+    groups.push(group);
+  });
+  const last = tokens[tokens.length - 1];
+  const partial = last && !TAG_SPACES.test(FILTER.slice(-1)) && last.startsWith('#') ? last.split('|').pop().replace(/^#+/, '') : null;
+  const parsed = { text: words.join(' '), groups, unknown, partial };
+  TAGQ_MEMO = { q: FILTER, defs: TAGS.defs, parsed };
+  return parsed;
 }
-function tagFilterLabel() {
-  if (!TAGFILTER) return 'all sessions';
-  if (TAGFILTER.mode === 'untagged') return 'untagged';
-  return [...TAGFILTER.ids].map(id => '#' + tagLabel(id)).sort().join(TAGFILTER.mode === 'all' ? ' & ' : ' | ');
+function tagFilter() { const q = tagQuery(); return q && q.groups.length ? q : null; }
+function filterText() { const q = tagQuery(); return q ? q.text : FILTER; }
+function textFiltered(ws) {
+  const q = filterText().toLowerCase();
+  return q ? ws.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q)) : ws;
+}
+function tagMatches(w) {
+  const f = tagFilter();
+  if (!f) return true;
+  const ids = new Set(tagIds(w));
+  return f.groups.every(g => [...g].some(id => id ? ids.has(id) : !ids.size));
+}
+function tagFilterLabel() { return FILTER.split(/\s+/).filter(t => t.length > 1 && t.startsWith('#')).join(' '); }
+function tagSuggestions() {
+  const q = tagQuery();
+  if (!q || q.partial === null || document.activeElement?.id !== 'filter-input' && !TAG_SUGGEST_OPEN) return [];
+  const key = tagTokenKey(q.partial), known = new Set(TAGS.defs.map(d => d.id));
+  return tagAggregateRows(uniqueTagRoots(TAG_BASE))
+    .filter(r => (r.id === null || known.has(r.id)) && tagTokenKey(r.id === null ? 'untagged' : r.label).startsWith(key))
+    .sort((a, b) => (a.id === null) - (b.id === null) || b.sessions - a.sessions);
+}
+let TAG_SUGGEST_OPEN = false;
+// Mirrors annotations.complete_tag_query: replace the last alternative being typed.
+function completedFilter(q, label) {
+  const gaps = [...q.matchAll(new RegExp('[' + TAG_WS + ']+', 'g'))], last = gaps[gaps.length - 1];
+  const cut = last ? last.index + last[0].length : 0, tail = q.slice(cut);
+  const token = tail.includes('|') ? tail.slice(0, tail.lastIndexOf('|') + 1) + tagToken(label).slice(1) : tagToken(label);
+  return q.slice(0, cut) + token + ' ';
+}
+function completeTagSuggestion(r) { setFilter(completedFilter(FILTER, r.id === null ? 'untagged' : r.label)); }
+function tagSuggestBox() {
+  TAG_SUGGEST_OPEN = true;
+  const rows = tagSuggestions();
+  TAG_SUGGEST_OPEN = false;
+  if (!rows.length) return null;
+  const at = TAG_SUGGEST % rows.length, shown = Math.min(rows.length, 8);
+  const start = Math.max(0, Math.min(at - shown + 1, rows.length - shown));
+  const more = rows.length - shown;
+  return h('div', { class: 'tsug', role: 'listbox', 'aria-label': 'tag suggestions' },
+    rows.slice(start, start + shown).map((r, k) => {
+      const i = start + k;
+      return h('button', { class: i === at ? 'on' : null, role: 'option', 'aria-selected': i === at ? 'true' : 'false', tabindex: '-1',
+        onclick: () => completeTagSuggestion(r) },
+        h('span', null, r.id === null ? '#untagged' : '#' + r.label),
+        h('span', null, r.sessions + (r.sessions === 1 ? ' session' : ' sessions')),
+        h('span', null, tagTime(r)),
+        h('span', null, tagCost(r)));
+    }),
+    more > 0 ? h('div', { class: 'tsug-more' }, '+' + more + ' more') : null);
+}
+function tagSummary(rows) {
+  const a = tagAccounting(rows);
+  return [a.sessions + (a.sessions === 1 ? ' session' : ' sessions') + ' · ' + (MODE === 'api' ? 'API estimate ' : 'recorded '),
+    tagCost(a), ' · agent time ' + tagTime(a)];
 }
 function stopRowKeys(el) {
   // Chips live inside clickable rows: activating one must not also open the session.
@@ -1895,21 +2002,10 @@ function tagChips(w, preview) {
   if (!preview || !labels.length) kids.push(stopRowKeys(h('button', { class: 'tag add', title: 'edit tags', 'aria-label': 'edit tags', onclick: open }, labels.length ? 'edit' : '+ tag')));
   return h('span', { class: 'tagbar' }, kids);
 }
-function tagFilterButton() {
-  if (!tagsOn()) return null;
-  return stopRowKeys(h('button', { class: 'hbtn' + (TAGFILTER ? ' on' : ''), title: 'filter this list by tag (lists only; totals elsewhere keep their scope)',
-    onclick: openTagFilter }, 'tags: ' + tagFilterLabel()));
-}
 function openTagEditor(w) {
   if (!tagsEditable()) return;
   TAGPICK = { kind: 'edit', key: w.key, title: w.title, rev: tagRev(w.key), checked: new Set(tagIds(w)),
     drafts: [], q: '', error: '', conflict: null, pending: false, opener: document.activeElement };
-  renderTagPick(true);
-}
-function openTagFilter() {
-  if (!tagsOn()) return;
-  TAGPICK = { kind: 'filter', checked: new Set(TAGFILTER && TAGFILTER.ids ? TAGFILTER.ids : []),
-    mode: TAGFILTER && TAGFILTER.mode === 'any' ? 'any' : 'all', q: '', opener: document.activeElement };
   renderTagPick(true);
 }
 function closeTagPick() {
@@ -1919,17 +2015,19 @@ function closeTagPick() {
   renderTagPick();
   if (opener && opener.isConnected) opener.focus();
 }
-function setTagFilter(f) { TAGFILTER = f; closeTagPick(); render(false); }
-function tagDraftKey(v) { return v.normalize('NFC').toLocaleLowerCase(); }
+function tagDraftKey(v) { return tagTokenKey(v); }
 function tagTyped(q) { return q.trim().replace(/^#+/, '').trim(); }
 function tagPickCommit(q) {
   // Enter in the search box: check the exact match, or stage a new tag.
   const label = tagTyped(q);
   if (!label) return false;
-  const hit = TAGS.defs.find(d => tagDraftKey(d.label) === tagDraftKey(label));
+  // An exact spelling wins over the shared key, as in session_tags._owner.
+  const hit = TAGS.defs.find(d => d.label === label.normalize('NFC'))
+    || TAGS.defs.find(d => tagDraftKey(d.label) === tagDraftKey(label));
   if (hit) TAGPICK.checked.add(hit.id);
   else if (TAGPICK.kind === 'edit' && !TAGPICK.drafts.some(d => tagDraftKey(d) === tagDraftKey(label))) {
-    if (label.length > 40) { TAGPICK.error = 'Tag names are limited to 40 characters.'; return true; }
+    // Count characters like the server (code points after NFC), not UTF-16 units.
+    if ([...label.normalize('NFC')].length > 40) { TAGPICK.error = 'Tag names are limited to 40 characters.'; return true; }
     TAGPICK.drafts.push(label);
   }
   TAGPICK.q = '';
@@ -1947,29 +2045,19 @@ function renderTagPick(focusSearch) {
   host.hidden = false; host.textContent = '';
   const tp = TAGPICK;
   const fold = tagFold(tagTyped(tp.q));
-  const search = h('input', { class: 'tp-search', id: 'tp-search', placeholder: tp.kind === 'edit' ? 'search or create a tag…' : 'search tags…',
+  const search = h('input', { class: 'tp-search', id: 'tp-search', placeholder: 'search or create a tag…',
     value: tp.q, 'aria-label': 'search tags' });
   search.addEventListener('input', () => { tp.q = search.value; renderTagPick(true); });
   search.addEventListener('keydown', e => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeTagPick(); }
     else if (e.key === 'Enter') {
       e.preventDefault(); e.stopPropagation();
-      if (!tagPickCommit(tp.q)) { if (tp.kind === 'edit') saveTags(); else applyTagFilter(); }
+      if (!tagPickCommit(tp.q)) saveTags();
       else renderTagPick(true);
     }
   });
   const list = h('div', { class: 'tp-list', role: 'group', 'aria-label': 'tags' });
-  if (tp.kind === 'filter') {
-    const base = TAG_BASE;
-    const count = id => base.filter(w => tagIds(w).includes(id)).length;
-    list.append(h('button', { class: 'tp-create', onclick: () => setTagFilter(null) }, 'All sessions · ' + base.length),
-      h('button', { class: 'tp-create', onclick: () => setTagFilter({ mode: 'untagged', ids: new Set() }) },
-        'Untagged · ' + base.filter(w => !tagIds(w).length).length));
-    const ids = tagDefs().map(d => d.id);
-    tp.checked.forEach(id => { if (!ids.includes(id)) ids.push(id); });
-    ids.filter(id => !fold || tagFold(tagLabel(id)).includes(fold)).forEach(id =>
-      list.append(tagCheckRow(id, '#' + tagLabel(id), tp.checked.has(id), count(id), on => { on ? tp.checked.add(id) : tp.checked.delete(id); })));
-  } else {
+  {
     const current = (TAGS.assign[tp.key] || { ids: [] }).ids;
     const ids = tagDefs().map(d => d.id).concat(current.filter(id => !TAGS.defs.some(d => d.id === id)));
     const typed = tagTyped(tp.q);
@@ -1981,19 +2069,14 @@ function renderTagPick(focusSearch) {
       list.append(tagCheckRow(d, '#' + d + ' (new)', true, null, on => { if (!on) { tp.drafts = tp.drafts.filter(x => x !== d); renderTagPick(); } })));
     if (!ids.length && !tp.drafts.length && !typed) list.append(h('div', { class: 'hint' }, 'No tags yet — type a name and press Enter.'));
   }
-  const buttons = tp.kind === 'edit'
-    ? [h('button', { class: 'hbtn primary', onclick: saveTags, disabled: tp.pending ? '' : null }, tp.pending ? 'saving…' : (tp.conflict ? 'replace with mine' : 'apply')),
-       tp.conflict ? h('button', { class: 'hbtn', onclick: reloadTagsForConflict }, 'reload and review') : null,
-       h('button', { class: 'hbtn', onclick: closeTagPick }, 'cancel')]
-    : [h('div', { class: 'seg' },
-         h('button', { class: tp.mode === 'all' ? 'on' : null, onclick: () => { tp.mode = 'all'; renderTagPick(); } }, 'match all'),
-         h('button', { class: tp.mode === 'any' ? 'on' : null, onclick: () => { tp.mode = 'any'; renderTagPick(); } }, 'match any')),
-       h('button', { class: 'hbtn primary', onclick: applyTagFilter }, 'apply'),
-       h('button', { class: 'hbtn', onclick: closeTagPick }, 'cancel')];
+  const buttons = [
+    h('button', { class: 'hbtn primary', onclick: saveTags, disabled: tp.pending ? '' : null }, tp.pending ? 'saving…' : (tp.conflict ? 'replace with mine' : 'apply')),
+    tp.conflict ? h('button', { class: 'hbtn', onclick: reloadTagsForConflict }, 'reload and review') : null,
+    h('button', { class: 'hbtn', onclick: closeTagPick }, 'cancel')];
   const panel = h('div', { class: 'tr-panel tp-panel' },
-    h('div', { class: 'tr-head' }, h('h3', { id: 'tp-title' }, tp.kind === 'edit' ? 'Session tags' : 'Filter sessions by tag'),
+    h('div', { class: 'tr-head' }, h('h3', { id: 'tp-title' }, 'Session tags'),
       h('button', { class: 'tr-close', style: 'margin-left:auto', onclick: closeTagPick }, 'esc ✕')),
-    tp.kind === 'edit' ? h('div', { class: 'tp-note' }, tp.title) : h('div', { class: 'tp-note' }, 'Narrows session lists only; totals and rankings keep their scope.'),
+    h('div', { class: 'tp-note' }, tp.title),
     search, list,
     tp.error ? h('div', { class: 'tp-msg', role: 'alert' }, tp.error) : null,
     h('div', { class: 'tp-foot' }, buttons));
@@ -2002,21 +2085,18 @@ function renderTagPick(focusSearch) {
   host.appendChild(panel);
   if (focusSearch) { search.focus(); search.setSelectionRange(search.value.length, search.value.length); }
 }
-function applyTagFilter() {
-  const tp = TAGPICK;
-  if (!tp.checked.size) { setTagFilter(null); return; }
-  setTagFilter({ mode: tp.mode, ids: new Set(tp.checked) });
-}
 function tagsGone() {
-  TAGS = null; TAGFILTER = null; TAG_SELECTED.clear();
+  TAGS = null; TAG_SELECTED.clear();
   if (BROWSE === 'tags') BROWSE = 'time';
   closeTagPick(); render(false);
 }
 function saveTags() {
   const tp = TAGPICK;
   if (!tp || tp.kind !== 'edit' || tp.pending || !tagsEditable()) return;
+  tp.error = '';
   tagPickCommit(tp.q);
-  tp.pending = true; tp.error = '';
+  if (tp.error) { renderTagPick(true); return; }  // a refused name must not be dropped silently
+  tp.pending = true;
   const req = ++TAG_REQ, key = tp.key;
   renderTagPick();
   fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2068,10 +2148,15 @@ function tagAccounting(ws) {
     approximate: roots.filter(w => (DATA.models[w.id] || []).some(r => r.tokens > 0 &&
       (WI_UNPRICED.has(r.model) || (r.estimateReasons || []).length || unknownTierContext(r)))).length };
 }
-function tagTime(a) { return (a.timeMeasured ? hDur(a.seconds) : '—') + ' · ' + a.timeMeasured + '/' + a.sessions + ' sessions measured'; }
-function tagCost(a) { return (a.costMeasured ? money(a.cost) : '—') + ' · ' + a.costMeasured + '/' + a.sessions + ' available'
-  + (MODE === 'api' ? (a.approximate ? ' · ~ ' + a.approximate + ' sessions use fallback rates / partial context' : '')
-    : a.unpriced ? ' · some usage has no recorded cost' : ''); }
+// Coverage shows only when some sessions lack data; a missing value is "—", never zero.
+const tagPart = (n, a) => 0 < n && n < a.sessions ? ' (' + n + '/' + a.sessions + ')' : '';
+function tagTime(a) { return (a.timeMeasured ? hDur(a.seconds) : '—') + tagPart(a.timeMeasured, a); }
+function tagCost(a) {
+  const mark = MODE === 'api' ? (a.approximate ? ['~', 'some sessions use fallback rates or partial context'] : null)
+    : a.unpriced ? ['!', 'some usage has no recorded cost'] : null;
+  const text = (a.costMeasured ? money(a.cost) : '—') + tagPart(a.costMeasured, a);
+  return mark ? h('span', { title: mark[1] }, text + ' ' + mark[0]) : text;
+}
 function tagAggregateRows(ws) {
   const roots = uniqueTagRoots(ws), ids = new Set(tagDefs().map(d => d.id));
   roots.forEach(w => tagIds(w).forEach(id => ids.add(id)));
@@ -2084,9 +2169,9 @@ function renderTagsBrowse(sc, ws) {
   const root = document.getElementById('view');
   root.textContent = '';
   TAG_BASE = uniqueTagRoots(msubFilter(ws));
-  if (FILTER) { const q = FILTER.toLowerCase(); TAG_BASE = TAG_BASE.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q)); }
+  TAG_BASE = textFiltered(TAG_BASE);
   root.appendChild(pane('Tags · ' + scopeLabel(sc) + ' · ' + rangeLabel(),
-    h('div', { class: 'hint' }, 'Tag rows overlap; do not add their costs. Each qualified root includes its subagents once. Range selects roots by start date and includes whole-session usage. Agent time sums available active time; parallel sessions can exceed elapsed time.'),
+    h('div', { class: 'hint' }, 'A session can carry several tags, so rows overlap and do not add up.'),
     table('tag-totals', [
       { key: 'label', label: 'Tag', asc: true },
       { key: 'sessions', label: 'Sessions', align: 'r' },
@@ -2094,14 +2179,11 @@ function renderTagsBrowse(sc, ws) {
       { key: 'cost', label: MODE === 'api' ? 'API estimate' : 'Recorded cost', fmt: tagCost },
       { key: 'maintenance', label: '', fmt: r => tagsEditable() && r.id !== null && TAGS.defs.some(d => d.id === r.id)
         ? [stopRowKeys(h('button', { class: 'hbtn', onclick: e => { e.stopPropagation(); openTagMaintenance(r.id, 'rename'); } }, 'rename')),
-           stopRowKeys(h('button', { class: 'hbtn', onclick: e => { e.stopPropagation(); openTagMaintenance(r.id, 'delete'); } }, 'delete globally'))] : null },
+           stopRowKeys(h('button', { class: 'hbtn', onclick: e => { e.stopPropagation(); openTagMaintenance(r.id, 'delete'); } }, 'delete'))] : null },
     ], tagAggregateRows(TAG_BASE), { defaultSort: { key: 'cost', desc: true }, collapse: 1000,
-      rowLabel: r => 'Open matching sessions for ' + r.label,
-      onRow: r => { TAGFILTER = r.id === null ? { mode: 'untagged', ids: new Set() } : { mode: 'all', ids: new Set([r.id]) }; render(false); } })));
-  const matching = TAG_BASE.filter(tagMatches), subtotal = tagAccounting(matching);
-  root.appendChild(pane('Matching roots · ' + tagFilterLabel(),
-    h('div', { class: 'hint' }, subtotal.sessions + ' sessions · Agent time ' + tagTime(subtotal) + ' · ' + (MODE === 'api' ? 'API estimate ' : 'Recorded cost ') + tagCost(subtotal)),
-    sessionsTable('tag-sessions', TAG_BASE)));
+      rowLabel: r => 'Filter sessions by ' + (r.id === null ? '#untagged' : tagToken(r.label)),
+      onRow: r => { FILTER = (r.id === null ? '#untagged' : tagToken(r.label)) + ' '; render(false); } })));
+  root.appendChild(pane('Sessions', sessionsTable('tag-sessions', TAG_BASE)));
 }
 function bulkTagControls() {
   if (!tagsEditable()) return null;
@@ -2144,6 +2226,12 @@ function renderTagOperation(focus) {
     if (first) first.focus();
   }
 }
+// Keep an active `#old` filter on a renamed tag, like the TUI's _rename_query_token.
+function renameFilterToken(oldLabel, newLabel) {
+  const oldKey = tagTokenKey(oldLabel), token = tagToken(newLabel).slice(1);
+  FILTER = FILTER.split(new RegExp('([' + TAG_WS + ']+)')).map((word, i) => i % 2 || !word.startsWith('#') ? word
+    : '#' + word.slice(1).split('|').map(p => tagTokenKey(p.replace(/^#+/, '')) === oldKey ? token : p).join('|')).join('');
+}
 function saveTagOperation() {
   const tp = TAGPICK;
   if (!tp || tp.pending || !tagsEditable()) return;
@@ -2156,7 +2244,12 @@ function saveTagOperation() {
     .then(r => r.json()).then(x => {
       if (req !== TAG_REQ || TAGPICK !== tp) return;
       if (x.code === 'disabled') { tagsGone(); return; }
-      if (x.ok) { TAGS = x.tags; TAG_SELECTED.clear(); closeTagPick(); render(false); return; }
+      if (x.ok) {
+        const before = tp.kind === 'maintenance' && tp.op === 'rename' ? tagLabel(tp.id) : null;
+        TAGS = x.tags; TAG_SELECTED.clear();
+        if (before !== null) renameFilterToken(before, tagLabel(tp.id));
+        closeTagPick(); render(false); return;
+      }
       tp.pending = false; tp.error = 'Not saved: ' + (x.message || 'error') + (x.code === 'stale' ? '. Cancel, refresh and review the captured targets before retrying.' : '');
       renderTagOperation();
     }).catch(() => {
@@ -2198,14 +2291,15 @@ function workCoverage(item) {
 function workRootMatches(root, sc) {
   if (sc.kind === 'p' && root.project !== sc.project || sc.kind === 'h' && root.source !== sc.source || sc.kind === 'M' && root.machine !== sc.machine) return false;
   if (Object.entries(WORK_SCOPE).some(([key,value]) => value && root[key] !== value)) return false;
-  if (tagsOn() && TAGFILTER) {
-    const ids = new Set(root.tagIds || (TAGS.assign[root.key] || {}).ids || []), want = [...TAGFILTER.ids];
-    if (TAGFILTER.mode === 'untagged' ? ids.size : TAGFILTER.mode === 'any' ? !want.some(id=>ids.has(id)) : !want.every(id=>ids.has(id))) return false;
+  const tf = tagFilter();
+  if (tf) {
+    const ids = new Set(root.tagIds || (TAGS.assign[root.key] || {}).ids || []);
+    if (!tf.groups.every(g => [...g].some(id => id ? ids.has(id) : !ids.size))) return false;
   }
   return true;
 }
 function workRows(sc) {
-  const filter = ['p','h','M'].includes(sc.kind) || Object.values(WORK_SCOPE).some(Boolean) || tagsOn() && TAGFILTER;
+  const filter = ['p','h','M'].includes(sc.kind) || Object.values(WORK_SCOPE).some(Boolean) || !!tagFilter();
   const roots = WORK.roots.filter(r => workRootMatches(r,sc));
   const eligible = new Set(roots.map(r=>workMembership(r.key).itemId));
   return WORK.items.filter(i => workSection(i) === WORK_SECTION && (!filter || eligible.has(i.id)) &&
@@ -2243,7 +2337,7 @@ function renderWorkBrowse(sc) {
     value=>{WORK_SCOPE[key]=value;render(false);}));
   view.appendChild(pane(WORK_SECTION + ' work · ' + (WORK.incomplete ? 'incomplete snapshot' : 'all dates'),
     h('div',{class:'hint'},'Session project/harness/machine/tag filters select items having an eligible linked root; item totals retain every available nonignored linked root, across all dates. Whole-session assignment is approximate. Agent time is summed active time, including parallel work.'),
-    search,controls,tagFilterButton(),workEditable()?h('button',{class:'hbtn',onclick:()=>openWorkEditor()},'create empty work item'):null,
+    search,controls,workEditable()?h('button',{class:'hbtn',onclick:()=>openWorkEditor()},'create empty work item'):null,
     WORK.error ? h('div',{role:'alert'},WORK.error) : null,
     table('work-items',[
       {key:'title',label:'Work',asc:true},{key:'stateId',label:'State',fmt:i=>stateChip(i.stateId)},

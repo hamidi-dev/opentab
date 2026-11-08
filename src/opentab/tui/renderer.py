@@ -20,7 +20,6 @@ from opentab.accounting.models import (
     YearSummary,
 )
 from opentab.accounting.tiers import detail_api_cost
-from opentab.annotations import MATCH_ALL
 from opentab.presentation.themes import (
     STATE_COLOR_HEX,
     button_surfaces,
@@ -155,7 +154,7 @@ from opentab.tui.views.changes import (
     files_layout,
     safe_text,
 )
-from opentab.tui.views.tags import tag_accounting_text, tag_drill_summary
+from opentab.tui.views.tags import tag_drill_summary, tag_suggestion_lines
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -1546,9 +1545,6 @@ class Renderer:
             segs.append((f"  ·  harness: {self.harness_filter_label}", active))
         if self.show_bookmarks_only:
             segs.append(("  ·  ★ bookmarks only", active))
-        if self.tag_filter is not None and self.tags_active:
-            # Only session lists narrow; parent totals and rankings keep their scope.
-            segs.append((f"  ·  tags: {self.tag_filter_label()} (lists)", active))
         for text, attr in segs:
             x = self.write_seg(stdscr, 1, x, text, attr, width)
         self.draw_mode_tabs(stdscr, 2, width)
@@ -1698,6 +1694,29 @@ class Renderer:
                 width,
             )
             self.text_cursor = (height - 1, min(x, width - 1))
+            if self.tag_filter_label() and not self.tag_filter_applies():
+                self.write_seg(
+                    stdscr,
+                    height - 1,
+                    x,
+                    "   #tag filters session lists",
+                    curses.color_pair(4),
+                    width,
+                )
+                return
+            if self.draw_tag_suggestions(stdscr, height, width):
+                self.write_seg(
+                    stdscr,
+                    height - 1,
+                    x,
+                    f"   {self._key('filter', 'complete')} complete"
+                    f"  {self._keys('filter', 'up', 'down')} choose"
+                    f"  {self._key('filter', 'confirm')} keep"
+                    f"  {self._key('filter', 'cancel')} cancel",
+                    curses.color_pair(4),
+                    width,
+                )
+                return
             self.write_seg(
                 stdscr,
                 height - 1,
@@ -1942,9 +1961,11 @@ class Renderer:
             )
 
     def no_sessions_text(self) -> str:
-        if self.tag_filter is not None and self.tags_active:
-            clear = self._key("main", "filter_tags")
-            return f"No sessions match {self.tag_filter_label()} — {clear} to change."
+        parsed = self.tag_query()
+        if parsed is not None and parsed.unknown:
+            return f"No tag named {', '.join(parsed.unknown)} — edit the filter."
+        if self.tag_filter is not None:
+            return f"No sessions match {self.tag_filter_label()} — edit the filter."
         return "No sessions."
 
     def ignored_session_tag(self, workflow: Workflow) -> str:
@@ -2148,9 +2169,6 @@ class Renderer:
         title = f"Sessions · {len(sessions)}" if sessions else "Sessions"
         if self.tags_active and self.tag_selected:
             title += f" · {len(self.tag_selected)} selected roots"
-        # The list total then reads as the matching subtotal, not the scope's spend.
-        if self.tag_filter is not None and self.tags_active:
-            title += f" · {shorten(self.tag_filter_label(), 30)}"
         return title
 
     @staticmethod
@@ -2383,12 +2401,8 @@ class Renderer:
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         sessions = self.current_sessions()
         cy = y + 3
-        if self.tag_browse_drill and self.tags_active:
-            cost_label = (
-                "API estimate (whole roots)"
-                if self.show_api_prices
-                else "Recorded cost (whole roots)"
-            )
+        if self.tag_filter is not None and sessions:
+            cost_label = "API estimate" if self.show_api_prices else "recorded"
             summary = tag_drill_summary(sessions, cost_label, max(1, w - 4))
             for offset, line in enumerate(summary):
                 self.write(
@@ -6186,64 +6200,39 @@ class Renderer:
             buttons=self._menu_buttons("menu.demo", "Apply", extra=extra),
         )
 
+    def draw_tag_suggestions(self, stdscr: curses.window, height: int, width: int) -> bool:
+        """Tag completions with their scoped totals, floating just above the filter line."""
+        rows = self.tag_suggestions()
+        if not rows:
+            return False
+        box_w = max(30, min(width, 72))
+        shown = min(len(rows), 8, max(1, height - 8))
+        more = len(rows) - shown
+        box_h = shown + 2 + (1 if more > 0 else 0)
+        top = max(0, height - 2 - box_h)
+        index = self.tag_suggest_index % len(rows)
+        start = max(0, min(index - shown + 1, len(rows) - shown))
+        for row in range(top, top + box_h):
+            self.write(stdscr, row, 0, " " * box_w)
+        self.box(stdscr, top, 0, box_h, box_w, "Tags", active=True)
+        inner = box_w - 4
+        visible = rows[start : start + shown]
+        lines = tag_suggestion_lines(
+            [("#untagged" if r.tag_id is None else f"#{r.label}", r) for r in visible], inner
+        )
+        for offset, line in enumerate(lines):
+            attr = curses.A_REVERSE if start + offset == index else curses.color_pair(1)
+            self.write(stdscr, top + 1 + offset, 2, line, attr)
+        if more > 0:
+            self.write(stdscr, top + 1 + shown, 2, f"+{more} more", curses.color_pair(4))
+        return True
+
     def draw_tag_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        ctx = "menu.tags.browse" if self.tag_menu == "browse" else "menu.tags"
+        ctx = "menu.tags"
         entries = self.tag_menu_entries()
         query = self.tag_menu_query
         intro = [StyledLine(f"Search: {query}▏", menus.NORMAL)]
-        if self.tag_menu == "browse":
-            mode = "Match all" if self.tag_menu_mode == MATCH_ALL else "Match any"
-            cost_label = "API estimate" if self.show_api_prices else "Recorded cost"
-            intro.extend(
-                [
-                    StyledLine(f"Scope: {self.breadcrumb()}", menus.MUTED),
-                    StyledLine(
-                        "Current pane scope · roots selected by start date; whole-session usage",
-                        menus.MUTED,
-                    ),
-                    StyledLine(
-                        "Tags overlap: row costs/time are not additive. Root totals include subagents.",
-                        menus.MUTED,
-                    ),
-                    StyledLine(
-                        f"{mode} · {self._key(ctx, 'mode')} switch · Agent time is summed activity, not human effort",
-                        menus.MUTED,
-                    ),
-                    StyledLine(
-                        f"Tag · Sessions · Agent time (measured coverage) · {cost_label}",
-                        menus.NORMAL,
-                    ),
-                    StyledLine(
-                        (
-                            "~ API estimates; rates may be approximate"
-                            if self.show_api_prices
-                            else "! includes unpriced recorded usage"
-                        )
-                        + " · — unavailable; missing time is not zero",
-                        menus.MUTED,
-                    ),
-                ]
-            )
-            aggregates = {row.tag_id or "": row for row in self.tag_browse_rows()}
-            unpriced = {
-                self.session_tag_key(w) for w in self._tag_filter_base() if w.unpriced_tokens
-            }
-            entries = [
-                (
-                    kind,
-                    value,
-                    tag_accounting_text(aggregates[value], max(48, scr_w - 18))
-                    + (
-                        (" ~" if self.show_api_prices else " !")
-                        if unpriced.intersection(aggregates[value].session_keys)
-                        else ""
-                    ),
-                    checked,
-                )
-                for kind, value, _label, checked in entries
-            ]
-            title = "Tags · overlapping root sets"
-        elif self.tag_menu in ("rename", "delete"):
+        if self.tag_menu in ("rename", "delete"):
             target = self._tag_maintenance
             tag_id, _revision, _document, count = target if target else ("", 0, 0, 0)
             title = "Delete tag globally?" if self.tag_menu == "delete" else "Rename tag"
@@ -6277,15 +6266,6 @@ class Renderer:
                     "Checks choose tags to modify; this is not membership replacement.", menus.MUTED
                 )
             )
-        elif self.tag_menu == "filter":
-            mode = "Match all" if self.tag_menu_mode == MATCH_ALL else "Match any"
-            intro.append(
-                StyledLine(
-                    f"{mode} of checked tags · {self._key(ctx, 'mode')} switch · lists only",
-                    menus.MUTED,
-                )
-            )
-            title = "Filter sessions by tag"
         else:
             target = self._tag_menu_target
             name = shorten(target[0].title, 40) if target else ""
@@ -6295,16 +6275,14 @@ class Renderer:
             intro.append(StyledLine(self.tag_menu_error, menus.NOTICE))
         intro.append(StyledLine("", menus.NORMAL))
         check = self._button(ctx, "toggle", "Check")
-        if self.tag_menu == "browse":
+        if self.tag_menu == "edit":
             buttons = self._menu_buttons(
                 ctx,
-                "Open",
-                "Close",
+                "Apply",
                 extra=[
                     check,
                     self._button(ctx, "rename", "Rename"),
                     self._button(ctx, "delete_tag", "Delete"),
-                    self._button(ctx, "api_prices", "Cost mode"),
                 ],
             )
         elif self.tag_menu in ("rename", "delete"):

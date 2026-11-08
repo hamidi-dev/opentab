@@ -156,6 +156,7 @@ Copilot's OpenTelemetry export or VS Code. The Overview spells it out:
 | `i` / `I` | Ignore the selection / show ignored rows so you can unignore them |
 | `b` / `B` | Bookmark ★ a session / show only bookmarks |
 | `n` | Write a note ✎ on a session |
+| `Ctrl-T` | [Tag](#tags) a session |
 | `o` | Open its directory |
 | `L` | Resume it in its own tool |
 | `y` | Copy its conversation as Markdown |
@@ -173,6 +174,30 @@ Noted sessions show `✎` in every list, and the note appears in the Overview. T
 list filter (`f`) searches notes, and CSV exports include a `note` column. Notes are
 saved immediately to `~/.local/share/opentab/notes.json` and are never deleted,
 even when the session disappears. They are off in demo mode and with `--no-state`.
+
+### Tags
+
+Tags group sessions across days and projects (a client, a feature, an experiment)
+so you can see what each group cost. Press `Ctrl-T` on a session, type a name and
+press `Enter`. That creates the tag, attaches it and saves in one step. `Tab` checks
+or unchecks the highlighted tag, so one session can carry several. A tag name is one
+word: use `-` instead of spaces.
+
+Tagged sessions show their tags next to the title. To list a tag's sessions and what
+they cost, type `#` in the [list filter](filters.md#filter-by-tag).
+
+In the `Ctrl-T` editor, `Ctrl-E` renames the highlighted tag everywhere and `Ctrl-D`
+deletes it from every session (it asks first). Renaming keeps every assignment.
+
+To tag many sessions at once, select them with `Insert` (again to deselect), then
+press `Ctrl-B` to add tags or `Ctrl-R` to remove tags. Other tags on those sessions
+stay. `Ctrl-X` clears the selection. `E` exports the sessions on screen to CSV with
+their tags, agent time and cost.
+
+Tags are saved immediately to `~/.local/share/opentab/session-tags.json` and, like
+notes, are never deleted when a session disappears. They are off in demo mode and
+with `--no-state`. To hide them altogether, set `"tags_enabled": false` in
+[`state.json`](configuration.md).
 
 ### Resume a session
 

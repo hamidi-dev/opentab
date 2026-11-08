@@ -88,12 +88,16 @@ Click a tab to switch to it, or a column header to sort (click again, or press `
 |-----|--------|
 | `s`, `S` | Sort picker |
 | `~` | Reverse the sort |
-| `f`, `/` | Filter the list as you type |
+| `f`, `/` | Filter the list as you type; `#tag` for [tags](filters.md#filter-by-tag), `Tab` completes |
 | `x` | Clear the filter |
 | `e` | Export the list to CSV |
 | `i` / `I` | Ignore the selection / show ignored rows |
 | `b` / `B` | Bookmark a session / show only bookmarks |
 | `n` | Note on a session |
+| `Ctrl-T` | [Tag](sessions.md#tags) a session; in the editor `Ctrl-E` renames, `Ctrl-D` deletes a tag |
+| `Insert` | Select a session for bulk tagging; `Ctrl-X` clears the selection |
+| `Ctrl-B` / `Ctrl-R` | Add / remove tags on the selected sessions |
+| `E` | Export the list to CSV with tags, agent time and cost |
 | `o` | Open the session's or project's directory |
 | `L` | Resume the session in its own tool |
 | `y` | Copy the session's conversation as Markdown |

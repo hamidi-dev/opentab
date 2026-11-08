@@ -129,6 +129,9 @@ Move between daily, weekly and monthly trends, a calendar heatmap, and rankings 
 models, providers, projects and tools. Follow a chart into the sessions behind it, filter
 as you type, and change the date range.
 
+- **Tag what belongs together.** Tag sessions by client, feature or experiment with
+  **`Ctrl-T`**, then type `#client-x` in the filter to see that tag's sessions, time
+  and cost. [Tags](docs/sessions.md#tags)
 - **Find your way back.** Bookmark sessions, add notes, and reopen supported sessions in
   their original tool with **`L`**, or use `opentab launch` for an fzf picker.
   [Sessions](docs/sessions.md)
@@ -171,7 +174,7 @@ part you want to show them.
 
 Turn traces require `--allow-raw-content`; static reports also need
 `--include-details` or `--details-dir`. Those detail options include retained user
-prompts even without traces. Personal notes stay out of web reports. [Web browser & exports](docs/web.md)
+prompts even without traces. Personal notes stay out of web reports, and tags too unless you pass `--include-annotations`. [Web browser & exports](docs/web.md)
 
 <a id="fleet"></a>
 
