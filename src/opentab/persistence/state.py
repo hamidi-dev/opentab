@@ -83,6 +83,16 @@ def load_state(path: str | None = None) -> dict:
     return read_state(path)[0]
 
 
+def tags_enabled(path: str | None = None) -> bool:
+    """Session tags are on unless ``"tags_enabled": false``; any doubt means on.
+
+    Hand-set only: save_state never writes the key and its merge preserves it. Read
+    without migrating, because tag mutations recheck it on every write.
+    """
+    value = read_state(path or state_path(migrate=False))[0].get("tags_enabled", True)
+    return value if isinstance(value, bool) else True
+
+
 def update_star_request(
     action: str, path: str | None = None, *, now: float | None = None
 ) -> tuple[bool, str]:

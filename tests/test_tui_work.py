@@ -49,7 +49,7 @@ def _draw(app, height=24, width=80):
 
 
 def test_work_stays_invisible_until_enabled():
-    with isolated_annotations({"version": 1, "tags": {"enabled": True}}) as tmp:
+    with isolated_annotations() as tmp:
         app = _select_session(app_with(_rows()), "a")
         assert not app.work_items_active
         for key in (CTRL_W, CTRL_N, ord("A")):

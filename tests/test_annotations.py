@@ -6,11 +6,11 @@ from opentab.annotations import MATCH_ANY, SessionTags, TagFilter, aggregate_tag
 from opentab.persistence.session_tags import TagError, TagSnapshot
 
 
-def test_suppressed_annotations_do_not_read_custom_workflow_configuration():
+def test_suppressed_annotations_do_not_read_the_tags_preference():
     tags = SessionTags()
     tags.enabled = True
     tags.snapshot = TagSnapshot(labels={"private": "authored label"})
-    with patch("opentab.annotations.load_workflow_config", side_effect=AssertionError("read")):
+    with patch("opentab.annotations.tags_enabled", side_effect=AssertionError("read")):
         tags.refresh(allowed=False)
         try:
             tags.create("blocked")

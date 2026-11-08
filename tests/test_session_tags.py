@@ -8,16 +8,13 @@ from opentab.accounting.models import SessionRef
 from opentab.annotations import MATCH_ANY, UNTAGGED, SessionTags, TagFilter
 from opentab.persistence import session_tags
 from opentab.persistence.session_tags import TagError
-from opentab.persistence.workflow_config import load_workflow_config
 
 from tests._support import isolated_annotations as isolated
+from tests._support import set_tags_pref
 
 A = SessionRef("box", "claude-code", "same-native-id").encode()
 B = SessionRef("box", "codex", "same-native-id").encode()
 C = SessionRef("other-box", "claude-code", "same-native-id").encode()
-
-
-ON = {"version": 1, "tags": {"enabled": True}}
 
 
 def _raw() -> dict:
@@ -35,37 +32,35 @@ def _raises(code, fn, *args, **kwargs):
 
 
 def test_switch_defaults_on_and_only_explicit_false_disables():
+    # The preference lives in state.json; any doubt about it keeps tags on.
     cases = [
-        (None, True, ""),
-        ({"version": 1}, True, ""),
-        ({"version": 1, "tags": {}}, True, ""),
-        ({"version": 1, "tags": {"enabled": False}}, False, ""),
-        (ON, True, ""),
-        # Doubt about the file keeps the default and reports why.
-        ({"version": 1, "tags": {"enabled": "yes"}}, True, "tags.enabled"),
-        ({"version": 1, "tags": True}, True, "tags must be an object"),
-        ({"version": 2, "tags": {"enabled": False}}, True, "newer format"),
-        ({"version": True, "tags": {"enabled": True}}, True, "version"),
-        ({"tags": {"enabled": False}}, True, "version"),
-        ("{not json", True, "cannot read"),
-        ("[]", True, "object"),
-        # A broken work-items section does not take tags down with it.
-        ({"version": 1, "tags": {"enabled": True}, "work_items": 7}, True, "work_items"),
+        (None, True),
+        ({}, True),
+        ({"tags_enabled": False}, False),
+        ({"tags_enabled": True}, True),
+        ({"tags_enabled": "no"}, True),
+        ({"tags_enabled": 0}, True),
+        ("{not json", True),
+        ("[]", True),
     ]
-    for config, enabled, error in cases:
+    for pref, enabled in cases:
+        with isolated():
+            if pref is not None:
+                set_tags_pref(pref if isinstance(pref, str) else json.dumps(pref))
+            tags = SessionTags()
+            tags.refresh()
+            assert tags.enabled is enabled and not tags.error, pref
+    # workflow.json no longer controls tags, and a broken one is not a tag error.
+    for config in ({"version": 1, "tags": {"enabled": False}}, "{not json", {"version": 2}):
         with isolated(config):
-            loaded = load_workflow_config()
-            assert loaded.tags is enabled, config
-            assert error in loaded.error and (not error) == (not loaded.error), (config, loaded)
-            assert loaded.work_items is False
+            tags = SessionTags()
+            tags.refresh()
+            assert tags.enabled and not tags.error, config
 
 
 def test_disabled_tags_read_nothing_and_create_no_files():
-    for config, allowed in (
-        ({"version": 1, "tags": {"enabled": False}}, True),
-        (ON, False),
-    ):
-        with isolated(config) as tmp:
+    for pref, allowed in ((False, True), (None, False)):
+        with isolated(tags=pref) as tmp:
             os.makedirs(os.path.join(tmp, "data", "opentab"))
             with open(session_tags.tags_path(), "w") as fh:
                 fh.write("{ broken")  # must not even be read, let alone reported
@@ -77,13 +72,13 @@ def test_disabled_tags_read_nothing_and_create_no_files():
 
 
 def test_enabled_without_a_file_is_empty_and_writes_only_on_edit():
-    for config in (None, ON):
-        with isolated(config) as tmp:
+    for pref in (None, True):
+        with isolated(tags=pref) as tmp:
             tags = SessionTags()
             tags.refresh()
             assert tags.enabled and tags.editable and not tags.error
             assert not os.path.exists(os.path.join(tmp, "data"))
-    with isolated(ON) as tmp:
+    with isolated() as tmp:
         tags = SessionTags()
         tags.refresh()
         assert tags.enabled and tags.editable and tags.snapshot.revision == 0
@@ -94,7 +89,7 @@ def test_enabled_without_a_file_is_empty_and_writes_only_on_edit():
 
 
 def test_equal_native_ids_on_other_harnesses_or_machines_stay_distinct():
-    with isolated(ON):
+    with isolated():
         tags = SessionTags()
         tags.refresh()
         tags.set_tags(A, [], 0, create=["alpha"])
@@ -105,7 +100,7 @@ def test_equal_native_ids_on_other_harnesses_or_machines_stay_distinct():
 
 
 def test_labels_normalize_and_case_insensitive_duplicates_are_rejected():
-    with isolated(ON):
+    with isolated():
         assert session_tags.normalize_label("  ##Café ") == "Café"
         # NFD input is stored in NFC, so the two spellings are one tag.
         assert session_tags.normalize_label("Café") == "Café"
@@ -121,7 +116,7 @@ def test_labels_normalize_and_case_insensitive_duplicates_are_rejected():
 
 
 def test_rename_keeps_membership_and_checks_the_tag_revision():
-    with isolated(ON):
+    with isolated():
         tags = SessionTags()
         tags.refresh()
         tags.set_tags(A, [], 0, create=["perf"])
@@ -134,7 +129,7 @@ def test_rename_keeps_membership_and_checks_the_tag_revision():
 
 
 def test_stale_same_session_edits_conflict_but_other_sessions_merge():
-    with isolated(ON):
+    with isolated():
         first, second = SessionTags(), SessionTags()
         first.refresh()
         second.refresh()
@@ -154,7 +149,7 @@ def test_stale_same_session_edits_conflict_but_other_sessions_merge():
 
 
 def test_unknown_fields_and_unresolved_ids_survive_writes():
-    with isolated(ON):
+    with isolated():
         os.makedirs(os.path.dirname(session_tags.tags_path()))
         document = {
             "version": 1,
@@ -194,7 +189,7 @@ def test_broken_or_newer_documents_are_reported_and_never_overwritten():
         ('{"version": 2, "tags": {}, "assignments": {}}', "newer_version"),
         ('{"tags": {}, "assignments": {}}', "malformed"),
     ):
-        with isolated(ON):
+        with isolated():
             os.makedirs(os.path.dirname(session_tags.tags_path()))
             with open(session_tags.tags_path(), "w") as fh:
                 fh.write(text)
@@ -209,7 +204,7 @@ def test_broken_or_newer_documents_are_reported_and_never_overwritten():
 
 
 def test_a_malformed_target_record_refuses_only_that_session():
-    with isolated(ON):
+    with isolated():
         os.makedirs(os.path.dirname(session_tags.tags_path()))
         with open(session_tags.tags_path(), "w") as fh:
             json.dump({"version": 1, "tags": {}, "assignments": {A: {"tag_ids": "x"}}}, fh)
@@ -219,7 +214,7 @@ def test_a_malformed_target_record_refuses_only_that_session():
 
 
 def test_failed_writes_and_missing_locks_keep_authored_data():
-    with isolated(ON):
+    with isolated():
         session_tags.update_session_tags(A, 0, create=["kept"])
         before = _raw()
         with patch.object(session_tags.os, "replace", side_effect=OSError("disk full")):
@@ -239,7 +234,7 @@ def test_failed_writes_and_missing_locks_keep_authored_data():
 
 
 def test_invalid_keys_and_limits_are_refused():
-    with isolated(ON):
+    with isolated():
         for key in ("plain-id", "ot1_!!", SessionRef("m", "h", "x").encode() + "=="):
             _raises("invalid_session", session_tags.update_session_tags, key, 0, create=["x"])
         _raises("invalid", session_tags.update_session_tags, A, -1, create=["x"])
@@ -255,7 +250,7 @@ def test_invalid_keys_and_limits_are_refused():
 
 
 def test_concurrent_writers_keep_every_session_and_detect_same_session_races():
-    with isolated(ON):
+    with isolated():
         keys = [SessionRef("box", "codex", f"s{i}").encode() for i in range(8)]
         kids = []
         for i, key in enumerate(keys):
@@ -300,7 +295,7 @@ def test_tag_filters_match_all_any_and_untagged():
 
 
 def test_bulk_patches_only_selected_memberships_and_reports_every_conflict():
-    with isolated(ON):
+    with isolated():
         x, _ = session_tags.create_tag("x")
         y, _ = session_tags.create_tag("y")
         z, _ = session_tags.create_tag("z")
@@ -323,7 +318,7 @@ def test_bulk_patches_only_selected_memberships_and_reports_every_conflict():
 
 
 def test_bulk_validation_and_write_failure_never_partially_write():
-    with isolated(ON):
+    with isolated():
         ids = [
             session_tags.create_tag(f"tag{i}")[0]
             for i in range(session_tags.MAX_TAGS_PER_SESSION + 1)
@@ -352,7 +347,7 @@ def test_bulk_validation_and_write_failure_never_partially_write():
 
 
 def test_global_delete_preserves_fields_missing_roots_and_revision_tombstones():
-    with isolated(ON):
+    with isolated():
         session_tags.update_session_tags(A, 0, create=["x", "y"])
         snap = session_tags.load_snapshot()
         x, y = snap.tags_of(A)
@@ -387,7 +382,7 @@ def test_global_delete_preserves_fields_missing_roots_and_revision_tombstones():
 
 
 def test_delete_confirmation_and_captured_rename_revisions_refuse_races():
-    with isolated(ON):
+    with isolated():
         tags = SessionTags()
         tags.refresh()
         x = tags.create("x")
@@ -405,13 +400,12 @@ def test_delete_confirmation_and_captured_rename_revisions_refuse_races():
 
 
 def test_bulk_and_delete_recheck_disabled_capability():
-    with isolated(ON) as tmp:
+    with isolated():
         tags = SessionTags()
         tags.refresh()
         x = tags.create("x")
         before = _raw()
-        with open(os.path.join(tmp, "config", "opentab", "workflow.json"), "w") as fh:
-            json.dump({"version": 1, "tags": {"enabled": False}}, fh)
+        set_tags_pref(False)
         _raises("disabled", tags.bulk_update, {A: 0}, add=[x])
         _raises("disabled", tags.delete, x, 1, 1)
         _raises("disabled", tags.rename, x, "renamed", 1)
@@ -419,7 +413,7 @@ def test_bulk_and_delete_recheck_disabled_capability():
 
 
 def test_concurrent_bulk_writers_cannot_partially_land_overlapping_batches():
-    with isolated(ON):
+    with isolated():
         x, _ = session_tags.create_tag("x")
         y, _ = session_tags.create_tag("y")
         kids = []
@@ -445,7 +439,7 @@ def test_concurrent_bulk_writers_cannot_partially_land_overlapping_batches():
 
 
 def test_global_delete_refuses_malformed_affected_record_without_loss():
-    with isolated(ON):
+    with isolated():
         x, _ = session_tags.create_tag("x")
         session_tags.update_session_tags(A, 0, add=[x])
         raw = _raw()
@@ -457,7 +451,7 @@ def test_global_delete_refuses_malformed_affected_record_without_loss():
 
 
 def test_bulk_preserves_unknown_fields_unresolved_ids_and_malformed_other_records():
-    with isolated(ON):
+    with isolated():
         x, _ = session_tags.create_tag("x")
         raw = _raw()
         raw["future"] = ["retained"]
@@ -479,7 +473,7 @@ def test_bulk_preserves_unknown_fields_unresolved_ids_and_malformed_other_record
 
 
 def test_concurrent_global_delete_and_membership_add_obey_confirmation_guard():
-    with isolated(ON):
+    with isolated():
         x, initial = session_tags.create_tag("x")
         kids = []
         for delete in (True, False):

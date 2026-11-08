@@ -52,27 +52,42 @@ def needs_uncapped_sqlite(fn):
 
 
 @contextmanager
-def isolated_annotations(config=None):
-    """Disposable config and authored-data roots for workflow model tests."""
+def isolated_annotations(config=None, tags=None):
+    """Disposable config, state and authored-data roots for annotation tests.
+
+    ``config`` is workflow.json (work items); ``tags`` sets the state.json preference.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         env = {
             "XDG_CONFIG_HOME": os.path.join(tmp, "config"),
             "XDG_DATA_HOME": os.path.join(tmp, "data"),
+            "XDG_STATE_HOME": os.path.join(tmp, "state"),
         }
         with patch.dict(os.environ, env):
             if config is not None:
                 os.makedirs(os.path.join(tmp, "config", "opentab"))
                 with open(os.path.join(tmp, "config", "opentab", "workflow.json"), "w") as fh:
                     fh.write(config if isinstance(config, str) else json.dumps(config))
+            if tags is not None:
+                set_tags_pref(tags)
             yield tmp
+
+
+def set_tags_pref(enabled, state_home=None):
+    """Write state.json's tags_enabled under the (already isolated) state root."""
+    from opentab.persistence import paths
+
+    root = os.path.join(state_home, "opentab") if state_home else paths.state_dir()
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, "state.json"), "w") as fh:
+        fh.write(enabled if isinstance(enabled, str) else json.dumps({"tags_enabled": enabled}))
 
 
 @contextmanager
 def _tags_on(enabled=True):
     from opentab.persistence import session_tags
 
-    config = {"version": 1, "tags": {"enabled": enabled}} if enabled is not None else None
-    with isolated_annotations(config):
+    with isolated_annotations(tags=enabled):
         yield session_tags
 
 

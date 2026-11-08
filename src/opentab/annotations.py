@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from opentab.accounting.models import SessionRef
 from opentab.persistence import session_tags
 from opentab.persistence.session_tags import EMPTY, TagError, TagSnapshot
-from opentab.persistence.workflow_config import load_workflow_config
+from opentab.persistence.state import tags_enabled
 
 MATCH_ALL = "all"
 MATCH_ANY = "any"
@@ -121,10 +121,7 @@ class SessionTags:
         if not self.allowed:
             self.enabled = False
             return
-        config = load_workflow_config()
-        self.enabled = bool(self.allowed and config.tags)
-        if config.error and self.allowed:
-            self.error = f"workflow.json: {config.error}"
+        self.enabled = tags_enabled()
         if not self.enabled:
             return
         try:
@@ -191,8 +188,7 @@ class SessionTags:
         if not self.allowed:
             self.disable()
             raise TagError("disabled", "tags are off")
-        config = load_workflow_config()
-        if not config.tags:
+        if not tags_enabled():
             self.disable()
             raise TagError("disabled", "tags are off")
         refusal = self.edit_refusal()

@@ -20,6 +20,7 @@ from tests._support import (
     app_with,
     copilot_prices,
     fleet_app,
+    set_tags_pref,
     workflow,
 )
 
@@ -4429,12 +4430,14 @@ def test_web_raw_trace_demo_cli_exports_only_fake_root_and_execution_events():
 def _tag_env(tmp, enabled=True):
     from unittest.mock import patch
 
-    os.makedirs(os.path.join(tmp, "c", "opentab"), exist_ok=True)
-    with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
-        json.dump({"version": 1, "tags": {"enabled": enabled}}, fh)
+    set_tags_pref(enabled, os.path.join(tmp, "s"))
     return patch.dict(
         os.environ,
-        {"XDG_CONFIG_HOME": os.path.join(tmp, "c"), "XDG_DATA_HOME": os.path.join(tmp, "d")},
+        {
+            "XDG_CONFIG_HOME": os.path.join(tmp, "c"),
+            "XDG_DATA_HOME": os.path.join(tmp, "d"),
+            "XDG_STATE_HOME": os.path.join(tmp, "s"),
+        },
     )
 
 
@@ -4484,8 +4487,7 @@ def test_web_tags_never_reach_static_reports_or_disabled_servers():
             data = _page_data(urllib.request.urlopen(base + "/").read().decode())
             assert data["workflows"][0]["key"] == key
             assert [d["label"] for d in data["tags"]["defs"]] == ["private label"]
-            with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
-                json.dump({"version": 1, "tags": {"enabled": False}}, fh)
+            set_tags_pref(False)
             # A stale page that still shows controls cannot keep writing.
             status, body = _post_tags(base, {"key": key, "expected": 1, "tagIds": []})
             assert status == 403 and body["code"] == "disabled"
@@ -4721,8 +4723,7 @@ def test_web_bulk_tags_are_atomic_exact_and_definition_deletion_counts_missing_r
                 )[0]
                 == 403
             )
-            with open(os.path.join(tmp, "c", "opentab", "workflow.json"), "w") as fh:
-                json.dump({"version": 1, "tags": {"enabled": False}}, fh)
+            set_tags_pref(False)
             assert (
                 _post_tags(base, {"op": "rename", "id": y, "expected": 1, "label": "off"})[0] == 403
             )
