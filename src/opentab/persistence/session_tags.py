@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import unicodedata
@@ -28,6 +29,11 @@ try:
     import fcntl  # POSIX advisory locks; native Windows has none
 except ImportError:
     fcntl = None
+
+# Whitespace that Python and browser JavaScript agree on (their \s classes differ).
+WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+_TOKEN_SEPARATORS = re.compile(f"[{WHITESPACE}_]+")
+_EDGE_SPACES = re.compile(f"^[{WHITESPACE}]+|[{WHITESPACE}]+$")
 
 TAGS_VERSION = 1
 MAX_LABEL_CHARS = 40
@@ -59,8 +65,10 @@ def editing_supported() -> bool:
 def normalize_label(text: str) -> str:
     """Return the stored display spelling or raise ``TagError("invalid_label")``.
 
-    A leading ``#`` is presentation syntax. Interior spaces are allowed; control and
-    format characters are not, and the 40-character bound applies after NFC.
+    A leading ``#`` is presentation syntax. A label is one word, because ``#label``
+    tokens in the ``/`` filter end at whitespace; labels saved with spaces by older
+    builds still load and match with ``-`` in place of each space. Control and format
+    characters are refused, and the 40-character bound applies after NFC.
     """
     if not isinstance(text, str):
         raise TagError("invalid_label", "tag names must be text")
@@ -69,14 +77,25 @@ def normalize_label(text: str) -> str:
         raise TagError("invalid_label", "tag names cannot be empty")
     if any(unicodedata.category(ch).startswith("C") for ch in label):
         raise TagError("invalid_label", "tag names cannot contain control characters")
+    if any(ch.isspace() or ch in "#|" for ch in label):
+        raise TagError("invalid_label", "tag names are one word: use - instead of spaces")
+    if label_key(label) == "untagged":
+        raise TagError("invalid_label", "#untagged is reserved for sessions without tags")
     if len(label) > MAX_LABEL_CHARS:
         raise TagError("invalid_label", f"tag names are limited to {MAX_LABEL_CHARS} characters")
     return label
 
 
 def label_key(label: str) -> str:
-    # Case-insensitive identity for duplicate detection; display keeps its spelling.
-    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", label).casefold())
+    """Case-insensitive identity, which is also how ``#label`` is typed in a filter.
+
+    Spaces and ``_`` read as ``-``, so a legacy ``client x`` is ``#client-x`` and a new
+    ``client_x`` is a duplicate of ``client-x``. ``lower()`` rather than ``casefold()``
+    keeps the browser (``toLowerCase``) matching exactly the same names.
+    """
+    trimmed = _EDGE_SPACES.sub("", unicodedata.normalize("NFC", label))
+    folded = unicodedata.normalize("NFC", trimmed.lower())
+    return _TOKEN_SEPARATORS.sub("-", folded)
 
 
 def _nonnegative_int(value) -> bool:
@@ -267,11 +286,21 @@ def _new_tag_id(existing) -> str:
 
 
 def _label_index(document: dict) -> dict[str, str]:
+    """Key -> tag ID. Older builds could store two labels that now share a key
+    (``client_x`` and ``client-x``); there an exact spelling wins, see ``_owner``."""
     return {
         label_key(entry["label"]): tag_id
         for tag_id, entry in document["tags"].items()
-        if _valid_definition(entry)
+        if tag_id and _valid_definition(entry)
     }
+
+
+def _owner(document: dict, index: dict[str, str], label: str) -> str | None:
+    for tag_id, entry in document["tags"].items():
+        # An empty ID (hand-edited file) would write a record that no longer validates.
+        if tag_id and _valid_definition(entry) and entry["label"] == label:
+            return tag_id
+    return index.get(label_key(label))
 
 
 def _define(document: dict, label: str) -> str:
@@ -315,7 +344,7 @@ def rename_tag(tag_id: str, label: str, expected: int) -> TagSnapshot:
                 "the tag changed elsewhere",
                 {"label": entry["label"], "revision": entry.get("revision", 0)},
             )
-        owner = _label_index(document).get(label_key(label))
+        owner = _owner(document, _label_index(document), label)
         if owner is not None and owner != tag_id:
             raise TagError("duplicate", f"a tag named #{label} already exists")
         if entry["label"] == label:
@@ -478,7 +507,7 @@ def update_session_tags(
         index = _label_index(document)
         defined = False
         for label in labels:
-            tag_id = index.get(label_key(label))
+            tag_id = _owner(document, index, label)
             if tag_id is None:
                 tag_id = index[label_key(label)] = _define(document, label)
                 defined = True

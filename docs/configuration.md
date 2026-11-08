@@ -8,6 +8,7 @@ through your own script.
 |------|-------|
 | `~/.local/state/opentab/state.json` | Remembered view choices |
 | `~/.local/share/opentab/notes.json` | Your [session notes](sessions.md#notes) |
+| `~/.local/share/opentab/session-tags.json` | Your [session tags](sessions.md#tags) |
 | `~/.config/opentab/keymap.conf` | Your key bindings |
 | `~/.config/opentab/launcher` | An optional [launcher hook](#custom-launchers) |
 
@@ -32,7 +33,11 @@ range.
 
 `--no-state` turns remembering off for a run. Demo mode never saves anything.
 
-Notes are kept apart from the rest because you wrote them. Each one is saved the
+Tags are on by default. To hide them and their keys, add `"tags_enabled": false` to
+`state.json` (OpenTab keeps the line when it saves); remove it to bring them back.
+Your tags stay in `session-tags.json` either way.
+
+Notes and tags are kept apart from the rest because you wrote them. Each one is saved the
 moment you press `Enter`, and a note is never deleted, even when its session no
 longer exists.
 

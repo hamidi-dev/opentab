@@ -626,8 +626,7 @@ def _build_parser(machine: bool = True) -> argparse.ArgumentParser:
     web.add_argument(
         "--include-annotations",
         action="store_true",
-        # Experimental tags/work items stay unannounced: accepted but kept out of --help.
-        help=argparse.SUPPRESS,
+        help="with --html, include your session tags (read-only in the file)",
     )
     web.add_argument(
         "--include-details",

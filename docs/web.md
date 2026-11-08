@@ -27,6 +27,13 @@ keep.
 | **Tools** | Which tools and servers the spend went to, down to each call |
 | **Context** | Measured request sizes and, where available, an estimate of what filled the window |
 
+**Tags.** Session lists show each session's [tags](sessions.md#tags). Type `#` in a
+list's filter box for the same tag suggestions as the terminal app, with each tag's
+sessions, agent time and cost; `Tab` or a click completes it ([syntax](filters.md#filter-by-tag)).
+The **Tags** browse mode lists every tag's totals; click one to filter by it. The live
+server can also edit tags: click a tag or **+ tag** on a session, select sessions to
+add or remove tags in bulk, and rename or delete a tag from the Tags list.
+
 The refresh button re-reads local data. It doesn't re-pull other machines; a pulled
 machine has its own refresh button ([fleet refresh](machines.md#refresh-and-offline-history)).
 
@@ -103,7 +110,8 @@ opentab web --html report.html --include-details
 This reads every session, so it takes longer and makes a bigger file. It includes
 recorded user prompts, per-turn usage, tool attribution and context data. Without
 `--allow-raw-content` it excludes tool arguments and results and reasoning text.
-Notes and the separate subagent received-prompt reader are always excluded. With
+Notes and the separate subagent received-prompt reader are always excluded, and
+tags are left out unless you add `--include-annotations`. With
 this option the file is written readable only by you (`0600` on macOS and Linux),
 also when it replaces an existing file.
 
@@ -111,6 +119,7 @@ also when it replaces an existing file.
 |--------|--------|
 | `--allow-raw-content` | Enable raw root and subagent turn traces; with `--html` requires `--include-details` or `--details-dir` |
 | `--include-details` | Add Turns, Tools and Context (needs `--html`) |
+| `--include-annotations` | Add your session tags, read-only (needs `--html`) |
 | `--details-dir DIR` | Instead, write one small details file per session to `DIR`, loaded when a session is opened; serve the report over HTTP (e.g. `python3 -m http.server`) |
 | `--harness all` | Include every discovered harness; otherwise only the selected one is in the file |
 | `--demo` | Disguise selected data, e.g. `opentab web --demo --html demo.html` |

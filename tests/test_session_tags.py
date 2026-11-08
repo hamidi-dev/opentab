@@ -5,7 +5,14 @@ import os
 from unittest.mock import patch
 
 from opentab.accounting.models import SessionRef
-from opentab.annotations import MATCH_ANY, UNTAGGED, SessionTags, TagFilter
+from opentab.annotations import (
+    UNTAGGED,
+    SessionTags,
+    TagFilter,
+    complete_tag_query,
+    parse_tag_query,
+    rename_tag_in_query,
+)
 from opentab.persistence import session_tags
 from opentab.persistence.session_tags import TagError
 
@@ -83,8 +90,8 @@ def test_enabled_without_a_file_is_empty_and_writes_only_on_edit():
         tags.refresh()
         assert tags.enabled and tags.editable and tags.snapshot.revision == 0
         assert not os.path.exists(os.path.join(tmp, "data"))
-        tags.set_tags(A, [], 0, create=["  #Performance ", "bug fix"])
-        assert tags.labels(A) == ["bug fix", "Performance"]
+        tags.set_tags(A, [], 0, create=["  #Performance ", "bug-fix"])
+        assert tags.labels(A) == ["bug-fix", "Performance"]
         assert tags.revision(A) == 1
 
 
@@ -106,12 +113,12 @@ def test_labels_normalize_and_case_insensitive_duplicates_are_rejected():
         assert session_tags.normalize_label("Café") == "Café"
         for bad in ("", "  # ", "a\nb", "a​b", "x" * 41, 7):
             _raises("invalid_label", session_tags.normalize_label, bad)
-        tag_id, _ = session_tags.create_tag("Release 1.30")
-        _raises("duplicate", session_tags.create_tag, "release 1.30")
+        tag_id, _ = session_tags.create_tag("Release-1.30")
+        _raises("duplicate", session_tags.create_tag, "release-1.30")
         other, snap = session_tags.create_tag("perf")
-        _raises("duplicate", session_tags.rename_tag, other, "RELEASE 1.30", 1)
+        _raises("duplicate", session_tags.rename_tag, other, "RELEASE-1.30", 1)
         # Creating while assigning reuses the existing tag instead of duplicating it.
-        snap = session_tags.update_session_tags(A, 0, create=["RELEASE 1.30"])
+        snap = session_tags.update_session_tags(A, 0, create=["RELEASE-1.30"])
         assert snap.tags_of(A) == (tag_id,) and len(snap.labels) == 2
 
 
@@ -239,7 +246,7 @@ def test_invalid_keys_and_limits_are_refused():
             _raises("invalid_session", session_tags.update_session_tags, key, 0, create=["x"])
         _raises("invalid", session_tags.update_session_tags, A, -1, create=["x"])
         _raises("invalid", session_tags.update_session_tags, A, True, create=["x"])
-        many = [f"tag {i}" for i in range(session_tags.MAX_CREATE_PER_EDIT + 1)]
+        many = [f"tag-{i}" for i in range(session_tags.MAX_CREATE_PER_EDIT + 1)]
         _raises("limit", session_tags.update_session_tags, A, 0, create=many)
         ids = [
             session_tags.create_tag(f"t{i}")[0]
@@ -257,14 +264,14 @@ def test_concurrent_writers_keep_every_session_and_detect_same_session_races():
             pid = os.fork()
             if pid == 0:
                 try:
-                    session_tags.update_session_tags(key, 0, create=[f"tag {i}"])
+                    session_tags.update_session_tags(key, 0, create=[f"tag-{i}"])
                 finally:
                     os._exit(0)
             kids.append(pid)
         for pid in kids:
             os.waitpid(pid, 0)
         snap = session_tags.load_snapshot()
-        assert [snap.labels[snap.tags_of(key)[0]] for key in keys] == [f"tag {i}" for i in range(8)]
+        assert [snap.labels[snap.tags_of(key)[0]] for key in keys] == [f"tag-{i}" for i in range(8)]
         assert snap.revision == 8
         # Eight processes all expecting revision 0 of one session: exactly one wins.
         kids = []
@@ -273,7 +280,7 @@ def test_concurrent_writers_keep_every_session_and_detect_same_session_races():
             if pid == 0:
                 code = 1
                 try:
-                    session_tags.update_session_tags(A, 0, create=[f"race {i}"])
+                    session_tags.update_session_tags(A, 0, create=[f"race-{i}"])
                     code = 0
                 except TagError:
                     code = 3
@@ -286,12 +293,83 @@ def test_concurrent_writers_keep_every_session_and_detect_same_session_races():
 
 
 def test_tag_filters_match_all_any_and_untagged():
-    both = TagFilter(ids=frozenset({"x", "y"}))
-    either = TagFilter(MATCH_ANY, frozenset({"x", "y"}))
-    untagged = TagFilter(UNTAGGED)
+    both = TagFilter((frozenset({"x"}), frozenset({"y"})))
+    either = TagFilter((frozenset({"x", "y"}),))
+    untagged = TagFilter((frozenset({UNTAGGED}),))
+    nothing = TagFilter((frozenset(),))
     assert both.matches(["x", "y", "z"]) and not both.matches(["x"])
     assert either.matches(["y"]) and not either.matches(["z"])
     assert untagged.matches([]) and not untagged.matches(["gone"])
+    assert not nothing.matches([]) and not nothing.matches(["x"])
+
+
+def test_filter_query_splits_tags_from_fuzzy_words():
+    labels = {"p": "perf", "o": "Perf-ops", "c": "client x", "u": "release"}
+
+    def groups(query):
+        parsed = parse_tag_query(query, labels)
+        return parsed.filter.groups if parsed.filter else None
+
+    assert parse_tag_query("fix login", labels).filter is None
+    assert parse_tag_query("fix #perf login", labels).text == "fix login"
+    # Exact names win over prefixes; otherwise a prefix means any tag starting with it.
+    assert groups("#perf") == (frozenset({"p"}),)
+    assert groups("#PE") == (frozenset({"p", "o"}),)
+    # Spaced labels from older builds match with - or _; | is any-of, spaces all-of.
+    assert groups("#client-x") == groups("#Client_X") == (frozenset({"c"}),)
+    assert groups("#perf|release #client-x") == (frozenset({"p", "u"}), frozenset({"c"}))
+    assert groups("#untagged") == (frozenset({UNTAGGED}),)
+    parsed = parse_tag_query("#nope a", labels)
+    assert parsed.unknown == ("#nope",) and parsed.filter.groups == (frozenset(),)
+    # A bare # is still being typed: it completes but does not filter.
+    assert parse_tag_query("a #", labels).filter is None
+    assert parse_tag_query("a #", labels).partial == ""
+    assert parse_tag_query("#perf ", labels).partial is None
+    assert parse_tag_query("#perf|re", labels).partial == "re"
+    assert complete_tag_query("fix #pe", "Perf-ops") == "fix #Perf-ops "
+    assert complete_tag_query("#perf|cl", "client x") == "#perf|client-x "
+    # A pasted non-breaking space separates words in parsing, completion and renames alike.
+    assert complete_tag_query("fix\u00a0#pe", "perf") == "fix\u00a0#perf "
+    assert rename_tag_in_query("fix\u00a0#perf|x  #pe", "perf", "speed") == "fix\u00a0#speed|x  #pe"
+
+
+def test_new_labels_are_one_word_but_old_spaced_labels_still_load():
+    with isolated():
+        _raises("invalid_label", session_tags.create_tag, "client x")
+        _raises("invalid_label", session_tags.create_tag, "a|b")
+        x, _ = session_tags.create_tag("client-x")
+        _raises("invalid_label", session_tags.rename_tag, x, "client x", 1)
+        # One key for typing and duplicates: client_x would complete to #client-x too.
+        _raises("duplicate", session_tags.create_tag, "Client_X")
+        _raises("invalid_label", session_tags.create_tag, "Untagged")
+        raw = _raw()
+        raw["tags"][x]["label"] = "client x"
+        with open(session_tags.tags_path(), "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+        assert session_tags.load_snapshot().labels[x] == "client x"
+
+
+def test_labels_that_older_builds_let_collide_resolve_by_exact_spelling():
+    with isolated():
+        x, _ = session_tags.create_tag("client-x")
+        raw = _raw()
+        # Legacy definitions first, so the shared-key index alone would pick client-x.
+        raw["tags"] = {
+            "": {"label": "client_x", "revision": 1},  # hand-edited, never a valid owner
+            "tlegacy": {"label": "client_x", "revision": 1},
+            "tnull": {"label": "untagged", "revision": 1},
+            **raw["tags"],
+        }
+        with open(session_tags.tags_path(), "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+        snap = session_tags.update_session_tags(A, 0, create=["client_x"])
+        assert snap.tags_of(A) == ("tlegacy",)
+        snap = session_tags.update_session_tags(B, 0, create=["client-x"])
+        assert snap.tags_of(B) == (x,)
+        session_tags.rename_tag("tlegacy", "client_x", 1)  # its own name is no duplicate
+        # #untagged stays the synthetic "no tags" even beside a legacy tag of that name.
+        labels = session_tags.load_snapshot().labels
+        assert parse_tag_query("#untagged", labels).filter.groups == (frozenset({UNTAGGED}),)
 
 
 def test_bulk_patches_only_selected_memberships_and_reports_every_conflict():
@@ -393,7 +471,7 @@ def test_delete_confirmation_and_captured_rename_revisions_refuse_races():
         assert _raw() == before
         tags.refresh()
         tags.rename(x, "renamed", 1)
-        _raises("stale", tags.rename, x, "stale dialog", 1)
+        _raises("stale", tags.rename, x, "stale-dialog", 1)
         before = _raw()
         _raises("stale", tags.delete, x, 1, tags.snapshot.revision)
         assert _raw() == before

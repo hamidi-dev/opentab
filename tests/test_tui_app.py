@@ -6336,14 +6336,14 @@ def test_reverse_sort_key_and_picker_flip_the_active_list_direction():
 # -- experimental session tags ------------------------------------------------------
 
 
-CTRL_T, CTRL_G, TAB, ENTER, ESC = 20, 7, 9, 10, 27
+CTRL_T, CTRL_G, CTRL_L, TAB, ENTER, ESC = 20, 7, 12, 9, 10, 27
 
 
 def test_tags_are_on_by_default_and_hidden_only_when_switched_off():
     with _tags_on(None) as session_tags:
         app = _tag_app()
         assert app.tags_active and not app.org_available
-        assert keymap.BY_ID["tags"].shown(app) and keymap.BY_ID["tag-filter"].shown(app)
+        assert keymap.BY_ID["tags"].shown(app) and "#tag" in keymap.BY_ID["filter"].text(app)
         assert not os.path.exists(session_tags.tags_path())
         # Overlays do not dispatch main tag keys, so they must not advertise them.
         for overlay in ("P", "T"):
@@ -6351,17 +6351,18 @@ def test_tags_are_on_by_default_and_hidden_only_when_switched_off():
             app.handle_key(None, ord(overlay))
             assert app.overlay_top
             assert not keymap.BY_ID["tags"].shown(app)
-            assert not keymap.BY_ID["tag-filter"].shown(app)
     for enabled in (False,):
         with _tags_on(enabled) as session_tags:
             app = _tag_app()
             assert not app.tags_active
             app.handle_key(None, CTRL_T)
-            app.handle_key(None, CTRL_G)
+            app.query = "#perf"
             assert app.tag_menu is None and app.tag_filter is None
             assert not os.path.exists(session_tags.tags_path())
             assert not keymap.BY_ID["tags"].shown(app)
-            assert not keymap.BY_ID["tag-filter"].shown(app)
+            assert "#tag" not in keymap.BY_ID["filter"].text(app)
+            assert app.filter_text == "#perf"  # tags off: # is ordinary fuzzy text
+            app.query = ""
             assert app.renderer.titled(app.current_session()) == "Alpha"
 
 
@@ -6400,28 +6401,24 @@ def test_tag_editor_creates_assigns_and_filters_sessions():
         app.handle_key(None, ESC)
         assert [label for _id, label in app.tags.definitions()] == ["bug", "perf"]
 
-        # Match all by default; left/right switches to Match any.
-        app.handle_key(None, CTRL_G)
-        labels = [e[2] for e in app.tag_menu_entries()]
-        assert labels == ["All sessions  3", "Untagged  1", "#bug  1", "#perf  2"]
-        app.tag_menu_index = 2
-        app.handle_key(None, TAB)
-        app.tag_menu_index = 3
-        app.handle_key(None, TAB)
-        app.handle_key(None, ENTER)
-        assert _ids(app) == ["b"] and app.tag_filter_label() == "#bug & #perf"
-        assert app.renderer.sessions_box_title(app.current_sessions()).endswith("#bug & #perf")
-        app.handle_key(None, CTRL_G)
-        app.handle_key(None, 261)  # right arrow
-        app.handle_key(None, ENTER)
+        # Spaces are refused for new names: a #token ends at whitespace.
+        app.handle_key(None, CTRL_T)
+        _type(app, "two words")
+        assert app.tag_menu_entries()[0][0] == "invalid"
+        app.handle_key(None, ESC)
+
+        # The old dedicated filter and browser keys are gone; `/` does both.
+        for key in (CTRL_G, CTRL_L):
+            app.handle_key(None, key)
+            assert app.tag_menu is None
+        app.query = "#bug #perf"
+        assert _ids(app) == ["b"] and app.tag_filter_label() == "#bug #perf"
+        assert app.renderer.sessions_box_title(app.current_sessions()) == "Sessions · 1"
+        app.query = "#bug|perf"
         assert sorted(_ids(app)) == ["a", "b"]
-        app.handle_key(None, CTRL_G)
-        app.tag_menu_index = 1
-        app.handle_key(None, ENTER)
+        app.query = "#untagged"
         assert _ids(app) == ["c"]
-        app.handle_key(None, CTRL_G)
-        app.tag_menu_index = 0
-        app.handle_key(None, ENTER)
+        app.query = ""
         assert app.tag_filter is None and sorted(_ids(app)) == ["a", "b", "c"]
 
 
@@ -6431,10 +6428,8 @@ def test_tag_filter_survives_reload_and_edits_that_empty_it():
         key_a = app.session_tag_key(app.current_session())
         app.tags.set_tags(key_a, [], 0, create=["perf"])
         perf = app.tags.tag_ids(key_a)[0]
-        from opentab.annotations import TagFilter
-
-        app.set_tag_filter(TagFilter(ids=frozenset({perf})))
-        assert _ids(app) == ["a"]
+        app.query = "#perf"
+        assert _ids(app) == ["a"] and perf in app.tags.tag_ids(key_a)
         # Opening the detail and removing the tag keeps that exact session on screen.
         app.view = "session"
         app.handle_key(None, CTRL_T)
@@ -6491,15 +6486,13 @@ def test_tag_filter_narrows_session_drills_but_not_rankings():
         rows = app.current_sessions()
         key = app.session_tag_key(rows[0])
         app.tags.set_tags(key, [], 0, create=["x"])
-        from opentab.annotations import TagFilter
-
         before = app.months[0].cost
-        app.set_tag_filter(TagFilter(ids=frozenset(app.tags.tag_ids(key))))
+        app.query = "#x"
         usage = [(w, w.total_cost, w.total_tokens) for w in rows]
         assert [row[0].id for row in app._tag_filtered_usage(usage)] == [rows[0].id]
         assert app.months[0].cost == before  # parent scope totals are unchanged
         # Tags alone live in the main keymap; Org mode stays out of reach.
-        assert keymap.BY_ID["tags"].shown(app) and keymap.BY_ID["tag-filter"].shown(app)
+        assert keymap.BY_ID["tags"].shown(app)
         assert keymap.BY_ID["tags"].context(app) == "main"
         app.handle_key(None, ord("O"))
         assert not app.org_active and keymap.BY_ID["tags"].context(app) == "main"

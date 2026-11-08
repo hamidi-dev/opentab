@@ -7,6 +7,7 @@ Stores never see tags: accounting and caches are unaffected by any annotation.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -15,25 +16,107 @@ from opentab.persistence import session_tags
 from opentab.persistence.session_tags import EMPTY, TagError, TagSnapshot
 from opentab.persistence.state import tags_enabled
 
-MATCH_ALL = "all"
-MATCH_ANY = "any"
-UNTAGGED = "untagged"
+# A group member meaning "has no tags"; real tag IDs are never empty.
+UNTAGGED = ""
+_SPACES = re.compile(f"[{session_tags.WHITESPACE}]+")
+_TOKEN_SEPARATORS = re.compile(f"[{session_tags.WHITESPACE}_]+")
 
 
 @dataclass(frozen=True)
 class TagFilter:
-    """A transient session-list predicate; never persisted with preferences."""
+    """A transient session-list predicate; never persisted with preferences.
 
-    mode: str = MATCH_ALL
-    ids: frozenset[str] = frozenset()
+    Every group must be satisfied by one of its members (``#a #b`` is two groups,
+    ``#a|b`` one). An empty group, from a token naming no tag, matches nothing.
+    """
+
+    groups: tuple[frozenset[str], ...] = ()
 
     def matches(self, tag_ids: Iterable[str]) -> bool:
         present = set(tag_ids)
-        if self.mode == UNTAGGED:
-            return not present
-        if self.mode == MATCH_ANY:
-            return bool(present & self.ids)
-        return self.ids <= present
+        return all(present & group or (UNTAGGED in group and not present) for group in self.groups)
+
+
+def tag_token_key(label: str) -> str:
+    """How a label is written after ``#`` in a filter: one key shared with duplicates."""
+    return session_tags.label_key(label)
+
+
+def tag_token(label: str) -> str:
+    """The completion spelling of a label, keeping its case."""
+    return "#" + _TOKEN_SEPARATORS.sub("-", session_tags._EDGE_SPACES.sub("", label))
+
+
+@dataclass(frozen=True)
+class TagQuery:
+    text: str  # the fuzzy part, with tag tokens removed
+    filter: TagFilter | None  # None when the query names no tags
+    unknown: tuple[str, ...] = ()  # tokens naming no tag; they match nothing
+    partial: str | None = None  # the trailing ``#word`` being typed, without ``#``
+
+
+def parse_tag_query(query: str, labels: dict[str, str]) -> TagQuery:
+    """Split ``/`` filter text into fuzzy words and ``#tag`` tokens.
+
+    A token names a tag exactly, else every tag starting with it; ``#untagged`` always
+    means no tags. A bare ``#`` is still being typed.
+    """
+    by_key: dict[str, list[str]] = {}
+    for tag_id, label in labels.items():
+        by_key.setdefault(tag_token_key(label), []).append(tag_id)
+    words, groups, unknown = [], [], []
+    tokens = [token for token in _SPACES.split(query) if token]
+    for token in tokens:
+        if not token.startswith("#"):
+            words.append(token)
+            continue
+        alternatives = [part.lstrip("#") for part in token[1:].split("|")]
+        alternatives = [part for part in alternatives if part]
+        if not alternatives:
+            continue
+        group: set[str] = set()
+        for part in alternatives:
+            key = tag_token_key(part)
+            if key == "untagged":  # always synthetic, even over a legacy tag of that name
+                group.add(UNTAGGED)
+            elif key in by_key:
+                group.update(by_key[key])
+            else:
+                prefixed = [i for k, ids in by_key.items() if k.startswith(key) for i in ids]
+                group.update(prefixed)
+                if not prefixed:
+                    unknown.append(f"#{part}")
+        groups.append(frozenset(group))
+    partial = None
+    if tokens and not _SPACES.match(query[-1]) and tokens[-1].startswith("#"):
+        partial = tokens[-1].rsplit("|", 1)[-1].lstrip("#")
+    return TagQuery(
+        " ".join(words), TagFilter(tuple(groups)) if groups else None, tuple(unknown), partial
+    )
+
+
+def complete_tag_query(query: str, label: str) -> str:
+    """Replace the trailing partial token's last alternative with ``label``."""
+    gaps = list(_SPACES.finditer(query))
+    cut = gaps[-1].end() if gaps else 0
+    head, tail = query[:cut], query[cut:]
+    token = tag_token(label)
+    if "|" in tail:
+        token = tail.rsplit("|", 1)[0] + "|" + token[1:]
+    return f"{head}{token} "
+
+
+def rename_tag_in_query(query: str, old_label: str, new_label: str) -> str:
+    """Point every ``#old`` alternative at ``new_label``, keeping the rest as typed."""
+    old_key, new = tag_token_key(old_label), tag_token(new_label)[1:]
+    pieces = re.split(f"([{session_tags.WHITESPACE}]+)", query)
+    for i, word in enumerate(pieces):
+        if i % 2 == 0 and word.startswith("#"):
+            parts = word[1:].split("|")
+            pieces[i] = "#" + "|".join(
+                new if tag_token_key(part.lstrip("#")) == old_key else part for part in parts
+            )
+    return "".join(pieces)
 
 
 def session_key(machine: str, harness: str, native_id: str) -> str:

@@ -53,6 +53,7 @@ Press `f` or `/` and type. The list narrows as you type.
 - **Projects** match the same way and keep their current sort.
 - **Model lists** (`P`, `w`) match letters within a word, and a new word only at its
   first letter: `opus48` works, but `opus` doesn't match `qwen3-coder-plus`.
+- **`#tag`** narrows session lists to a [tag](sessions.md#tags); see below.
 
 | Key | Action |
 |-----|--------|
@@ -61,6 +62,29 @@ Press `f` or `/` and type. The list narrows as you type.
 | `Esc` | Cancel |
 | `Ctrl-U` | Clear the text |
 | `x` | Clear the filter later |
+
+### Filter by tag
+
+Type `#` and a list of your tags pops up, each with its sessions, agent time and
+cost in the current scope, most used first. Keep typing to narrow it, `↑` / `↓` to
+choose, and `Tab` to complete. Above the list, one line sums the matching sessions.
+
+| Type | Shows sessions |
+|------|----------------|
+| `#client-x` | Tagged `client-x` |
+| `#client-x #perf` | Tagged with both |
+| `#client-x\|perf` | Tagged with either |
+| `#untagged` | With no tags |
+| `#client-x login` | Tagged `client-x` whose title, project or note matches `login` |
+
+A name matches exactly, and otherwise as a prefix: `#cl` covers every tag starting
+with `cl`. Case doesn't matter. A name no tag has shows nothing and says so.
+
+Tags narrow session lists only. Day, month and project totals keep their full scope,
+so a tag's share of a month stays visible. A session with several tags counts once in
+the summary, but each tag's row in the pop-up counts it, so those rows overlap and
+don't add up. Missing time or cost shows as `—`, never as zero, and `(3/5)` means
+only 3 of 5 sessions have that figure.
 
 ## Sort a list
 

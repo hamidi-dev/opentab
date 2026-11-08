@@ -9,7 +9,7 @@ New here? Start with the [Quick start](quick-start.md). The
 |------|-------------------|
 | [Quick start](quick-start.md) | Install, open your history and follow one session down to a turn |
 | [Scope & filters](filters.md) | Pick a date range, harnesses or machines; filter, sort and drill into a model |
-| [Reading a session](sessions.md) | Turns, Tools, Subagents and Context; notes, resuming and copying a session |
+| [Reading a session](sessions.md) | Turns, Tools, Subagents and Context; notes, tags, resuming and copying a session |
 | [Changes](changes.md) | The files an agent edited, with their diffs (OpenCode and Copilot) |
 | [Overlays](overlays.md) | Trends, help, What's New, themes, demo mode and the other pop-ups |
 | [Pricing & the `$` view](pricing.md) | Recorded spend versus estimates, and comparing models with `w` |

@@ -1432,7 +1432,7 @@ def _help_tree(parser, path=()):
 
 
 # Experimental options that are deliberately accepted but absent from --help.
-_UNANNOUNCED_OPTIONS = {(("web",), "include_annotations")}
+_UNANNOUNCED_OPTIONS: set = set()  # (path, dest) of accepted options kept out of --help
 
 
 def test_cli_help_covers_the_complete_command_tree_at_multiple_widths_without_access():

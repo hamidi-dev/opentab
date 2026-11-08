@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from opentab.annotations import MATCH_ANY, SessionTags, TagFilter, aggregate_tags, session_key
+from opentab.annotations import SessionTags, TagFilter, aggregate_tags, session_key
 from opentab.persistence.session_tags import TagError, TagSnapshot
 
 
@@ -35,8 +35,9 @@ def test_overlapping_tag_totals_and_union_intersection_count_roots_once():
     assert totals["y"].agent_seconds == 60 and totals["y"].time_measured == 1
     assert totals["y"].cost_measured == 2
     assert totals["empty"].sessions == totals[None].sessions == 0
-    for mode, expected in ((MATCH_ANY, 8), ("all", 5)):
-        predicate = TagFilter(mode, frozenset({"x", "y"}))
+    either, both = (frozenset({"x", "y"}),), (frozenset({"x"}), frozenset({"y"}))
+    for groups, expected in ((either, 8), (both, 5)):
+        predicate = TagFilter(groups)
         selected = [row for row in rows if predicate.matches(snap.tags_of(row[0]))]
         union = {key: cost for key, cost, _ in reversed(selected)}
         assert sum(union.values()) == expected

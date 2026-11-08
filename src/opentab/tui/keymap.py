@@ -22,8 +22,6 @@ WORK_ACTIONS = frozenset({"work", "work_from_session", "assign_work", "work_stat
 ORG_ACTIONS = WORK_ACTIONS | frozenset(
     {
         "edit_tags",
-        "filter_tags",
-        "browse_tags",
         "select_root",
         "clear_selection",
         "bulk_add_tags",
@@ -960,18 +958,6 @@ KEYS: tuple[Key, ...] = (
         and bool(app.session_tag_ids(t)),
     ),
     Key(
-        id="tag-filter",
-        ctx="main",
-        actions=("filter_tags",),
-        summary="filter session lists by tag",
-        section="here",
-        when=lambda app: app.tags_active
-        and _tag_keys_reachable(app)
-        and app.work_workspace is None,
-        chip="by tag",
-        active=lambda app: app.tag_filter is not None,
-    ),
-    Key(
         id="work",
         ctx="main",
         actions=("work",),
@@ -1001,15 +987,6 @@ KEYS: tuple[Key, ...] = (
         and app.work_items_active
         and app.bookmark_target() is not None,
         chip="attach",
-    ),
-    Key(
-        id="tag-browse",
-        ctx="main",
-        actions=("browse_tags",),
-        summary="browse overlapping tag totals in this scope",
-        section="here",
-        when=lambda app: in_main(app) and app.tags_active and app.view != "session",
-        chip="Tags",
     ),
     Key(
         id="tag-select",
@@ -1079,6 +1056,8 @@ KEYS: tuple[Key, ...] = (
         actions=("filter*",),
         summary=lambda app: "filter the model list"
         if in_price_list(app) or (in_zoom(app) and app.active_tab_name() == "Models")
+        else "filter — fuzzy over titles, projects, notes; #tag narrows to a tag"
+        if app.tags_active
         else "filter — fuzzy over titles, projects, notes",
         section="here",
         when=lambda app: in_price_list(app) or (in_main(app) and app.can_filter_current_view()),
@@ -1702,7 +1681,6 @@ FOOTER_ORDER = (
     "refresh-machines",
     "bookmark",
     "note",
-    "tag-filter",
     "bookmarks",
     "ignored",
     "conversation-search",
