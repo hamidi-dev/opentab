@@ -1,4 +1,4 @@
-"""Opt-in session tags shared by the TUI and the live browser.
+"""Session tags shared by the TUI and the live browser.
 
 One ``SessionTags`` per frontend holds the switch state and a snapshot read on load,
 reload or after a successful edit -- never per painted row. Edits go through the

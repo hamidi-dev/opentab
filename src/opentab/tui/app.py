@@ -1596,7 +1596,7 @@ class App:
         else:
             self.notice = "note saved" if not previous else "note updated"
 
-    # -- experimental session tags --------------------------------------------------
+    # -- session tags --------------------------------------------------------------
 
     @property
     def tags_active(self) -> bool:
@@ -1707,7 +1707,8 @@ class App:
 
     @property
     def org_available(self) -> bool:
-        return self.tags_active or self.work_items_active
+        # Tags are a public main-keymap feature; the Org layer exists for work items.
+        return self.work_items_active
 
     @property
     def org_active(self) -> bool:

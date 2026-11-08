@@ -18,12 +18,9 @@ if TYPE_CHECKING:  # Avoid a runtime App import cycle.
 Text = Union[str, Callable[["App"], str]]
 Ctx = Union[str, Callable[["App"], str]]
 
-ORG_ACTIONS = frozenset(
+WORK_ACTIONS = frozenset({"work", "work_from_session", "assign_work", "work_state"})
+ORG_ACTIONS = WORK_ACTIONS | frozenset(
     {
-        "work",
-        "work_from_session",
-        "assign_work",
-        "work_state",
         "edit_tags",
         "filter_tags",
         "browse_tags",
@@ -91,15 +88,21 @@ class Key(NamedTuple):
     active: Callable[[App], bool] | None = None
     segments: Callable[[App], list] | None = None
 
+    def _org_layer(self, app: App) -> bool:
+        # Work actions exist only in the Org layer; tag actions are main-keymap
+        # commands that Org mode merely re-labels while it is on.
+        if not self.actions or self.actions[0] not in ORG_ACTIONS:
+            return False
+        return self.actions[0] in WORK_ACTIONS or (app.org_active and org_browsing(app))
+
     def context(self, app: App) -> str:
-        if self.actions and self.actions[0] in ORG_ACTIONS:
+        if self._org_layer(app):
             return "org"
         return self.ctx(app) if callable(self.ctx) else self.ctx
 
     def shown(self, app: App) -> bool:
-        if self.actions and self.actions[0] in ORG_ACTIONS:
-            if not app.org_active or not org_browsing(app):
-                return False
+        if self._org_layer(app) and (not app.org_active or not org_browsing(app)):
+            return False
         return self.when is None or bool(self.when(app))
 
     def text(self, app: App) -> str:
@@ -185,6 +188,11 @@ def in_main(app: App) -> bool:
         and not in_conversation_search(app)
         and getattr(app, "work_workspace", None) is None
     )
+
+
+def _tag_keys_reachable(app: App) -> bool:
+    # Overlays do not dispatch main tag keys; only the Org layer targets their rows.
+    return in_main(app) or (app.org_active and org_browsing(app))
 
 
 def in_conversation_search(app: App) -> bool:
@@ -941,9 +949,10 @@ KEYS: tuple[Key, ...] = (
         id="tags",
         ctx="main",
         actions=("edit_tags",),
-        summary="tag this session (experimental)",
+        summary="tag this session",
         section="here",
         when=lambda app: app.tags_active
+        and _tag_keys_reachable(app)
         and app.work_workspace is None
         and app.bookmark_target() is not None,
         chip="tags",
@@ -956,7 +965,9 @@ KEYS: tuple[Key, ...] = (
         actions=("filter_tags",),
         summary="filter session lists by tag",
         section="here",
-        when=lambda app: app.tags_active and app.work_workspace is None,
+        when=lambda app: app.tags_active
+        and _tag_keys_reachable(app)
+        and app.work_workspace is None,
         chip="by tag",
         active=lambda app: app.tag_filter is not None,
     ),

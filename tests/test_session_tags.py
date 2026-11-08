@@ -34,19 +34,21 @@ def _raises(code, fn, *args, **kwargs):
     raise AssertionError(f"expected TagError {code}")
 
 
-def test_switch_defaults_off_and_doubt_never_enables():
+def test_switch_defaults_on_and_only_explicit_false_disables():
     cases = [
-        (None, False, ""),
-        ({"version": 1}, False, ""),
+        (None, True, ""),
+        ({"version": 1}, True, ""),
+        ({"version": 1, "tags": {}}, True, ""),
         ({"version": 1, "tags": {"enabled": False}}, False, ""),
         (ON, True, ""),
-        ({"version": 1, "tags": {"enabled": "yes"}}, False, "tags.enabled"),
-        ({"version": 1, "tags": True}, False, "tags must be an object"),
-        ({"version": 2, "tags": {"enabled": True}}, False, "newer format"),
-        ({"version": True, "tags": {"enabled": True}}, False, "version"),
-        ({"tags": {"enabled": True}}, False, "version"),
-        ("{not json", False, "cannot read"),
-        ("[]", False, "object"),
+        # Doubt about the file keeps the default and reports why.
+        ({"version": 1, "tags": {"enabled": "yes"}}, True, "tags.enabled"),
+        ({"version": 1, "tags": True}, True, "tags must be an object"),
+        ({"version": 2, "tags": {"enabled": False}}, True, "newer format"),
+        ({"version": True, "tags": {"enabled": True}}, True, "version"),
+        ({"tags": {"enabled": False}}, True, "version"),
+        ("{not json", True, "cannot read"),
+        ("[]", True, "object"),
         # A broken work-items section does not take tags down with it.
         ({"version": 1, "tags": {"enabled": True}, "work_items": 7}, True, "work_items"),
     ]
@@ -60,7 +62,6 @@ def test_switch_defaults_off_and_doubt_never_enables():
 
 def test_disabled_tags_read_nothing_and_create_no_files():
     for config, allowed in (
-        (None, True),
         ({"version": 1, "tags": {"enabled": False}}, True),
         (ON, False),
     ):
@@ -76,6 +77,12 @@ def test_disabled_tags_read_nothing_and_create_no_files():
 
 
 def test_enabled_without_a_file_is_empty_and_writes_only_on_edit():
+    for config in (None, ON):
+        with isolated(config) as tmp:
+            tags = SessionTags()
+            tags.refresh()
+            assert tags.enabled and tags.editable and not tags.error
+            assert not os.path.exists(os.path.join(tmp, "data"))
     with isolated(ON) as tmp:
         tags = SessionTags()
         tags.refresh()

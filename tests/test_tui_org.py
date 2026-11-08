@@ -37,7 +37,8 @@ def test_org_toggle_preserves_selection_and_is_transient():
         app.scroll = 7
         before = (app.view, app.tab, app.scroll, app.current_session().id)
         assert not app.org_mode and "org-toggle" in _help(app)
-        assert "work" not in _help(app) and "tags" not in _help(app)
+        # Tags are main-keymap commands; Org mode only re-labels them.
+        assert "work" not in _help(app) and _help(app)["tags"] == "^T"
         app.handle_key(None, ord("O"))
         assert app.org_active and app.work_workspace is None
         assert (app.view, app.tab, app.scroll, app.current_session().id) == before
@@ -83,16 +84,18 @@ def test_org_work_create_state_attach_and_work_exit_dispatch():
 
 
 def test_org_feature_gates_and_unshadowed_normal_commands():
+    # Org mode exists only for work items; tags alone never expose it.
     for config, tags, work in (
-        ({"version": 1}, False, False),
-        ({"version": 1, "tags": {"enabled": True}}, True, False),
-        ({"version": 1, "work_items": {"enabled": True}}, False, True),
+        ({"version": 1, "tags": {"enabled": False}}, False, False),
+        ({"version": 1}, True, False),
+        ({"version": 1, "tags": {"enabled": False}, "work_items": {"enabled": True}}, False, True),
+        (BOTH, True, True),
     ):
         with isolated_annotations(config):
             app = _app()
             app.handle_key(None, ord("O"))
-            assert app.org_active == (tags or work)
-            assert ("org-toggle" in _help(app)) == (tags or work)
+            assert app.org_active == work
+            assert ("org-toggle" in _help(app)) == work
             assert ("tags" in _help(app)) == tags
             assert ("work" in _help(app)) == work
             with patch.object(app, "set_all_time") as all_time, patch.object(
@@ -104,11 +107,12 @@ def test_org_feature_gates_and_unshadowed_normal_commands():
                 app, "set_browse_mode"
             ) as mode:
                 app.handle_key(None, ord("t"))
-                assert edit.called == tags and mode.called == (not tags)
+                # Bare t is only Org mode's alias; outside it t stays the time view.
+                assert edit.called == (tags and work) and mode.called == (not (tags and work))
             app.handle_key(None, ord("?"))
             assert app.help
             app.handle_key(None, ord("O"))
-            assert app.org_active == (tags or work)  # Help swallows browsing keys
+            assert app.org_active == work  # Help swallows browsing keys
 
 
 def test_org_demo_no_state_and_disabled_do_not_claim_keys():
