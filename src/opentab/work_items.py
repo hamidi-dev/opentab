@@ -28,8 +28,8 @@ class WorkItems:
         if not self.allowed:
             return
         config = load_workflow_config()
-        # Tag-section and file-level errors are reported by tags; never as work errors.
-        self.error = config.items_error
+        # The file only configures work items, so file-level errors are theirs too.
+        self.error = config.error
         self.enabled = config.work_items
         self.states = config.states if self.enabled else ()
         if self.enabled:

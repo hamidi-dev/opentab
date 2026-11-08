@@ -13,7 +13,7 @@ from tests._support import (
     workflow,
 )
 
-BOTH = {"version": 1, "tags": {"enabled": True}, "work_items": {"enabled": True}}
+BOTH = {"version": 1, "work_items": {"enabled": True}}  # tags are on by default
 
 
 def _app():
@@ -85,13 +85,14 @@ def test_org_work_create_state_attach_and_work_exit_dispatch():
 
 def test_org_feature_gates_and_unshadowed_normal_commands():
     # Org mode exists only for work items; tags alone never expose it.
+    work_on = {"version": 1, "work_items": {"enabled": True}}
     for config, tags, work in (
-        ({"version": 1, "tags": {"enabled": False}}, False, False),
+        ({"version": 1}, False, False),
         ({"version": 1}, True, False),
-        ({"version": 1, "tags": {"enabled": False}, "work_items": {"enabled": True}}, False, True),
-        (BOTH, True, True),
+        (work_on, False, True),
+        (work_on, True, True),
     ):
-        with isolated_annotations(config):
+        with isolated_annotations(config, tags=tags):
             app = _app()
             app.handle_key(None, ord("O"))
             assert app.org_active == work

@@ -91,8 +91,7 @@ from opentab.demo import (
 )
 from opentab.persistence.notes import notes_path, read_notes, update_note
 from opentab.persistence.session_tags import MAX_BULK_SESSIONS, TagError, label_key, normalize_label
-from opentab.persistence.state import update_star_request
-from opentab.persistence.workflow_config import load_workflow_config
+from opentab.persistence.state import tags_enabled, update_star_request
 from opentab.presentation import themes
 from opentab.presentation.formatting import clip, clip_tail, display_width, short_path, shorten
 from opentab.presentation.heatmap import (
@@ -662,7 +661,7 @@ class App:
         self.notes: dict[str, str] = {}
         self.notes_enabled = not getattr(args, "no_state", False)
         self._notes_ok = True
-        # Experimental opt-in tags; off until refresh_tags reads workflow.json.
+        # Off until refresh_tags reads the tags_enabled preference.
         self.tags = SessionTags(allowed=False)
         self.tag_filter: TagFilter | None = None
         # An open detail whose own tag edit removed it from the filtered list stays.
@@ -1604,7 +1603,7 @@ class App:
         return self.tags.enabled and self.allow_notes
 
     def refresh_tags(self) -> bool:
-        """Re-read workflow.json and the tag snapshot; False when a warning was shown."""
+        """Re-read the tags preference and snapshot; False when a warning was shown."""
         self._tag_keys.clear()
         self.tags.refresh(allowed=self.allow_notes)
         if not self.tags.enabled:
@@ -5840,7 +5839,7 @@ class App:
         return not self.overlay_top and self.view == "zoom" and self.on_sessions_tab
 
     def _annotated_export_dataset(self) -> tuple[str, list[str], list[list]]:
-        if not self.annotated_csv_available() or not load_workflow_config().tags:
+        if not self.annotated_csv_available() or not tags_enabled():
             raise ValueError("annotated CSV requires enabled tags and a focused Sessions list")
         if self.overlay_top in ("prices", "trends"):
             usage = (

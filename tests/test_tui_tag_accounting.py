@@ -1,7 +1,6 @@
 import csv
 import io
 import json
-import os
 from unittest.mock import patch
 
 from opentab.accounting.models import SessionRef
@@ -10,7 +9,7 @@ from opentab.tui import app as app_module
 from opentab.tui import bindings, exporting, keymap
 from opentab.tui.views.tags import tag_accounting_text, tag_drill_summary
 
-from tests._support import _ids, _tag_app, _tags_on, _type
+from tests._support import _ids, _tag_app, _tags_on, _type, set_tags_pref
 
 TAB, ENTER, ESC = 9, 10, 27
 
@@ -300,10 +299,7 @@ def test_bulk_and_maintenance_recheck_disabled_capability_after_opening():
         app.toggle_tag_selection()
         app.open_bulk_tags(remove=True)
         app.tag_menu_checked = [x]
-        from opentab.persistence import paths
-
-        with open(os.path.join(paths.config_dir(), "workflow.json"), "w") as file:
-            json.dump({"version": 1, "tags": {"enabled": False}}, file)
+        set_tags_pref(False)
         app.handle_key(None, ENTER)
         assert "Not saved" in app.tag_menu_error and app.tag_menu == "bulk_remove"
         app.refresh_tags()
@@ -398,10 +394,7 @@ def test_annotated_csv_rechecks_switch_without_changing_ordinary_export():
     with _tags_on():
         app, rows, a, b, x, y = _fixture()
         ordinary = app._export_dataset()
-        from opentab.persistence import paths
-
-        with open(os.path.join(paths.config_dir(), "workflow.json"), "w") as file:
-            json.dump({"version": 1, "tags": {"enabled": False}}, file)
+        set_tags_pref(False)
         with patch.object(exporting, "write_csv") as write:
             app.export_annotated()
             write.assert_not_called()

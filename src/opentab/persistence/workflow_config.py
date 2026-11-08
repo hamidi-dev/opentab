@@ -1,9 +1,10 @@
-"""Feature switches for authored annotations.
+"""The work-items switch and state vocabulary.
 
-``$XDG_CONFIG_HOME/opentab/workflow.json`` overrides each feature's default: session
-tags are on unless ``"tags": {"enabled": false}``; work items stay off unless explicitly
-enabled. Any doubt about the file (unreadable, malformed, newer) means each feature's
-default. The file is never rewritten here, so a correction plus reload always recovers.
+``$XDG_CONFIG_HOME/opentab/workflow.json`` turns work items on; they stay off unless
+explicitly enabled, and any doubt about the file (unreadable, malformed, newer) means
+off. The file is never rewritten here, so a correction plus reload always recovers.
+Session tags are not configured here: their switch is ``tags_enabled`` in state.json.
+A ``"tags"`` section left over from older builds is ignored.
 """
 from __future__ import annotations
 
@@ -80,33 +81,30 @@ def _states(section: dict) -> tuple[WorkState, ...]:
 
 @dataclass(frozen=True)
 class WorkflowConfig:
-    tags: bool = True
     work_items: bool = False
-    # Human-readable reason the file could not enable anything; empty when it was fine.
+    # Human-readable reason work items stayed off; empty when the file was fine.
     error: str = ""
     states: tuple[WorkState, ...] = ()
-    # The work_items section's own reason; file-level problems stay in ``error`` only.
-    items_error: str = ""
 
 
 def config_path() -> str:
     return os.path.join(paths.config_dir(), "workflow.json")
 
 
-def _enabled(payload: dict, section: str, default: bool) -> tuple[bool, str]:
+def _enabled(payload: dict, section: str) -> tuple[bool, str]:
     value = payload.get(section)
     if value is None:
-        return default, ""
+        return False, ""
     if not isinstance(value, dict):
-        return default, f"{section} must be an object"
-    flag = value.get("enabled", default)
+        return False, f"{section} must be an object"
+    flag = value.get("enabled", False)
     if not isinstance(flag, bool):
-        return default, f"{section}.enabled must be true or false"
+        return False, f"{section}.enabled must be true or false"
     return flag, ""
 
 
 def load_workflow_config(path: str | None = None) -> WorkflowConfig:
-    """Read the switches; any doubt about the file means defaults, with a reason."""
+    """Read the switch; any doubt about the file means off, with a reason."""
     path = path or config_path()
     try:
         with open(path, encoding="utf-8") as fh:
@@ -124,9 +122,7 @@ def load_workflow_config(path: str | None = None) -> WorkflowConfig:
         return WorkflowConfig(error='workflow.json needs "version": 1')
     if version > CONFIG_VERSION:
         return WorkflowConfig(error="workflow.json uses a newer format — upgrade OpenTab")
-    # Sections fail independently: a broken work-items block must not disable tags.
-    tags, tags_error = _enabled(payload, "tags", True)
-    work_items, items_error = _enabled(payload, "work_items", False)
+    work_items, items_error = _enabled(payload, "work_items")
     states = ()
     if work_items:
         try:
@@ -134,9 +130,7 @@ def load_workflow_config(path: str | None = None) -> WorkflowConfig:
         except ValueError as exc:
             work_items, items_error = False, str(exc)
     return WorkflowConfig(
-        tags=tags,
         work_items=work_items,
-        error="; ".join(e for e in (tags_error, items_error) if e),
+        error=items_error,
         states=states,
-        items_error=items_error,
     )
