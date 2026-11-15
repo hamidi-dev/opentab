@@ -301,11 +301,17 @@ input.filter:focus{outline:none;border-color:var(--accent)}
 .tool-table{margin-top:2px}
 .tool-ranks{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,2fr);gap:16px;margin-top:4px}
 .tool-ranks > .pane{min-width:0}
+.sum-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:16px;align-items:start;margin-top:4px}
+.sum-grid > .pane{min-width:0;margin-bottom:6px}
+.sum-table{margin-top:6px}.sum-table td{padding:6px 10px}.sum-table tr:last-child td{border-bottom:0}
+td.sum-total{font-weight:700}
+.sum-note{margin-top:8px;padding-top:8px;border-top:1px solid var(--line2)}
 .tool-detail-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .tool-detail-head .hbtn{margin-left:auto}.tool-detail-note{margin:8px 0 12px}
 .tool-call-table table{table-layout:auto}.tool-call-table td.grow{min-width:150px;white-space:normal;overflow-wrap:anywhere}
 .tool-owner{background:color-mix(in srgb,var(--accent) 16%,transparent);box-shadow:inset 3px 0 var(--accent)}
 .tool-owner:focus{outline:2px solid var(--accent);outline-offset:-2px}
+@media (max-width:1100px){.sum-grid{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:760px){.tool-ranks{grid-template-columns:minmax(0,1fr)}.tool-detail-head .hbtn{margin-left:0}.tool-call-table td.grow{min-width:180px}}
 @media (max-width:600px){.tool-map{height:170px}.tool-map-head{align-items:flex-start;flex-direction:column;gap:1px}}
 
@@ -4183,22 +4189,23 @@ function trendSummary() {
   const perDay = v => v / a.calendarDays, perActive = v => v / a.activeDays;
   const num = v => v === Math.round(v) || v >= 100 ? Math.round(v).toLocaleString('en-US') : v < 10 ? v.toFixed(2) : v.toFixed(1);
   const tok = v => hTok(Math.round(v)), dur = v => v >= 1 ? hDur(v) : '0s';
-  const label = MODE === 'api' ? 'est. cost' : 'cost';
-  const body = h('div', null,
+  const label = MODE === 'api' ? 'Est. cost' : 'Cost';
+  const isMoney = f => f === money;
+  // Same shape as the TUI: one metric per row, read across total → per day → per active day.
+  const grid = (head, rows) => h('div', { class: 'scroll' }, h('table', { class: 'sum-table' },
+    h('thead', null, h('tr', null, ['', ...head].map((c, i) => h('th', { class: i ? 'r' : null }, c)))),
+    h('tbody', null, rows.map(([k, f, vals]) => h('tr', null, h('td', null, k),
+      ...vals.map((v, i) => h('td', { class: 'r' + (isMoney(f) ? ' m' : '') + (i === 0 && head[0] === 'Total' ? ' sum-total' : '') }, f(v))))))));
+  const rates = [['Sessions', num, a.sessions], [label, money, a.cost], ['Tokens', tok, a.tokens]]
+    .map(([k, f, t]) => [k, f, [t, perDay(t), perActive(t)]]);
+  const totals = pane('Summary',
     h('div', { class: 'hint' }, a.start + ' → ' + a.end + ' · ' + a.calendarDays.toLocaleString('en-US')
-      + ' days, ' + a.activeDays.toLocaleString('en-US') + ' active. Sessions count on the day they started.'),
-    tiles([
-      ['sessions / day', num(perDay(a.sessions)), num(perActive(a.sessions)) + ' per active day'],
-      [label + ' / day', money(perDay(a.cost)), money(perActive(a.cost)) + ' per active day', true],
-      ['tokens / day', tok(perDay(a.tokens)), tok(perActive(a.tokens)) + ' per active day'],
-      [label + ' / session', money(a.costSpread.median), 'median · mean ' + money(a.costSpread.mean), true],
-    ]));
-  const rows = [[label, a.costSpread, money], ['tokens', a.tokenSpread, tok]];
-  if (a.workedSpread) rows.push(['worked', a.workedSpread, dur]);
-  const table = h('div', { class: 'scroll' }, h('table', null,
-    h('thead', null, h('tr', null, ['Per session', 'Median', 'Mean', 'p90', 'Max'].map((c, i) => h('th', { class: i ? 'r' : null }, c)))),
-    h('tbody', null, rows.map(([k, sp, f]) => h('tr', null, h('td', null, k),
-      ...[sp.median, sp.mean, sp.p90, sp.max].map(v => h('td', { class: 'r' }, f(v))))))));
+      + ' days, ' + a.activeDays.toLocaleString('en-US') + ' active'),
+    grid(['Total', '/ day', '/ active day'], rates),
+    h('div', { class: 'hint sum-note' }, 'Sessions count on the day they started.'));
+  const spreads = [[label, a.costSpread, money], ['Tokens', a.tokenSpread, tok]];
+  if (a.workedSpread) spreads.push(['Worked', a.workedSpread, dur]);
+  const rows = spreads.map(([k, sp, f]) => [k, f, [sp.median, sp.mean, sp.p90, sp.max]]);
   const notes = [];
   if (a.costSpread.median > 0 && a.costSpread.mean >= 2 * a.costSpread.median)
     notes.push(h('div', { class: 'hint' }, 'The mean is ' + (a.costSpread.mean / a.costSpread.median).toFixed(1)
@@ -4209,7 +4216,11 @@ function trendSummary() {
       + ' have no recorded working time.'));
   if (MODE !== 'api' && W.some(w => w.unpriced > 0))
     notes.push(h('div', { class: 'hint' }, 'Unpriced subscription usage counts as $0: press $ to estimate it.'));
-  return h('div', null, body, table, ...notes, tokenEconomicsPane(W, rangeLabel()));
+  const spread = pane('Per session',
+    h('div', { class: 'hint' }, a.sessions.toLocaleString('en-US') + ' sessions'),
+    grid(['Median', 'Mean', 'p90', 'Max'], rows),
+    notes.length ? h('div', { class: 'sum-note' }, ...notes) : null);
+  return h('div', null, h('div', { class: 'sum-grid' }, totals, spread), tokenEconomicsPane(W, rangeLabel()));
 }
 function trendModels() {
   const rows = modelAgg(W).map(r => ({ name: r.model, cost: mCost(r), runs: r.runs, tokens: r.tokens }))
