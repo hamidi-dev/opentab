@@ -1294,7 +1294,7 @@ function calendar(year, byDate, onDay) {
   onDay = onDay || (date => go('d', date));
   const CELL = 11, GAP = 2, STEP = CELL + GAP, padL = 30, padT = 16;
   const first = new Date(+year, 0, 1);
-  const today = new Date();
+  const today = nowDate();
   const last = +year === today.getFullYear() ? today : new Date(+year, 11, 31);
   const start = new Date(first);
   start.setDate(start.getDate() - ((first.getDay() + 6) % 7));
@@ -1353,9 +1353,16 @@ function curScope() {
   return { kind: 'all' };
 }
 
-function isoToday() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-function isoDaysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-function isoMonthsAgo(n) { const d = new Date(); d.setMonth(d.getMonth() - n, 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01'; }
+// A static file is a snapshot: "today" is the day it was exported, so relative ranges,
+// per-day averages and the calendar read the same whenever the file is opened.
+function nowDate() {
+  if (META.serve) return new Date();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(META.generated || '');
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], 12) : new Date();
+}
+function isoToday() { const d = nowDate(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function isoDaysAgo(n) { const d = nowDate(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function isoMonthsAgo(n) { const d = nowDate(); d.setMonth(d.getMonth() - n, 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01'; }
 function filterRange(rows) {
   const r = RANGE, d = w => w.date.slice(0, 10);
   if (r.kind === 'days') { const cut = isoDaysAgo(r.n); return rows.filter(w => d(w) >= cut); }

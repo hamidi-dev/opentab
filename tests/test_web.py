@@ -5090,3 +5090,42 @@ process.stdout.write(JSON.stringify(rangeAverages({json.dumps(workflows)})));
             spread.max,
             spread.count,
         ], key
+
+
+def test_web_static_report_anchors_today_to_the_export_day():
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript date anchoring: Node.js is not installed (required in CI)")
+        return
+    js = _js_source()
+    functions = (
+        "\n".join(
+            re.search(r"function " + name + r"\([^)]*\) \{.*?\n\}", js, re.S)[0]
+            for name in ("nowDate",)
+        )
+        + "\n"
+        + "\n".join(
+            re.search(r"function " + name + r"\(.*", js)[0]
+            for name in ("isoToday", "isoDaysAgo", "isoMonthsAgo")
+        )
+    )
+    script = f"""
+{functions}
+const out = {{}};
+var META = {{serve: false, generated: '2026-10-07 23:30:00'}};
+out.static = [isoToday(), isoDaysAgo(30), isoMonthsAgo(1)];
+META = {{serve: false, generated: ''}};
+out.fallback = isoToday();
+META = {{serve: true, generated: '2026-10-07 23:30:00'}};
+out.live = isoToday();
+const d = new Date();
+out.now = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+process.stdout.write(JSON.stringify(out));
+"""
+    got = json.loads(
+        subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
+    )
+    # A file exported on 7 Oct reads as 7 Oct forever: ranges and per-day averages don't drift.
+    assert got["static"] == ["2026-10-07", "2026-09-07", "2026-09-01"]
+    # Live pages and files without a parseable export date keep the viewer's clock.
+    assert got["live"] == got["now"] and got["fallback"] == got["now"]
