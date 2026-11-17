@@ -384,3 +384,22 @@ def test_token_cost_parts_include_reasoning_at_the_selected_output_rate():
             "reasoning": 100,
         }
         assert row_cost_parts(row) == (0.008, 0.03, 0.003, 0.2392, 0)
+
+
+def test_price_root_models_is_the_shared_dollar_policy_and_never_compounds():
+    from opentab.accounting.tiers import price_root_models, row_api_cost, row_api_delta
+
+    with copilot_prices() as name:
+        copilot = _row(name, [_turn(name, 2815, output=9, cost=0.005738)])
+        other = {"model_name": "openai/gpt-5.4", "cost": 2.0, "estimated_cost": 0.5}
+        rows = [dict(copilot), dict(other)]
+        expected = (row_api_cost(copilot) - copilot["cost"]) + 0.5
+        delta, root = price_root_models(rows)
+        assert abs(delta - expected) < 1e-12
+        assert root == row_api_delta(copilot, root=True) + row_api_delta(other, root=True)
+        assert rows[1]["real_cost"] == 2.0 and rows[1]["api_cost"] == 2.5
+        # Repricing already-priced (or `$`-swapped) rows keeps the recorded basis.
+        rows[1]["cost"] = rows[1]["api_cost"]
+        assert price_root_models(rows) == (delta, root)
+        # Legacy rows lack the root split, so the caller picks the fallback.
+        assert price_root_models([dict(other)]) == (0.5, None)

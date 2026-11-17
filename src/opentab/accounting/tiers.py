@@ -392,6 +392,25 @@ def row_api_delta(row: dict, *, root: bool = False) -> float:
     return row_api_cost(row, root=root) - recorded
 
 
+def price_root_models(rows: list[dict]) -> tuple[float, float | None]:
+    """Reprice one root's model rows in place; return its API-minus-recorded deltas.
+
+    Shared by the TUI's `$` snapshot and the launch picker's cost column. Rows keep
+    their recorded dollars in ``real_cost`` so repeated pricing never compounds. The
+    root delta is None for legacy rows without root-vs-subagent token splits.
+    """
+    has_root_split = any("root_unpriced_input" in m for m in rows)
+    delta = root_delta = 0.0
+    for m in rows:
+        m["real_cost"] = m.get("real_cost", m["cost"])
+        # Legacy in-memory rows may expose only aggregate tokens.
+        m["api_cost"] = row_api_cost(m)
+        delta += m["api_cost"] - m["real_cost"]
+        if has_root_split:
+            root_delta += row_api_delta(m, root=True)
+    return delta, root_delta if has_root_split else None
+
+
 def detail_api_cost(row: dict) -> float:
     """Detail rows keep their historical non-Copilot positive-cost behavior."""
     if is_copilot_model(str(row.get("model_name") or "")):

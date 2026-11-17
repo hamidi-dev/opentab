@@ -635,8 +635,24 @@ or stale sessions remain absent from that path, and a missing directory or
 executable at selection time is reported.
 Ignored sessions and projects are hidden unless `--no-state` is used. fzf sorts
 matches by relevance, breaking ties in the original newest-activity order.
-The picker uses aligned tool, compact project, updated-time and session columns;
-narrow terminals give priority to the title. Long titles remain fully searchable.
+The picker uses aligned tool, compact project, updated-time, `API $` and session
+columns; narrow terminals give priority to the title (the cost goes below 100
+columns, before the time). Times read `MM-DD HH:MM` this year and `YYYY-MM-DD`
+before it; costs use five-cell labels (`$4.98`, `$347`, `$1.2k`); the project
+column fits nine in ten names, so one long worktree name never widens every row. Long titles remain fully searchable; the cost cell is
+not, since `--nth` skips that field (fields split on the tab and the visible
+`" │ "` separator, which is replaced inside project cells).
+
+The cost is the TUI's `$` total: both call `tiers.price_root_models`. Opening the
+picker never prices anything; the background refresh (and `--refresh`) prices
+each refreshed harness from the model rows it already loads and stores the costs
+in the index beside the rows, under a pricing stamp: the release version and the
+stat of `prices.json` and the bundled `models.json`. A changed stamp (`P` refresh,
+upgrade) drops every cost but keeps the rows. Costs are keyed on the session's
+source, id, timestamps, recorded cost and token counts, so a rollup rebuild keeps
+unchanged sessions' costs. Missing costs show `—` until the background refresh
+reloads the list, which it also does when only costs changed. A real `$0` shows
+`$0`. A pricing fault leaves that harness unpriced, never without its rows.
 The picker uses its own fzf options instead of `FZF_DEFAULT_OPTS` or
 `FZF_DEFAULT_OPTS_FILE`, so global bindings cannot change its selection protocol.
 It binds Alt-J/Alt-K to move down and up alongside fzf's default movement keys.
