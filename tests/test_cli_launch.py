@@ -577,9 +577,9 @@ def test_index_skips_rollup_parsing_until_a_cache_is_replaced():
     ):
         args = cli.parse_args(["launch", "--harness", "claude", "--claude-dir", tmp])
         _cache(args, "claude", [_row("one", "Claude Code", tmp)])
-        assert [row.id for row in picker._load(args)] == ["one"]
+        assert [row.id for row in picker._load(args)[0]] == ["one"]
         with patch.object(picker, "_cached_sessions", side_effect=AssertionError("parsed")):
-            assert [row.id for row in picker._load(args)] == ["one"]
+            assert [row.id for row in picker._load(args)[0]] == ["one"]
         # Caches are replaced, never rewritten in place: with the same size and mtime,
         # the new inode alone still invalidates the index.
         path = picker._cache_path("claude", tmp)
@@ -589,18 +589,18 @@ def test_index_skips_rollup_parsing_until_a_cache_is_replaced():
         os.utime(path + ".new", ns=(before.st_atime_ns, before.st_mtime_ns))
         os.replace(path + ".new", path)
         assert os.stat(path).st_size == before.st_size
-        assert [row.id for row in picker._load(args)] == ["two"]
+        assert [row.id for row in picker._load(args)[0]] == ["two"]
         index = picker._index_path(args, picker._cache_files(args))
         for damage in ("{", '{"version": 1}', json.dumps({"version": 1, "rows": 3})):
             with open(index, "w") as fh:
                 fh.write(damage)
-            assert [row.id for row in picker._load(args)] == ["two"]
+            assert [row.id for row in picker._load(args)[0]] == ["two"]
         with open(index) as fh:
             payload = json.load(fh)
         payload["rows"][0]["machine"] = "remote"
         with open(index, "w") as fh:
             json.dump(payload, fh)
-        assert [row.id for row in picker._load(args)] == ["two"]
+        assert [row.id for row in picker._load(args)[0]] == ["two"]
 
 
 def test_refresh_keeps_unavailable_harness_rows_and_updates_the_index():
@@ -610,13 +610,318 @@ def test_refresh_keeps_unavailable_harness_rows_and_updates_the_index():
         args = cli.parse_args(["launch", "--claude-dir", tmp, "--codex-dir", tmp])
         _cache(args, "codex", [_row("codex-old", "Codex", tmp)])
         _cache(args, "claude", [_row("claude-old", "Claude Code", tmp)])
-        cached = picker._load(args)
+        cached, costs = picker._load(args)
         fresh = [_row("claude-new", "Claude Code", tmp), _row("remote", "Claude Code", tmp)]
         fresh[1].machine = "laptop"
         with patch.object(
             picker.sources, "make_store", return_value=_fresh_store(args, tmp, fresh)
         ), patch.object(picker.sources, "available_sources", return_value=["claude"]):
-            rows = picker._refreshed(args, cached)
+            rows, _costs = picker._refreshed(args, cached, costs)
         assert sorted(row.id for row in rows) == ["claude-new", "codex-old"]
         with patch.object(picker, "_cached_sessions", side_effect=AssertionError("parsed")):
-            assert sorted(row.id for row in picker._load(args)) == ["claude-new", "codex-old"]
+            assert sorted(row.id for row in picker._load(args)[0]) == ["claude-new", "codex-old"]
+
+
+def _model(root_id, unpriced_input=1000, unpriced_output=500):
+    # A $0 subscription row: the API-equivalent is its list-rate value.
+    return {
+        "root_id": root_id,
+        "model_name": "anthropic/claude-sonnet-5",
+        "runs": 1,
+        "cost": 0.0,
+        "tokens_total": unpriced_input + unpriced_output,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": unpriced_output,
+        "unpriced_input": unpriced_input,
+        "unpriced_output": unpriced_output,
+        "unpriced_reasoning": 0,
+        "unpriced_cache_read": 0,
+        "unpriced_cache_write": 0,
+    }
+
+
+def _priced_store(args, tmp, rows, models):
+    class Store:
+        records_cost = True
+
+        def cache_inputs(self):
+            return []
+
+        def workflows(self):
+            return rows
+
+        def model_breakdown(self):
+            return models
+
+    return CachedStore(Store(), f"claude|{tmp}", args), ""
+
+
+def _plain(text):
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def test_refresh_prices_like_the_tui_and_the_warm_path_only_reads_the_index():
+    from opentab.accounting.pricing import api_equivalent_cost
+
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = cli.parse_args(["launch", "--harness", "claude", "--claude-dir", tmp])
+        paid = _row("paid", "Claude Code", tmp, title="paid")
+        paid.total_cost = 1.25
+        free = _row("free", "Claude Code", tmp, title="free")
+        free.total_cost = 0.0
+        _cache(args, "claude", [paid, free])
+        cached, costs = picker._load(args)
+        assert costs == {}  # The open path never prices.
+        with patch.object(
+            picker.sources,
+            "make_store",
+            return_value=_priced_store(args, tmp, [paid, free], [_model("paid")]),
+        ), patch.object(picker.sources, "available_sources", return_value=["claude"]):
+            rows, costs = picker._refreshed(args, cached, costs)
+        expect = 1.25 + api_equivalent_cost("anthropic/claude-sonnet-5", 1000, 500, 0, 0, 0)
+        assert abs(costs[picker._cost_key(paid)] - expect) < 1e-12
+        assert costs[picker._cost_key(free)] == 0.0
+        with patch.object(picker, "_cached_sessions", side_effect=AssertionError("parsed")), patch(
+            "opentab.accounting.tiers.price_root_models", side_effect=AssertionError("priced")
+        ):
+            rows, warm = picker._load(args)
+        assert warm == costs
+        layout = picker._layout(rows, 120, warm)
+        menu, header = picker._picker_table(rows, layout, warm)
+        lines = [_plain(line) for line in menu.split("\0") if line]
+        assert "API $" in _plain(header)
+        assert picker._cost_text(expect) in next(line for line in lines if "paid" in line)
+        # A real $0 reads as $0, not as unpriced.
+        assert "│    $0 │" in next(line for line in lines if "free" in line)
+
+
+def test_price_change_drops_costs_and_rebuild_keeps_unchanged_sessions():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ), patch("opentab.persistence.paths.cache_dir", return_value=tmp):
+        from opentab.accounting.pricing import price_cache_path
+
+        assert price_cache_path() == os.path.join(tmp, "prices.json")
+        args = cli.parse_args(["launch", "--harness", "claude", "--claude-dir", tmp])
+        same = _row("same", "Claude Code", tmp)
+        grows = _row("grows", "Claude Code", tmp)
+        _cache(args, "claude", [same, grows])
+        cached, costs = picker._load(args)
+        with patch.object(
+            picker.sources, "make_store", return_value=_priced_store(args, tmp, [same, grows], [])
+        ), patch.object(picker.sources, "available_sources", return_value=["claude"]):
+            picker._refreshed(args, cached, costs)
+        assert len(picker._load(args)[1]) == 2
+        # The rollup is replaced: the unchanged session keeps its cost, the other waits.
+        grown = _row("grows", "Claude Code", tmp, activity="2026-03-01T00:00:00")
+        grown.total_tokens += 10
+        _cache(args, "claude", [same, grown])
+        rows, costs = picker._load(args)
+        assert {row.id for row in rows} == {"same", "grows"}
+        assert set(costs) == {picker._cost_key(same)}
+        menu = _plain(picker._picker_table(rows, picker._layout(rows, 120, costs), costs)[0])
+        # Rollup order: "same" first, then "grows".
+        lines = [line for line in menu.split("\0") if line]
+        assert "—" not in lines[0] and "—" in lines[1]
+        # `P` replaces prices.json: every cost goes, every session stays.
+        with open(os.path.join(tmp, "prices.json"), "w") as fh:
+            fh.write("{}")
+        rows, costs = picker._load(args)
+        assert len(rows) == 2 and costs == {}
+        # So does an upgrade.
+        picker._save_index(
+            picker._index_path(args, picker._cache_files(args)),
+            {path: picker._stamp(path) for _, path in picker._cache_files(args)},
+            rows,
+            {picker._cost_key(same): 1.0},
+            picker._pricing_stamp(),
+        )
+        assert len(picker._load(args)[1]) == 1
+        with patch.object(picker, "__version__", "0.0.0"):
+            assert picker._load(args)[1] == {}
+
+
+def test_old_index_and_damaged_costs_rebuild_without_costs():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = cli.parse_args(["launch", "--harness", "claude", "--claude-dir", tmp])
+        row = _row("one", "Claude Code", tmp)
+        _cache(args, "claude", [row])
+        files = picker._cache_files(args)
+        index = picker._index_path(args, files)
+        stamps = {path: picker._stamp(path) for _, path in files}
+        picker._save_index(
+            index, stamps, [row], {picker._cost_key(row): 2.0}, picker._pricing_stamp()
+        )
+        with open(index) as fh:
+            payload = json.load(fh)
+        payload["version"] = 1
+        with open(index, "w") as fh:
+            json.dump(payload, fh)
+        assert picker._load(args)[1] == {}
+        for costs in ([["Claude Code", ["x"], 1, 2, 3, 4, 5, 6.0]], [[1, 2]], [True], 7):
+            payload.update(version=picker.INDEX_VERSION, costs=costs)
+            with open(index, "w") as fh:
+                json.dump(payload, fh)
+            assert [r.id for r in picker._load(args)[0]] == ["one"]
+            assert picker._load(args)[1] == {}
+
+
+def test_cost_column_narrow_layout_alignment_and_search_fields():
+    rows = [_row("a", "Claude Code", "/w/proj │ x"), _row("b", "OpenCode", "/w/b")]
+    costs = {picker._cost_key(rows[0]): 12345.678}
+    narrow = picker._layout(rows, 99, costs)
+    assert narrow[4] == 0 and picker._search_fields(narrow) == ".."
+    assert "API $" not in picker._picker_table(rows, narrow, costs)[1]
+    wide = picker._layout(rows, 120, costs)
+    assert wide[4] == len("API $")
+    # TOOL, PROJECT, UPDATED, API $, SESSION: search skips field 4.
+    assert picker._search_fields(wide) == "..3,5.."
+    assert picker._search_fields(picker._layout(rows, 100, costs)) == "..3,5.."
+    menu, header = picker._picker_table(rows, wide, costs)
+    lines = [_plain(header)] + [_plain(line.split("\t", 1)[1]) for line in menu.split("\0") if line]
+    # The separator never appears inside a cell, so every row has the same field count.
+    assert {line.count("│") for line in lines} == {4}
+    assert len({tuple(i for i, c in enumerate(line) if c == "│") for line in lines}) == 1
+    assert "$12k" in lines[1] and "—" in lines[2]
+
+
+def test_real_fzf_never_matches_the_cost_cell():
+    fzf = shutil.which("fzf")
+    if not fzf:
+        print("  (real fzf cost-field check skipped: fzf not installed)")
+        return
+    rows = [_row("a", "OpenCode", "/w/proj", title="needle")]
+    costs = {picker._cost_key(rows[0]): 4242.0}
+    for columns in (100, 120, 140):
+        layout = picker._layout(rows, columns, costs)
+        menu = picker._picker_table(rows, layout, costs)[0]
+        assert "$4.2k" in menu
+
+        def search(query, layout=layout, menu=menu):
+            result = subprocess.run(
+                [
+                    fzf,
+                    "--ansi",
+                    "--read0",
+                    "--print0",
+                    f"--delimiter={picker._DELIMITER}",
+                    "--with-nth=2..",
+                    f"--nth={picker._search_fields(layout)}",
+                    f"--filter={query}",
+                ],
+                input=menu.encode(),
+                capture_output=True,
+                env={**os.environ, "FZF_DEFAULT_OPTS": "", "FZF_DEFAULT_OPTS_FILE": ""},
+                check=False,
+            )
+            return result.stdout.split(b"\0")[0]
+
+        assert not search("'4.2k")
+        for query in ("needle", "proj", "OpenCode", "'01-01"):
+            assert search(query).startswith(b"0\t"), (columns, query)
+
+
+def test_background_refresh_reloads_when_only_costs_changed():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = _background_args(tmp)
+        row = _row("same", "Claude Code", tmp, title="same")
+        _cache(args, "claude", [row])
+        shown = []
+
+        def fake_fzf(argv, **kwargs):
+            if argv[1:] == ["--version"]:
+                return subprocess.CompletedProcess(argv, 0, "0.54.1 (brew)\n", "")
+            shown.append(kwargs["input"].decode())
+            bind = argv[argv.index("--bind") + 1]
+            with open(shlex.split(bind.split("reload-sync:", 1)[1])[1], "rb") as fh:
+                shown.append(fh.read().decode())
+            # Pick from the repriced list: its r-keys must resolve to the same session.
+            chosen = shown[-1].split("\0")[0]
+            return subprocess.CompletedProcess(argv, 0, chosen.encode() + b"\0", b"")
+
+        with patch.object(
+            picker.sources,
+            "make_store",
+            return_value=_priced_store(args, tmp, [row], [_model("same")]),
+        ), patch.object(picker.sources, "available_sources", return_value=["claude"]), patch.object(
+            picker.shutil, "which", side_effect=lambda name: "/bin/" + name
+        ), patch.object(
+            picker.shutil, "get_terminal_size", return_value=os.terminal_size((120, 24))
+        ), patch.object(picker.subprocess, "run", side_effect=fake_fzf), patch.object(
+            picker.os, "execv"
+        ) as execute, patch.object(picker.os, "chdir"), patch.object(
+            picker.sys, "platform", "linux"
+        ):
+            assert cli._run(args) == 0
+        execute.assert_called_once_with("/bin/claude", ["/bin/claude", "--resume", "same"])
+        assert "—" in _plain(shown[0])
+        assert shown[1].startswith("r0\t") and "—" not in _plain(shown[1])
+        assert "$" in _plain(shown[1]).split("│")[3]
+
+
+def test_compact_cells_fit_their_columns():
+    for cost in (0, 1e-4, 0.005, 9.994, 9.995, 999.5, 9950, 999500, 9.9499e6, 9.95e6, 1e308):
+        assert len(picker._cost_text(cost)) <= picker._COST_WIDTH, cost
+    assert picker._cost_text(0) == "$0" and picker._cost_text(9.999) == "$10"
+    assert picker._display_time("2026-03-04T05:06:00", 2026) == "03-04 05:06"
+    assert picker._display_time("2025-03-04T05:06:00", 2026) == "2025-03-04"
+    # One long worktree name must not widen the project column for everyone.
+    rows = [_row(str(i), "Codex", f"/w/p{i}") for i in range(9)]
+    rows.append(_row("long", "Codex", "/w/a-very-long-project-name-indeed"))
+    assert picker._layout(rows, 200)[0] == 7
+
+
+def test_damaged_index_values_never_crash_the_open_path():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = cli.parse_args(["launch", "--harness", "claude", "--claude-dir", tmp])
+        row = _row("one", "Claude Code", tmp)
+        _cache(args, "claude", [row])
+        files = picker._cache_files(args)
+        index = picker._index_path(args, files)
+        stamps = {path: picker._stamp(path) for _, path in files}
+        picker._save_index(index, stamps, [row], {}, picker._pricing_stamp())
+        with open(index) as fh:
+            payload = json.load(fh)
+        payload["rows"][0]["total_tokens"] = []
+        key = picker._cost_key(row)
+        payload["costs"] = [
+            [*key, 10**400],
+            [*key, "x"],
+            [*key, float("inf")],
+            [*key, float("nan")],
+        ]
+        with open(index, "w") as fh:
+            json.dump(payload, fh)
+        rows, costs = picker._load(args)
+        assert [r.id for r in rows] == ["one"] and costs == {}
+        picker._picker_table(rows, picker._layout(rows, 120, costs), costs)
+
+
+def test_refresh_drops_carried_costs_priced_under_other_rates():
+    with tempfile.TemporaryDirectory() as tmp, patch(
+        "opentab.stores.cached.cache_dir", return_value=tmp
+    ):
+        args = cli.parse_args(["launch", "--claude-dir", tmp, "--codex-dir", tmp])
+        codex = _row("codex-old", "Codex", tmp)
+        _cache(args, "codex", [codex])
+        _cache(args, "claude", [_row("claude-old", "Claude Code", tmp)])
+        cached, _ = picker._load(args)
+        stale = picker.Costs({picker._cost_key(codex): 1.0}, pricing=["older rates"])
+        fresh = picker.Costs({picker._cost_key(codex): 1.0}, pricing=picker._pricing_stamp())
+        claude = [_row("claude-new", "Claude Code", tmp)]
+        with patch.object(
+            picker.sources, "make_store", return_value=_fresh_store(args, tmp, claude)
+        ), patch.object(picker.sources, "available_sources", return_value=["claude"]):
+            assert picker._cost_key(codex) not in picker._refreshed(args, cached, stale)[1]
+            assert picker._refreshed(args, cached, fresh)[1][picker._cost_key(codex)] == 1.0

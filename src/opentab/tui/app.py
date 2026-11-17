@@ -20,9 +20,8 @@ from opentab.accounting.tiers import (
     estimated_token_split,
     node_api_cost,
     node_list_cost,
+    price_root_models,
     pricing_samples,
-    row_api_cost,
-    row_api_delta,
     row_cost_parts,
     row_estimate_reasons,
     row_list_cost,
@@ -4143,20 +4142,12 @@ class App:
             )
         by_id = {w.id: w for w in self.loaded}
         for root_id, rows in self._model_by_root.items():
-            has_root_split = any("root_unpriced_input" in m for m in rows)
-            root_delta = 0.0
-            for m in rows:
-                m["real_cost"] = m.get("real_cost", m["cost"])
-                # Legacy in-memory rows may expose only aggregate tokens.
-                m["api_cost"] = row_api_cost(m)
-                if has_root_split:
-                    root_delta += row_api_delta(m, root=True)
+            delta, root_delta = price_root_models(rows)
             wf = by_id.get(root_id)
             if not wf:
                 continue
-            delta = sum(m["api_cost"] - m["real_cost"] for m in rows)
             wf.api_total_cost = wf.real_total_cost + delta
-            if has_root_split:
+            if root_delta is not None:
                 wf.api_root_cost = wf.real_root_cost + root_delta
             else:
                 # Legacy rows lack exact root-vs-subagent token splits.

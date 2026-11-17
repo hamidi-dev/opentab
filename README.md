@@ -133,7 +133,7 @@ as you type, and change the date range.
   **`Ctrl-T`**, then type `#client-x` in the filter to see that tag's sessions, time
   and cost. [Tags](docs/sessions.md#tags)
 - **Find your way back.** Bookmark sessions, add notes, and reopen supported sessions in
-  their original tool with **`L`**, or use `opentab launch` for an fzf picker.
+  their original tool with **`L`**, or use `opentab launch` for an fzf picker with each session's `$` cost.
   [Sessions](docs/sessions.md)
 - **Scope and filter.** [Filters](docs/filters.md)
 - **See file edits.** The **Changes** tab shows the edits a session recorded (OpenCode and

@@ -47,6 +47,11 @@ A few cases price differently:
 For duration records, Overview shows the reported duration and whether it is running,
 unconfirmed or finalized.
 
+The `opentab launch` picker shows the same estimate in its `API $` column, in
+terminals at least 100 columns wide. It is priced in the background while the
+picker is open, so a session that changed since the last launch, or any session
+after a rate refresh or upgrade, shows `—` for a moment.
+
 ## Copilot list-price estimates
 
 For the `github-copilot` provider, the estimate **replaces all recorded costs** with
