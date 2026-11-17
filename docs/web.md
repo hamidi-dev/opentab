@@ -97,6 +97,9 @@ when `--allow-raw-content` is enabled.
 
 `opentab web --html` writes the browser as **one HTML file** (default
 `opentab-report.html`). It needs no server and works from disk or any static host.
+The file is a snapshot: relative ranges (last 30 days, this year), the Trends
+Summary's per-day averages and the calendar count up to the day it was exported,
+not the day it is opened, so a shared file reads the same next month.
 `--html` can't be combined with `--headless`, `--port` or `--bind`; OpenTab refuses
 rather than ignoring them.
 
