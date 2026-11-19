@@ -524,9 +524,19 @@ def test_api_price_split_uses_store_root_unpriced_columns_for_same_model():
 
 
 def test_has_known_price_asks_where_the_price_came_from_not_what_it_equals():
-    # A catalogued card may legitimately equal FALLBACK_PRICE.
-    assert ot.model_price("openai/gpt-image-1-mini") == ot.pricing.FALLBACK_PRICE
-    assert ot.has_known_price("openai/gpt-image-1-mini")  # catalogued -> real, priced model
+    from unittest.mock import patch
+
+    from opentab.accounting import pricing
+
+    # A catalogued card may legitimately equal FALLBACK_PRICE. Synthesize one: the
+    # bundled snapshot changes every release and need not contain such a card.
+    card = {"fallback-equal-card": pricing.FALLBACK_PRICE}
+    layer = (card, {}, {}, {"fetched_at": "9999-12-31T00:00:00Z"}, {})
+    real_layers = pricing._layers
+    with patch.object(pricing, "_layers", lambda: [layer, *real_layers()]):
+        assert ot.model_price("openai/fallback-equal-card") == pricing.FALLBACK_PRICE
+        assert ot.has_known_price("openai/fallback-equal-card")  # catalogued -> real, priced
+    assert not ot.has_known_price("openai/fallback-equal-card")  # the card made the difference
     assert ot.has_known_price("anthropic/claude-opus-4.5")  # named outright
     assert ot.has_known_price("anthropic/claude-opus-9-99")  # unknown id, known family
     assert not ot.has_known_price("unknown/not recorded")  # nothing knows it
