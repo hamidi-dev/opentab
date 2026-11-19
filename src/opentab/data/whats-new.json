@@ -1,6 +1,32 @@
 {
   "releases": [
     {
+      "version": "1.36.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Tag sessions by client, feature or experiment, then type #client-x in the filter to see that tag's sessions, agent time and cost.", "availability": "tui", "hint": {"text": "Tag the selected session", "binding": {"context": "main", "action": "edit_tags"}}},
+            {"text": "Manage your other machines in one place: opentab machines adds, checks, pulls, renames and removes them.", "hint": {"text": "Run opentab machines status"}},
+            {"text": "opentab launch shows each session's API-equivalent cost next to its title."}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Popups in the terminal app dim the view behind them, and the browser's Trends Summary now matches the terminal layout."}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "A saved HTML report now shows the same numbers every day: relative ranges and per-day averages count from its export day, not today."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.36.0"
+    },
+    {
       "version": "1.35.0",
       "sections": [
         {
