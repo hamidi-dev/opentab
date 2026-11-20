@@ -1118,8 +1118,13 @@ def cache_misses(rows) -> list[CacheMiss]:
                 idle=idle,
                 ttl=ttl or 0,
                 repaid=repaid,
+                # An inferred long tier means this session's unsplit writes were 1h too.
                 cost=_repay_cost(
-                    model, repaid, write, _int(cur.get("cache_write_1h")), cur.get("context_tokens")
+                    model,
+                    repaid,
+                    write,
+                    write if held_long else _int(cur.get("cache_write_1h")),
+                    cur.get("context_tokens"),
                 ),
                 detail=(f"{_effort(prev)} → {_effort(cur)}" if cause == "reasoning" else ""),
                 ttl_minimum=cache_ttl_is_minimum(owner),

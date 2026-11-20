@@ -1167,10 +1167,17 @@ def test_cache_miss_infers_the_long_ttl_from_a_hit_no_short_entry_could_survive(
     ]
     (miss,) = ot.cache_misses(warm)
     assert miss.cause == "waited" and miss.ttl == ot.CACHE_TTL_LONG
+    # The re-bought writes were 1h writes too, so they bill at the 1h rate.
+    _ir, _o, crr, _cw = ot.model_price(model)
+    long_rate = ot.cache_write_1h_price(model)
+    assert abs(miss.cost - 122000 * (long_rate - crr) / 1e6) < 1e-9
 
-    # Without that evidence the default short tier stands.
+    # Without that evidence the default short tier stands, priced at the short rate.
     cold = [warm[0], warm[2]]
-    assert ot.cache_misses(cold)[0].ttl == ot.CACHE_TTL_SHORT
+    (short,) = ot.cache_misses(cold)
+    assert short.ttl == ot.CACHE_TTL_SHORT
+    assert abs(short.cost - 120000 * (_cw - crr) / 1e6) < 1e-9
+    assert miss.cost / 122000 > short.cost / 120000
 
     # A store that records the split is never overruled: its 5m writes are facts.
     recorded = [dict(row, cache_write_1h=0) for row in warm]
