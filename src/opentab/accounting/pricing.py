@@ -1088,6 +1088,7 @@ def cache_misses(rows) -> list[CacheMiss]:
     """
     main = [(i, r) for i, r in enumerate(rows) if not r.get("depth")]
     busy = sorted(t for t in (_row_epoch(r) for r in rows if r.get("depth")) if t is not None)
+    held_long = _anthropic_hit_outlived_short_ttl(main)
     out: list[CacheMiss] = []
     for (_pi, prev), (ci, cur) in zip(main, main[1:]):
         prefix = _int(prev.get("cache_read")) + _int(prev.get("cache_write"))
@@ -1105,6 +1106,8 @@ def cache_misses(rows) -> list[CacheMiss]:
         ttl = cache_ttl_seconds(
             owner, _int(prev.get("cache_write_1h")), _int(prev.get("cache_write"))
         )
+        if held_long and ttl == CACHE_TTL_SHORT:
+            ttl = CACHE_TTL_LONG
         a, b = _row_epoch(prev), _row_epoch(cur)
         idle = (b - a) if (a is not None and b is not None) else 0.0
         cause = _miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b)
@@ -1123,6 +1126,32 @@ def cache_misses(rows) -> list[CacheMiss]:
             )
         )
     return out
+
+
+def _anthropic_hit_outlived_short_ttl(main) -> bool:
+    """Whether a session that records no 1h writes still proves it bought the 1h tier.
+
+    OpenCode (and so its Copilot route) stores one cache-write total and drops
+    Anthropic's 5m/1h split. A warm read after more than five idle minutes is only
+    possible on the 1h tier, so it settles the lifetime that the log cannot.
+    """
+    if any(_int(row.get("cache_write_1h")) for _i, row in main):
+        return False  # the store records the split, which beats inference
+    for (_pi, prev), (_ci, cur) in zip(main, main[1:]):
+        if model_family(prev.get("model_name") or "") != "anthropic":
+            continue
+        if (cur.get("model_name") or "") != (prev.get("model_name") or ""):
+            continue
+        prefix = _int(prev.get("cache_read")) + _int(prev.get("cache_write"))
+        if (
+            prefix < CACHE_MISS_MIN_PREFIX
+            or _int(cur.get("cache_read")) < prefix * CACHE_MISS_COLD_RATIO
+        ):
+            continue
+        a, b = _row_epoch(prev), _row_epoch(cur)
+        if a is not None and b is not None and b - a > CACHE_TTL_SHORT:
+            return True
+    return False
 
 
 def _effort(row) -> str:

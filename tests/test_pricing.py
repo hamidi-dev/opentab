@@ -1152,6 +1152,32 @@ def test_cache_miss_reads_the_ttl_off_the_entry_that_died_not_the_one_replacing_
     assert dead[0].cause == "waited" and dead[0].ttl == ot.CACHE_TTL_SHORT
 
 
+def test_cache_miss_infers_the_long_ttl_from_a_hit_no_short_entry_could_survive():
+    # OpenCode, and with it the Copilot route, logs one cache-write total: no 1h split.
+    # A warm read 20 idle minutes after the last request proves the 1h tier anyway.
+    model = "github-copilot/claude-opus-5.5"
+
+    def turn(time, read=0, write=0, prompt="p"):
+        return _turn(time, model=model, read=read, write=write, prompt=prompt)
+
+    warm = [
+        turn("2026-11-12 13:14:00", read=100000, write=20000, prompt="a"),
+        turn("2026-11-12 13:34:00", read=120000, write=2000, prompt="b"),  # hit after 20m
+        turn("2026-11-12 15:14:00", write=122000, prompt="c"),  # 1h40m later: cold
+    ]
+    (miss,) = ot.cache_misses(warm)
+    assert miss.cause == "waited" and miss.ttl == ot.CACHE_TTL_LONG
+
+    # Without that evidence the default short tier stands.
+    cold = [warm[0], warm[2]]
+    assert ot.cache_misses(cold)[0].ttl == ot.CACHE_TTL_SHORT
+
+    # A store that records the split is never overruled: its 5m writes are facts.
+    recorded = [dict(row, cache_write_1h=0) for row in warm]
+    recorded[1]["cache_write_1h"] = 1  # one long write proves the split is logged
+    assert ot.cache_misses([recorded[1], recorded[2]])[0].ttl == ot.CACHE_TTL_SHORT
+
+
 def test_priority_processing_modes_become_priced_ids_of_their_own():
     """models.dev files priority processing as a MODE on the base model
     (experimental.modes.fast: a `service_tier: priority` flag plus its own 2x card), but

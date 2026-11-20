@@ -180,7 +180,9 @@ The cause shown is an inference:
 
 Anthropic uses its 5-minute or 1-hour lifetime and GPT-5.6+ its 30-minute minimum,
 labeled "guaranteed" because a longer gap doesn't prove when the entry died. OpenTab
-invents no lifetime for providers that cache opportunistically. Codex gets markers when
+invents no lifetime for providers that cache opportunistically. Where a harness logs no
+5-minute/1-hour split (OpenCode, including its Copilot route), a cache hit after more
+than five idle minutes proves the 1-hour lifetime for that session. Codex gets markers when
 every turn in the session records its request context; otherwise they are off.
 
 The penalty is what rebuying the prefix cost above a cache hit, not the whole turn's
