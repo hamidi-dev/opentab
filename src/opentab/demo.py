@@ -79,6 +79,7 @@ _NODE_TOKEN_FIELDS = (
     "tokens_cache_write",
     "tokens_cache_write_1h",
     "tokens_total",
+    "context_last",  # a magnitude like the token columns, so it shares their scale
 )
 
 

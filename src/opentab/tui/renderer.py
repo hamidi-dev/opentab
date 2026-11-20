@@ -259,6 +259,7 @@ class Renderer:
         ("model", "Model"),
         ("cost", "Cost"),
         ("tokens", "Tokens"),
+        ("context", "Ctx"),
         ("title", "Title"),
     )
 
@@ -6754,6 +6755,7 @@ class Renderer:
         "model": "Model",
         "agent": "Agent",
         "depth": "Depth",
+        "context": "Context (latest call)",
         "eff": "eff $/M (your mix)",
         "use": "use (token share)",
         "input": "Input price",

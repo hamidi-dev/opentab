@@ -3424,6 +3424,8 @@ function executionTable(nodes, t) {
     { key: 'share', label: 'Share', align: 'r', sortVal: mCost, fmt: r => pct(mCost(r), total) },
     ...(t ? [{ key: 'wi', label: 'Compared', align: 'r', fmt: r => moneyCell(r.wi) }] : []),
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
+    { key: 'context', label: 'Context', align: 'r', sortVal: r => r.context || 0,
+      fmt: r => r.context ? hTok(r.context) : h('span', { class: 'dim' }, '-') },
   ], rows, { defaultSort: { key: 'index', desc: false },
     rowLabel: r => 'Open execution ' + (r.index + 1) + ': ' + (r.title || '(untitled)'),
     onRow: r => openExecution(r.index) });

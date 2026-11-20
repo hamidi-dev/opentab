@@ -342,7 +342,16 @@ class App:
         "output",
         "reasoning",
     )
-    subagent_sort_options = ("cost", "tokens", "date", "title", "model", "agent", "depth")
+    subagent_sort_options = (
+        "cost",
+        "tokens",
+        "context",
+        "date",
+        "title",
+        "model",
+        "agent",
+        "depth",
+    )
     prices_sort_options = ("model", "eff", "use", "input", "output", "cache_read", "cache_write")
     # A ranked tab offers only visible columns; cost is the common fallback.
     _TREND_SORT_COLUMNS = {
@@ -10861,6 +10870,10 @@ class App:
         desc = self.sort_descending(sort_by, self.subagent_sort_reverse)
         if sort_by == "tokens":
             return sorted(rows, key=lambda row: (row["tokens_total"], row["cost"]), reverse=desc)
+        if sort_by == "context":
+            return sorted(
+                rows, key=lambda row: (row.get("context_last") or 0, row["cost"]), reverse=desc
+            )
         if sort_by == "date":
             return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=desc)
         if sort_by == "title":

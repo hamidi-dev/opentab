@@ -134,6 +134,9 @@ def _clean_node(row: dict) -> dict:
     node["estimated_cost"] = max(0.0, safe_float(row.get("estimated_cost")))
     for field in _NODE_INT_FIELDS:
         node[field] = _coerce_int(row.get(field))
+    context = request_context({"context_tokens": row.get("context_last")})
+    if context:
+        node["context_last"] = int(context)
     models = _clean_model_pricing(row.get("model_pricing"))
     if models is not None:
         if all(

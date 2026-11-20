@@ -195,7 +195,7 @@ def execution_table_layout(
     whatif_prices: Mapping[int, float] | None = None,
 ) -> SubagentLayout:
     whatif_prices = whatif_prices or {}
-    columns = [("cost", "Cost", 9), ("tokens", "Tokens", 9)]
+    columns = [("cost", "Cost", 9), ("tokens", "Tokens", 9), ("context", "Ctx", 7)]
     if target:
         columns.insert(1, ("whatif", "Compared", 9))
     if width >= 90:
@@ -223,6 +223,8 @@ def execution_table_layout(
             "model": str(row.get("model_name") or "unknown"),
             "cost": money(row["cost"]),
             "tokens": human_tokens(row["tokens_total"]),
+            # The newest call's prompt: how full this execution's window ended up.
+            "context": human_tokens(row["context_last"]) if row.get("context_last") else "-",
             "whatif": money(whatif_prices.get(node_index, 0.0)) if target else "",
             "share": pct(row["cost"], tree_cost),
             "cache": pct(row.get("tokens_cache_read", 0), incoming),
@@ -231,7 +233,7 @@ def execution_table_layout(
             "  "
             + " ".join(
                 f"{values[key]:>{size}}"
-                if key in ("cost", "tokens", "whatif", "share", "cache")
+                if key in ("cost", "tokens", "context", "whatif", "share", "cache")
                 else pad(shorten(values[key], size), size)
                 for key, _label, size in columns
             )

@@ -210,7 +210,8 @@ works in demo mode and isn't remembered between visits.
 **Subagents** works in live and static reports. Its overview counts direct and nested
 executions, shows the deepest level, and groups work by agent. Cost and token shares
 are out of all executions, root included. A flame graph falls back to token widths
-when nothing recorded spend.
+when nothing recorded spend. **Context** is how full each execution's window was at its
+newest call; `-` means the harness did not record that call's prompt size.
 
 Click an execution for its details: full title, agent, main model, start, depth, cost
 and exact token counts.

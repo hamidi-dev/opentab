@@ -108,6 +108,8 @@ def _node_row(row) -> dict:
         # This mirrors App._priced_nodes, not the per-model what-if baseline.
         "api": _money6(_node_api_cost(d)),
         "tokens": int(d.get("tokens_total") or 0),
+        # The newest call's prompt size; absent when the harness cannot prove it.
+        "context": int(d["context_last"]) if d.get("context_last") else None,
         "pricing": [
             {"context": context, "tok": tok}
             for row in d.get("model_pricing", [])

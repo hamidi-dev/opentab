@@ -1306,6 +1306,7 @@ def test_subagents_tab_header_is_click_sortable_and_shows_started():
                     "tokens_reasoning": 0,
                     "tokens_cache_read": 0,
                     "tokens_cache_write": 0,
+                    **({"context_last": 48_000} if d else {}),
                 }
                 for d, t, ts in (
                     (0, "root", "2026-06-01 12:00:00"),
@@ -1325,6 +1326,7 @@ def test_subagents_tab_header_is_click_sortable_and_shows_started():
     head = next(i for i, ln in enumerate(lines) if "Started" in ln and ln[:1] in ("│", "|"))
     assert box_title(lines[head - 1 :]) == "Subagent Executions"
     assert "2026-06-01 12:30" in lines[head + 2]  # past the rule, the subagent's row
+    assert "Ctx" in lines[head] and ot.human_tokens(48_000) in lines[head + 2]
     cols, target = rnd._line_sort_headers[head]
     assert target == "subagent" and cols == rnd.SUBAGENT_SORT_COLUMNS
 

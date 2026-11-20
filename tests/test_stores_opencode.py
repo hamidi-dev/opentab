@@ -2503,6 +2503,7 @@ def test_store_reads_db_without_session_token_columns():
         assert workflows[0].subagents == 1
         assert nodes[1]["tokens_total"] == 5
         assert nodes[1]["agent"] == "-"
+        assert nodes[0]["context_last"] == 4 and nodes[1]["context_last"] == 2
 
 
 def test_workflows_ended_at_is_the_latest_update_in_the_subtree():

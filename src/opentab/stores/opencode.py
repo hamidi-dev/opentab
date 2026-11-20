@@ -671,6 +671,10 @@ class Store:
         """
         rows = [dict(r) for r in self.conn.execute(sql, [workflow_id])]
         if not self.demo:
+            contexts = self._node_last_contexts(workflow_id)
+            for row in rows:
+                if contexts.get(row["id"]):
+                    row["context_last"] = contexts[row["id"]]
             models = {}
             for model in self.model_breakdown(workflow_id, own=True):
                 models.setdefault(model["root_id"], []).append(model)
@@ -683,6 +687,42 @@ class Store:
                     row["model_pricing"] = parts
             return rows
         return [scramble_node(dict(r), self.demo_scale, self.demo_cats) for r in rows]
+
+    def _node_last_contexts(self, workflow_id: str) -> dict[str, int]:
+        """Each tree session's newest assistant prompt size (input + cache read/write)."""
+        if not self.supports_message_timeline:
+            return {}
+        message_table = "opentab_message_usage" if self.has_v2 else "message"
+        event_time = "m.time_created" if self.has_v2 else _TL_TS
+        role = "m.role" if self.has_v2 else "json_extract(m.data, '$.role')"
+        usage = {
+            name: f"m.{name}" if self.has_v2 else f"coalesce(json_extract(m.data, '{path}'), 0)"
+            for name, path in (
+                ("input", "$.tokens.input"),
+                ("output", "$.tokens.output"),
+                ("reasoning", "$.tokens.reasoning"),
+                ("cache_read", "$.tokens.cache.read"),
+                ("cache_write", "$.tokens.cache.write"),
+            )
+        }
+        sql = f"""
+        with recursive tree(id) as (
+          select id from session where id = ?
+          union all
+          select child.id from session child join tree on child.parent_id = tree.id
+        )
+        select m.session_id,
+               {usage['input']} + {usage['cache_read']} + {usage['cache_write']} as context,
+               {usage['output']} + {usage['reasoning']} as produced
+        from {message_table} m
+        where m.session_id in (select id from tree) and {role} = 'assistant'
+        order by {event_time}, m.rowid
+        """
+        latest: dict[str, int] = {}
+        for session_id, context, produced in self.conn.execute(sql, [workflow_id]):
+            if context or produced:
+                latest[session_id] = int(context or 0)
+        return latest
 
     @debug.timed("opencode.models")
     def model_breakdown(self, workflow_id: str | None = None, *, own: bool = False) -> list[dict]:

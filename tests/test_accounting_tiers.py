@@ -403,3 +403,18 @@ def test_price_root_models_is_the_shared_dollar_policy_and_never_compounds():
         assert price_root_models(rows) == (delta, root)
         # Legacy rows lack the root split, so the caller picks the fallback.
         assert price_root_models([dict(other)]) == (0.5, None)
+
+
+def test_last_request_context_is_the_newest_billed_call_or_nothing():
+    from opentab.accounting.tiers import last_request_context
+
+    turns = [
+        {"ts": "2026-06-01T10:02:00Z", "input": 1, "context_tokens": 90_000},
+        {"ts": "2026-06-01T10:00:00Z", "input": 1, "context_tokens": 10_000},
+        {"ts": "2026-06-01T10:03:00Z"},  # unbilled: no usage, so not the latest call
+    ]
+    assert last_request_context(turns) == 90_000  # by time, not by list position
+    # An unknown size on the newest call must not fall back to an older reading.
+    turns.append({"ts": "2026-06-01T10:04:00Z", "input": 5, "context_tokens": None})
+    assert last_request_context(turns) is None
+    assert last_request_context([]) is None

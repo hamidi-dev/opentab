@@ -435,8 +435,24 @@ def node_token_row(node: dict) -> dict:
     }
 
 
+def last_request_context(turns) -> int | None:
+    """The newest billed call's explicit prompt size: how full the window is now.
+
+    An unknown size on that call yields None rather than an older, stale reading.
+    """
+    latest = None
+    for turn in sorted(turns, key=lambda t: str(t.get("ts") or t.get("time") or "")):
+        if any(float(turn.get(field) or 0) for field in FIELDS):
+            latest = turn
+    context = request_context(latest) if latest is not None else None
+    return int(context) if context else None
+
+
 def attach_node_pricing(node: dict, turns, *, per_request: bool = True) -> None:
     turns = list(turns)
+    context = last_request_context(turns)
+    if context is not None:
+        node["context_last"] = context
     models = {}
     for turn in turns:
         name = turn["model_name"]

@@ -375,7 +375,19 @@ def test_web_payload_embeds_nodes_and_reprices_unpriced_ones():
     assert sub["agent"] == "explore" and sub["tokens"] == 1_100_000
     assert all(
         set(n)
-        == {"title", "agent", "depth", "model", "date", "real", "api", "tokens", "tok", "pricing"}
+        == {
+            "title",
+            "agent",
+            "depth",
+            "model",
+            "date",
+            "real",
+            "api",
+            "tokens",
+            "context",
+            "tok",
+            "pricing",
+        }
         for n in nodes
     )
     assert all(len(n["tok"]) == 6 for n in nodes)

@@ -326,6 +326,8 @@ def test_claude_store_groups_sidechain_subagents_into_tree():
         assert nodes[1]["depth"] == 1 and nodes[1]["agent"] == "subagent"
         assert nodes[1]["tokens_total"] == (40 + 10) + (20 + 5)
         assert nodes[0]["cost"] == 0.0 and nodes[1]["cost"] == 0.0  # recorded; $ reprices
+        # Each node's window is its own newest call, never the subagent's first one.
+        assert nodes[0]["context_last"] == 100 and nodes[1]["context_last"] == 20
 
 
 def _claude_user(text, *, cwd, meta=False, side=False, uuid="u"):

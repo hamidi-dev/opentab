@@ -18,7 +18,10 @@ A backend translates one harness's records into a shared accounting model:
 - **Model rows** split a root's usage by model, retaining both subtree and root-only
   shares. They are the basis for model attribution, not a node's dominant-model label.
 - **Nodes** describe individual sessions in the subagent tree. Adding already-folded
-  workflow totals to child nodes would count delegated work twice.
+  workflow totals to child nodes would count delegated work twice. A node's optional
+  `context_last` is its newest billed call's prompt size (input + cache reads + cache
+  writes). It is absent when that call's size is unknown; it never falls back to an
+  older call.
 - **Turns** describe the finest usage boundary the harness records. That is usually
   one model call, but can be a multi-call turn, or a log entry without a saved answer.
 
