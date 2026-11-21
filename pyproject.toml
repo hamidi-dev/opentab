@@ -41,7 +41,8 @@ dependencies = ["windows-curses; platform_system == 'Windows'"]
 dev = ["ruff==0.1.15", "coverage[toml]>=7.6,<8"]
 
 [project.urls]
-Homepage = "https://github.com/hamidi-dev/opentab"
+Homepage = "https://opentab.hamidi.dev"
+Documentation = "https://opentab.hamidi.dev/docs/"
 Repository = "https://github.com/hamidi-dev/opentab"
 Issues = "https://github.com/hamidi-dev/opentab/issues"
 
